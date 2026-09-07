@@ -1,3 +1,4 @@
+import type { z } from 'zod';
 import {
   isApprovalUsable,
   isProhibited,
@@ -138,7 +139,10 @@ export class WorkflowEngine {
       currentStepId: plan[0]!.id,
       createdAt: timestamp,
       updatedAt: timestamp,
-    } satisfies Partial<Workflow>);
+      // Checked against the schema's *input* type: step defaults (status,
+      // attempt, result, ...) are applied by the parse, so they are absent here
+      // by design and the output type would wrongly demand them.
+    } satisfies z.input<typeof workflowSchema>);
 
     await this.store.create(workflow);
     this.onChange(workflow);

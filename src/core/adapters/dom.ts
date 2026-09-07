@@ -64,7 +64,7 @@ export function courseIdFromUrl(url: string): string | null {
 }
 
 export function extractWeight(text: string): number | null {
-  const match = text.match(/(?:weight|worth|value)?\s*[:=-]?\s*(\d+(?:\.\d+)?)\s*%/i);
+  const match = text.match(/(\d{1,3}(?:\.\d+)?)\s*%/);
   if (!match?.[1]) return null;
   const weight = Number(match[1]);
   return weight >= 0 && weight <= 100 ? weight : null;

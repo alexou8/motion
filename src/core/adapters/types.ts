@@ -1,13 +1,7 @@
+import type { ActionType } from '@/core/policy';
 import type { Course, CourseTask, PageContent, PageType, Confidence } from '@/core/domain';
 
-export interface DetectionInput {
-  readonly url: string;
-  readonly document: Document;
-  readonly now: Date;
-  readonly timeZone: string;
-}
-
-export interface ExtractionInput {
+export interface AdapterInput {
   readonly url: string;
   readonly document: Document;
   readonly now: Date;
@@ -25,10 +19,9 @@ export interface LearningPlatformAdapter {
   readonly displayName: string;
   readonly hostPatterns: readonly RegExp[];
   matchesHost(url: string): boolean;
-  detectPage(input: DetectionInput): PageDetection | null;
-  extractCourse(input: ExtractionInput): Course | null;
-  extractTasks(input: ExtractionInput): CourseTask[];
-  extractPageContent(input: ExtractionInput): PageContent;
-  getSupportedActions(pageType: PageType): readonly string[];
+  detectPage(input: AdapterInput): PageDetection | null;
+  extractCourse(input: AdapterInput): Course | null;
+  extractTasks(input: AdapterInput): CourseTask[];
+  extractPageContent(input: AdapterInput): PageContent;
+  getSupportedActions(pageType: PageType): readonly ActionType[];
 }
-
