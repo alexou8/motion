@@ -12,6 +12,7 @@ import { evaluateAssessmentContext } from '@/core/policy';
 import type { Message } from '@/core/messaging';
 
 const EXTRACT_REQUEST = 'motion:extract';
+const CONTENT_REQUEST = 'motion:extract-content';
 
 function send(message: Message): void {
   // A failure here means the worker is asleep or the panel is closed; neither
@@ -107,12 +108,49 @@ function extract(requestId: string): void {
   });
 }
 
-chrome.runtime.onMessage.addListener((raw: unknown) => {
-  // The only instruction this script accepts, and it carries no page data.
-  if (typeof raw !== 'object' || raw === null) return;
+/**
+ * Returns the page's content for the worker to analyse. Refuses on a restricted
+ * page, so instructions are never harvested from a graded attempt.
+ */
+function readContent(): { content: unknown } | { refused: string } {
+  const url = currentUrl();
+  const adapter = resolveAdapter(url);
+  if (!adapter) return { refused: 'Motion does not support this page.' };
+
+  const input = {
+    url,
+    document,
+    now: new Date(),
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
+  const detection = adapter.detectPage(input);
+  const assessment = evaluateAssessmentContext({
+    pageType: detection?.pageType ?? 'unsupported',
+    url,
+    pageTitle: document.title,
+    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
+  });
+  if (assessment.restricted) return { refused: assessment.reason };
+
+  return { content: adapter.extractPageContent(input) };
+}
+
+chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
+  // The only instructions this script accepts, and neither carries page data in.
+  if (typeof raw !== 'object' || raw === null) return undefined;
   const message = raw as { type?: unknown; requestId?: unknown };
-  if (message.type !== EXTRACT_REQUEST) return;
-  extract(typeof message.requestId === 'string' ? message.requestId : crypto.randomUUID());
+
+  if (message.type === EXTRACT_REQUEST) {
+    extract(typeof message.requestId === 'string' ? message.requestId : crypto.randomUUID());
+    return undefined;
+  }
+
+  if (message.type === CONTENT_REQUEST) {
+    sendResponse(readContent());
+    return undefined;
+  }
+
+  return undefined;
 });
 
 observe();

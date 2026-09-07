@@ -85,6 +85,32 @@ export const createNoteSchema = z.object({
   pageType: pageTypeSchema,
 });
 
+/**
+ * Turn the assignment the student is looking at into a checklist. The worker
+ * asks the content script for the instruction text; the panel does not supply
+ * it, so a compromised panel cannot inject fabricated requirements.
+ */
+export const buildChecklistSchema = z.object({
+  type: z.literal('build-checklist'),
+  tabId: z.number().int().nonnegative(),
+  taskId: z.string().min(1).nullable().default(null),
+});
+
+/** Check the student's own draft against a stored checklist. */
+export const reviewDraftSchema = z.object({
+  type: z.literal('review-draft'),
+  checklistId: z.string().min(1),
+  /** The student's text, which they wrote and pasted in themselves. */
+  draft: boundedString(LIMITS.text),
+});
+
+export const toggleRequirementSchema = z.object({
+  type: z.literal('toggle-requirement'),
+  checklistId: z.string().min(1),
+  requirementId: z.string().min(1),
+  done: z.boolean(),
+});
+
 export const correctTaskSchema = z.object({
   type: z.literal('correct-task'),
   taskId: z.string().min(1),
@@ -103,6 +129,9 @@ export const messageSchema = z.discriminatedUnion('type', [
   workflowCommandSchema,
   correctTaskSchema,
   createNoteSchema,
+  buildChecklistSchema,
+  reviewDraftSchema,
+  toggleRequirementSchema,
 ]);
 export type Message = z.infer<typeof messageSchema>;
 export type MessageType = Message['type'];
@@ -121,6 +150,9 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'workflow-command': ['extension-ui'],
   'correct-task': ['extension-ui'],
   'create-note': ['extension-ui'],
+  'build-checklist': ['extension-ui'],
+  'review-draft': ['extension-ui'],
+  'toggle-requirement': ['extension-ui'],
 };
 
 export function maySend(type: MessageType, role: SenderRole): boolean {

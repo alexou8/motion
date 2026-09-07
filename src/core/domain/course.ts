@@ -100,7 +100,22 @@ export const pageContentSchema = z.object({
   headings: z.array(z.string()).default([]),
   links: z.array(z.object({ href: z.string().url(), label: z.string() })).default([]),
   capturedAt: z.string().datetime(),
+  /**
+   * Instruction text broken into structural units, with the kind of element it
+   * came from. The adapter knows *where* instructions live on a given LMS; the
+   * assist layer decides what counts as a requirement. Keeping the split here
+   * means requirement extraction is testable without any DOM.
+   */
+  instructionBlocks: z
+    .array(
+      z.object({
+        text: z.string(),
+        kind: z.enum(['list-item', 'table-cell', 'paragraph', 'heading']),
+      }),
+    )
+    .default([]),
   /** Non-fatal problems: a partial load, a login wall, a missing region. */
   warnings: z.array(z.string()).default([]),
 });
 export type PageContent = z.infer<typeof pageContentSchema>;
+export type InstructionBlock = PageContent['instructionBlocks'][number];

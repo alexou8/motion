@@ -367,6 +367,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       text: readable.text,
       headings,
       links: links.slice(0, 200),
+      instructionBlocks: instructionBlocksFor(pageType, input.document),
       capturedAt: input.now.toISOString(),
       warnings: [...(detection?.warnings ?? []), ...readable.warnings],
     };
@@ -375,6 +376,56 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   getSupportedActions(pageType: PageType): readonly ActionType[] {
     return ASSESSMENT_PAGE_TYPES.includes(pageType) ? ASSESSMENT_READ_ACTIONS : READ_ACTIONS;
   }
+}
+
+/**
+ * Instruction text, split by the structural element it came from.
+ *
+ * Only gathered on pages where instructions actually live -- an assignment,
+ * a discussion prompt, or a content topic. Harvesting bullets from a grades
+ * table would produce a checklist of nonsense.
+ *
+ * The adapter's job ends at "here is the instruction text and its shape"; what
+ * counts as a requirement is decided in src/core/assist, with no DOM involved.
+ */
+function instructionBlocksFor(
+  pageType: PageType,
+  document: Document,
+): { text: string; kind: 'list-item' | 'table-cell' | 'paragraph' | 'heading' }[] {
+  const carriesInstructions =
+    pageType === 'assignment' || pageType === 'discussion-topic' || pageType === 'content-topic';
+  if (!carriesInstructions) return [];
+
+  const region =
+    document.querySelector('main') ??
+    document.querySelector('[role="main"]') ??
+    document.querySelector('.d2l-page-main') ??
+    document.body;
+  if (!region) return [];
+
+  const blocks: { text: string; kind: 'list-item' | 'table-cell' | 'paragraph' | 'heading' }[] = [];
+  const selector = 'li, td, th, p, h1, h2, h3, h4';
+  for (const element of Array.from(region.querySelectorAll(selector))) {
+    // Skip a container that only wraps other blocks; its text would duplicate
+    // the children and swamp the checklist.
+    if (element.querySelector(selector)) continue;
+    const text = normalizedText(element);
+    if (!text) continue;
+
+    const tag = element.tagName.toLowerCase();
+    const kind =
+      tag === 'li'
+        ? ('list-item' as const)
+        : tag === 'td' || tag === 'th'
+          ? ('table-cell' as const)
+          : tag === 'p'
+            ? ('paragraph' as const)
+            : ('heading' as const);
+
+    blocks.push({ text, kind });
+    if (blocks.length >= 300) break;
+  }
+  return blocks;
 }
 
 export const d2lAdapter = new D2LBrightspaceAdapter();

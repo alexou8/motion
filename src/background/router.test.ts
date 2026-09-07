@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { courseTaskSchema, noteSchema, EXTRACTION_VERSION, type CourseTask } from '@/core/domain';
+import {
+  checklistSchema,
+  courseTaskSchema,
+  noteSchema,
+  EXTRACTION_VERSION,
+  type CourseTask,
+} from '@/core/domain';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
@@ -319,5 +325,165 @@ describe('source-linked notes', () => {
     const notes = new Repository(db, STORE.notes, noteSchema);
     const stored = await notes.get(result.noteId);
     expect(stored?.blocks.every((block) => block.origin !== 'generated')).toBe(true);
+  });
+});
+
+describe('building a checklist from assignment instructions', () => {
+  const CONTENT = {
+    pageType: 'assignment',
+    title: 'Assignment 2 — Normalization',
+    url: 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101',
+    text: 'Assignment 2 instructions',
+    headings: ['Assignment 2'],
+    links: [],
+    instructionBlocks: [
+      { kind: 'paragraph', text: 'This assignment explores normalization.' },
+      { kind: 'list-item', text: 'You must cite at least 3 peer-reviewed sources in APA format.' },
+      { kind: 'list-item', text: 'Submissions should be at least 1500 words.' },
+      { kind: 'table-cell', text: 'Depth of analysis — worth 40 marks' },
+    ],
+    capturedAt: NOW,
+    warnings: [],
+  };
+
+  function stubContentScript(response: unknown) {
+    (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => response);
+  }
+
+  it('creates a checklist whose every item traces back to the instructions', async () => {
+    stubContentScript({ content: CONTENT });
+
+    const result = (await handleMessage({
+      type: 'build-checklist',
+      tabId: 7,
+      taskId: null,
+    })) as { checklistId: string; items: number };
+
+    expect(result.items).toBeGreaterThan(0);
+
+    const db = await openDatabase();
+    const checklists = new Repository(db, STORE.checklists, checklistSchema);
+    const stored = await checklists.get(result.checklistId);
+
+    expect(stored?.items.length).toBe(result.items);
+    for (const item of stored?.items ?? []) {
+      expect(item.provenance.sourceUrl).toBe(CONTENT.url);
+      expect(item.provenance.strategy).toMatch(/^requirement:/);
+      expect(item.done).toBe(false);
+    }
+    // The prose sentence that states no requirement is not on the list.
+    expect(stored?.items.map((i) => i.text)).not.toContain(
+      'This assignment explores normalization.',
+    );
+  });
+
+  it('says it found nothing rather than inventing requirements', async () => {
+    stubContentScript({
+      content: { ...CONTENT, instructionBlocks: [{ kind: 'paragraph', text: 'Welcome to week 6.' }] },
+    });
+
+    const result = (await handleMessage({ type: 'build-checklist', tabId: 7, taskId: null })) as {
+      checklistId: string | null;
+      reason?: string;
+    };
+
+    expect(result.checklistId).toBeNull();
+    expect(result.reason).toMatch(/could not find anything stated as a requirement/i);
+  });
+
+  it('reports plainly when the page has no instructions on it', async () => {
+    stubContentScript({ content: { ...CONTENT, instructionBlocks: [] } });
+    const result = (await handleMessage({ type: 'build-checklist', tabId: 7, taskId: null })) as {
+      checklistId: string | null;
+      reason?: string;
+    };
+    expect(result.checklistId).toBeNull();
+    expect(result.reason).toMatch(/does not look like it has assignment instructions/i);
+  });
+
+  it('reports a page it could not read instead of throwing', async () => {
+    stubContentScript(undefined);
+    const result = (await handleMessage({ type: 'build-checklist', tabId: 7, taskId: null })) as {
+      checklistId: string | null;
+      reason?: string;
+    };
+    expect(result.checklistId).toBeNull();
+    expect(result.reason).toMatch(/could not read/i);
+  });
+
+  it('lets the student tick an item off', async () => {
+    stubContentScript({ content: CONTENT });
+    const created = (await handleMessage({
+      type: 'build-checklist',
+      tabId: 7,
+      taskId: null,
+    })) as { checklistId: string };
+
+    const db = await openDatabase();
+    const checklists = new Repository(db, STORE.checklists, checklistSchema);
+    const first = (await checklists.get(created.checklistId))!.items[0]!;
+
+    await handleMessage({
+      type: 'toggle-requirement',
+      checklistId: created.checklistId,
+      requirementId: first.id,
+      done: true,
+    });
+
+    const updated = await checklists.get(created.checklistId);
+    expect(updated?.items.find((i) => i.id === first.id)?.done).toBe(true);
+  });
+});
+
+describe('reviewing a draft against a checklist', () => {
+  it('reports coverage without storing the draft anywhere', async () => {
+    (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => ({
+      content: {
+        pageType: 'assignment',
+        title: 'A2',
+        url: 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363',
+        text: '',
+        headings: [],
+        links: [],
+        instructionBlocks: [
+          { kind: 'list-item', text: 'You must discuss functional dependencies.' },
+          { kind: 'list-item', text: 'You must cite at least 3 sources.' },
+        ],
+        capturedAt: NOW,
+        warnings: [],
+      },
+    }));
+
+    const created = (await handleMessage({
+      type: 'build-checklist',
+      tabId: 7,
+      taskId: null,
+    })) as { checklistId: string };
+
+    const result = (await handleMessage({
+      type: 'review-draft',
+      checklistId: created.checklistId,
+      draft: 'My report discusses functional dependencies across the schema in detail.',
+    })) as { review: { findings: { coverage: string }[] } | null; summary: string };
+
+    expect(result.review?.findings).toHaveLength(2);
+    expect(result.review?.findings.some((f) => f.coverage === 'addressed')).toBe(true);
+    expect(result.summary).toBeTruthy();
+
+    // The student's own draft is their work in progress; Motion keeps no copy.
+    const db = await openDatabase();
+    const checklists = new Repository(db, STORE.checklists, checklistSchema);
+    const stored = JSON.stringify(await checklists.get(created.checklistId));
+    expect(stored).not.toContain('My report discusses');
+  });
+
+  it('reports a missing checklist rather than throwing', async () => {
+    const result = (await handleMessage({
+      type: 'review-draft',
+      checklistId: 'gone',
+      draft: 'text',
+    })) as { review: null; summary: string };
+    expect(result.review).toBeNull();
+    expect(result.summary).toMatch(/no longer available/i);
   });
 });

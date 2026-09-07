@@ -1,5 +1,14 @@
 import type { Message } from '@/core/messaging';
-import { courseSchema, courseTaskSchema, noteSchema, EXTRACTION_VERSION } from '@/core/domain';
+import {
+  checklistSchema,
+  courseSchema,
+  courseTaskSchema,
+  noteSchema,
+  pageContentSchema,
+  EXTRACTION_VERSION,
+  type PageContent,
+} from '@/core/domain';
+import { deriveRequirements, reviewDraft, summarize, toRequirements } from '@/core/assist';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
@@ -47,6 +56,12 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleCorrection(message);
     case 'create-note':
       return handleCreateNote(message);
+    case 'build-checklist':
+      return handleBuildChecklist(message);
+    case 'review-draft':
+      return handleReviewDraft(message);
+    case 'toggle-requirement':
+      return handleToggleRequirement(message);
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
   }
@@ -198,6 +213,122 @@ async function handleCreateNote(
   });
 
   return { noteId };
+}
+
+/**
+ * Builds a source-linked checklist from the assignment's own instructions.
+ *
+ * The instruction text comes from the content script, not from the panel, so a
+ * compromised panel cannot inject requirements the instructor never set. Every
+ * item keeps the sentence and page it came from, because a checklist a student
+ * cannot verify is worse than none.
+ */
+async function handleBuildChecklist(
+  message: Extract<Message, { type: 'build-checklist' }>,
+): Promise<{ checklistId: string | null; items: number; reason?: string }> {
+  const content = await askContentScript(message.tabId);
+  if (!content) {
+    return { checklistId: null, items: 0, reason: 'Motion could not read that page.' };
+  }
+  if (content.instructionBlocks.length === 0) {
+    return {
+      checklistId: null,
+      items: 0,
+      reason: 'This page does not look like it has assignment instructions on it.',
+    };
+  }
+
+  const derived = deriveRequirements(content.instructionBlocks);
+  if (derived.length === 0) {
+    return {
+      checklistId: null,
+      items: 0,
+      // Better to say nothing was found than to invent a plausible checklist.
+      reason: 'Motion could not find anything stated as a requirement on this page.',
+    };
+  }
+
+  const now = new Date().toISOString();
+  const checklistId = crypto.randomUUID();
+  const db = await openDatabase();
+  const checklists = new Repository(db, STORE.checklists, checklistSchema);
+
+  await checklists.put({
+    id: checklistId,
+    courseId: (await currentCourseId()) ?? 'unassigned',
+    taskId: message.taskId,
+    title: content.title || 'Assignment requirements',
+    items: toRequirements(
+      derived,
+      {
+        url: content.url,
+        pageTitle: content.title,
+        pageType: content.pageType,
+        capturedAt: content.capturedAt,
+      },
+      () => crypto.randomUUID(),
+    ),
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return { checklistId, items: derived.length };
+}
+
+/**
+ * Compares the student's own draft against a checklist.
+ *
+ * The draft is supplied by the student and is never stored: it is their work in
+ * progress, and Motion has no reason to keep a copy.
+ */
+async function handleReviewDraft(
+  message: Extract<Message, { type: 'review-draft' }>,
+): Promise<{ review: ReturnType<typeof reviewDraft> | null; summary: string }> {
+  const db = await openDatabase();
+  const checklists = new Repository(db, STORE.checklists, checklistSchema);
+  const checklist = await checklists.get(message.checklistId);
+  if (!checklist) return { review: null, summary: 'That checklist is no longer available.' };
+
+  const review = reviewDraft(message.draft, checklist.items);
+  return { review, summary: summarize(review) };
+}
+
+async function handleToggleRequirement(
+  message: Extract<Message, { type: 'toggle-requirement' }>,
+): Promise<{ updated: boolean }> {
+  const db = await openDatabase();
+  const checklists = new Repository(db, STORE.checklists, checklistSchema);
+  const checklist = await checklists.get(message.checklistId);
+  if (!checklist) return { updated: false };
+
+  await checklists.put({
+    ...checklist,
+    items: checklist.items.map((item) =>
+      item.id === message.requirementId ? { ...item, done: message.done } : item,
+    ),
+    updatedAt: new Date().toISOString(),
+  });
+  return { updated: true };
+}
+
+/** Asks the content script for the current page's content, once. */
+async function askContentScript(tabId: number): Promise<PageContent | null> {
+  try {
+    const response = (await chrome.tabs.sendMessage(tabId, {
+      type: 'motion:extract-content',
+    })) as { content?: unknown } | undefined;
+    const parsed = pageContentSchema.safeParse(response?.content);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
+async function currentCourseId(): Promise<string | null> {
+  const db = await openDatabase();
+  const courses = new Repository(db, STORE.courses, courseSchema);
+  const all = await courses.all();
+  return all.records[0]?.id ?? null;
 }
 
 async function requestExtraction(tabId: number | undefined): Promise<{ requested: boolean }> {
