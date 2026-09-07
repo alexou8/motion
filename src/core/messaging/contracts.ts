@@ -68,6 +68,23 @@ export const workflowCommandSchema = z.object({
   command: z.enum(['pause', 'resume', 'retry', 'cancel']),
 });
 
+/**
+ * Creating a note from text the student selected on a page. The selection is
+ * captured by the panel and passed verbatim; the worker never reaches into the
+ * page to grab it.
+ */
+export const createNoteSchema = z.object({
+  type: z.literal('create-note'),
+  title: boundedString(LIMITS.title),
+  courseId: z.string().min(1).nullable().default(null),
+  taskId: z.string().min(1).nullable().default(null),
+  /** Text the student selected. Stored as plain text, never as HTML. */
+  capturedText: boundedString(LIMITS.text),
+  sourceUrl: z.string().url(),
+  pageTitle: boundedString(LIMITS.title),
+  pageType: pageTypeSchema,
+});
+
 export const correctTaskSchema = z.object({
   type: z.literal('correct-task'),
   taskId: z.string().min(1),
@@ -85,6 +102,7 @@ export const messageSchema = z.discriminatedUnion('type', [
   decideApprovalSchema,
   workflowCommandSchema,
   correctTaskSchema,
+  createNoteSchema,
 ]);
 export type Message = z.infer<typeof messageSchema>;
 export type MessageType = Message['type'];
@@ -102,6 +120,7 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'decide-approval': ['extension-ui'],
   'workflow-command': ['extension-ui'],
   'correct-task': ['extension-ui'],
+  'create-note': ['extension-ui'],
 };
 
 export function maySend(type: MessageType, role: SenderRole): boolean {

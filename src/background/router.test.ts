@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { courseTaskSchema, EXTRACTION_VERSION, type CourseTask } from '@/core/domain';
+import { courseTaskSchema, noteSchema, EXTRACTION_VERSION, type CourseTask } from '@/core/domain';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
@@ -269,5 +269,55 @@ describe('panel state', () => {
 
     const state = (await handleMessage({ type: 'get-state' })) as { corruptedRecords: number };
     expect(state.corruptedRecords).toBe(1);
+  });
+});
+
+describe('source-linked notes', () => {
+  it('stores the captured text as its own block with full provenance', async () => {
+    const result = (await handleMessage({
+      type: 'create-note',
+      title: 'Normalization requirements',
+      courseId: 'd2l:363',
+      taskId: null,
+      capturedText: 'Your submission must include the functional dependencies.',
+      sourceUrl:
+        'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101',
+      pageTitle: 'Assignment 2',
+      pageType: 'assignment',
+    })) as { noteId: string };
+
+    const db = await openDatabase();
+    const notes = new Repository(db, STORE.notes, noteSchema);
+    const stored = await notes.get(result.noteId);
+
+    expect(stored?.title).toBe('Normalization requirements');
+    expect(stored?.blocks).toHaveLength(1);
+    // The origin distinction is what makes AI labelling structural later.
+    expect(stored?.blocks[0]?.origin).toBe('captured');
+    expect(stored?.blocks[0]?.provenance).toMatchObject({
+      pageTitle: 'Assignment 2',
+      pageType: 'assignment',
+      strategy: 'student-selection',
+    });
+    // A note without its source is a rumour, so the URL is mandatory.
+    expect(stored?.blocks[0]?.provenance?.sourceUrl).toContain('mylearningspace.wlu.ca');
+  });
+
+  it('never produces a generated block in a release with no model', async () => {
+    const result = (await handleMessage({
+      type: 'create-note',
+      title: 'Note',
+      courseId: null,
+      taskId: null,
+      capturedText: 'Some text',
+      sourceUrl: 'https://mylearningspace.wlu.ca/d2l/home/363',
+      pageTitle: 'Home',
+      pageType: 'course-home',
+    })) as { noteId: string };
+
+    const db = await openDatabase();
+    const notes = new Repository(db, STORE.notes, noteSchema);
+    const stored = await notes.get(result.noteId);
+    expect(stored?.blocks.every((block) => block.origin !== 'generated')).toBe(true);
   });
 });
