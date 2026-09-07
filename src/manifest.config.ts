@@ -13,14 +13,13 @@ const manifest: ManifestV3Export = {
   version: '0.1.0',
   description:
     'Organizes your LMS coursework: deadlines with sources, notes linked to the page they came from, and background work you can watch and control.',
-  // chrome.sidePanel requires 114+; setPanelBehavior requires 116.
+  // chrome.sidePanel requires 114+; opening it from an action requires 116.
   minimum_chrome_version: '116',
 
   /**
-   * Declared with no `default_popup` on purpose. The service worker calls
-   * `sidePanel.setPanelBehavior({ openPanelOnActionClick: true })`, which only
-   * works when no popup is registered — and a popup would duplicate the panel
-   * rather than offer anything the panel does not.
+   * Declared with no `default_popup` on purpose. The service worker handles
+   * `action.onClicked` and opens the panel directly; a popup would consume that
+   * event and duplicate what the panel already provides.
    */
   action: {
     default_title: 'Open Motion',
@@ -34,7 +33,7 @@ const manifest: ManifestV3Export = {
   options_page: 'src/options/index.html',
 
   background: {
-    service_worker: 'src/background/index.ts',
+    service_worker: 'src/background/service-worker.ts',
     type: 'module',
   },
 
@@ -68,7 +67,7 @@ const manifest: ManifestV3Export = {
         'https://*.desire2learn.com/*',
         'https://mylearningspace.wlu.ca/*',
       ],
-      js: ['src/content/index.ts'],
+      js: ['src/content/content-script.ts'],
       run_at: 'document_idle',
       all_frames: false,
     },
