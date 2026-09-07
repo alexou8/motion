@@ -487,3 +487,110 @@ describe('reviewing a draft against a checklist', () => {
     expect(result.summary).toMatch(/no longer available/i);
   });
 });
+
+describe('drafting coursework for review', () => {
+  function stubModel(availability: string, output?: string) {
+    vi.stubGlobal('LanguageModel', {
+      availability: async () => availability,
+      create: async () => ({
+        prompt: async () => output ?? '',
+        promptStreaming: async function* () {
+          yield output ?? '';
+        },
+        destroy: () => undefined,
+      }),
+    });
+  }
+
+  it('stores the draft as a labelled generated block', async () => {
+    stubModel('available', 'A first draft about normalization.');
+
+    const result = (await handleMessage({
+      type: 'compose-draft',
+      kind: 'full-draft',
+      checklistId: null,
+      title: 'Assignment 2',
+    })) as { noteId: string; draft: string; label: string };
+
+    expect(result.draft).toContain('normalization');
+    expect(result.label).toMatch(/rewrite it in your own words/i);
+
+    const db = await openDatabase();
+    const notes = new Repository(db, STORE.notes, noteSchema);
+    const stored = await notes.get(result.noteId);
+
+    // The label travels with the data, not with whichever screen renders it.
+    expect(stored?.blocks[0]?.origin).toBe('generated');
+    expect(stored?.blocks[0]?.generatedBy).toBe('chrome-on-device');
+  });
+
+  it('surfaces claims the draft could not support', async () => {
+    stubModel('available', 'Redundancy falls by 40% [needs a source]. Updates get simpler.');
+    const result = (await handleMessage({
+      type: 'compose-draft',
+      kind: 'full-draft',
+      checklistId: null,
+      title: 'A2',
+    })) as { unsupported: string[] };
+    expect(result.unsupported).toHaveLength(1);
+    expect(result.unsupported[0]).toContain('40%');
+  });
+
+  it('explains an unavailable model instead of failing silently', async () => {
+    stubModel('unavailable');
+    const result = (await handleMessage({
+      type: 'compose-draft',
+      kind: 'outline',
+      checklistId: null,
+      title: 'A2',
+    })) as { noteId: string | null; reason?: string };
+
+    expect(result.noteId).toBeNull();
+    expect(result.reason).toMatch(/does not have an on-device model/i);
+  });
+
+  it('tells the student a download is needed rather than pretending to draft', async () => {
+    stubModel('downloadable');
+    const result = (await handleMessage({
+      type: 'compose-draft',
+      kind: 'outline',
+      checklistId: null,
+      title: 'A2',
+    })) as { noteId: string | null; reason?: string };
+    expect(result.noteId).toBeNull();
+    expect(result.reason).toMatch(/download/i);
+  });
+
+  it('reports a generation failure without leaving a half-written note', async () => {
+    vi.stubGlobal('LanguageModel', {
+      availability: async () => 'available',
+      create: async () => ({
+        prompt: async () => {
+          throw new Error('Model ran out of context.');
+        },
+        promptStreaming: async function* () {},
+        destroy: () => undefined,
+      }),
+    });
+
+    const result = (await handleMessage({
+      type: 'compose-draft',
+      kind: 'full-draft',
+      checklistId: null,
+      title: 'A2',
+    })) as { noteId: string | null; reason?: string };
+
+    expect(result.noteId).toBeNull();
+    expect(result.reason).toMatch(/ran out of context/i);
+
+    const db = await openDatabase();
+    const notes = new Repository(db, STORE.notes, noteSchema);
+    expect((await notes.all()).records).toHaveLength(0);
+  });
+
+  it('reports model availability for the panel', async () => {
+    stubModel('available');
+    const status = (await handleMessage({ type: 'model-status' })) as { availability: string };
+    expect(status.availability).toBe('available');
+  });
+});

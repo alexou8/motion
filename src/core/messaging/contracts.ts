@@ -111,6 +111,24 @@ export const toggleRequirementSchema = z.object({
   done: z.boolean(),
 });
 
+/**
+ * Draft coursework for the student to review. The result is always stored as a
+ * `generated` note block and always carries its label; there is no path that
+ * produces unlabelled text.
+ */
+export const composeDraftSchema = z.object({
+  type: z.literal('compose-draft'),
+  kind: z.enum(['outline', 'full-draft', 'section', 'discussion-reply', 'revision']),
+  checklistId: z.string().min(1).nullable().default(null),
+  title: boundedString(LIMITS.title),
+  /** The student's existing text, when revising. Never stored. */
+  existingDraft: boundedString(LIMITS.text).optional(),
+  studentDirection: boundedString(2_000).optional(),
+  targetWords: z.number().int().min(50).max(5_000).optional(),
+});
+
+export const modelStatusSchema = z.object({ type: z.literal('model-status') });
+
 export const correctTaskSchema = z.object({
   type: z.literal('correct-task'),
   taskId: z.string().min(1),
@@ -132,6 +150,8 @@ export const messageSchema = z.discriminatedUnion('type', [
   buildChecklistSchema,
   reviewDraftSchema,
   toggleRequirementSchema,
+  composeDraftSchema,
+  modelStatusSchema,
 ]);
 export type Message = z.infer<typeof messageSchema>;
 export type MessageType = Message['type'];
@@ -153,6 +173,8 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'build-checklist': ['extension-ui'],
   'review-draft': ['extension-ui'],
   'toggle-requirement': ['extension-ui'],
+  'compose-draft': ['extension-ui'],
+  'model-status': ['extension-ui'],
 };
 
 export function maySend(type: MessageType, role: SenderRole): boolean {

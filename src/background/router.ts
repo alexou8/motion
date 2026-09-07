@@ -8,7 +8,19 @@ import {
   EXTRACTION_VERSION,
   type PageContent,
 } from '@/core/domain';
-import { deriveRequirements, reviewDraft, summarize, toRequirements } from '@/core/assist';
+import {
+  composeDraftPrompt,
+  deriveRequirements,
+  GENERATED_LABEL,
+  reviewDraft,
+  summarize,
+  toRequirements,
+  unsupportedClaims,
+} from '@/core/assist';
+import {
+  ChromeLanguageModelCapability,
+  explainAvailability,
+} from '@/platform/languageModel';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
@@ -62,6 +74,10 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleReviewDraft(message);
     case 'toggle-requirement':
       return handleToggleRequirement(message);
+    case 'compose-draft':
+      return handleComposeDraft(message);
+    case 'model-status':
+      return handleModelStatus();
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
   }
@@ -309,6 +325,106 @@ async function handleToggleRequirement(
     updatedAt: new Date().toISOString(),
   });
   return { updated: true };
+}
+
+/**
+ * Drafts coursework for the student to read, check and rewrite.
+ *
+ * The result is stored as a note block with `origin: 'generated'` and its
+ * label, so the fact that Motion wrote it travels with the text rather than
+ * living in whichever screen happens to be rendering it. Nothing here posts,
+ * submits, or fills anything in — the draft lands in the student's workspace
+ * and stops.
+ */
+async function handleComposeDraft(
+  message: Extract<Message, { type: 'compose-draft' }>,
+): Promise<{
+  noteId: string | null;
+  draft: string;
+  label: string;
+  unsupported: string[];
+  reason?: string;
+}> {
+  const model = new ChromeLanguageModelCapability();
+  const availability = await model.availability();
+  if (availability !== 'available') {
+    return {
+      noteId: null,
+      draft: '',
+      label: '',
+      unsupported: [],
+      reason: explainAvailability(availability),
+    };
+  }
+
+  const db = await openDatabase();
+  const checklists = new Repository(db, STORE.checklists, checklistSchema);
+  const noteRepo = new Repository(db, STORE.notes, noteSchema);
+
+  const checklist = message.checklistId ? await checklists.get(message.checklistId) : null;
+  const courseId = checklist?.courseId ?? (await currentCourseId());
+  const allNotes = await noteRepo.all();
+  const relevantNotes = allNotes.records.filter((note) => note.courseId === courseId);
+
+  const composed = composeDraftPrompt({
+    kind: message.kind,
+    title: message.title,
+    requirements: checklist?.items ?? [],
+    notes: relevantNotes,
+    ...(message.existingDraft ? { existingDraft: message.existingDraft } : {}),
+    ...(message.studentDirection ? { studentDirection: message.studentDirection } : {}),
+    ...(message.targetWords ? { targetWords: message.targetWords } : {}),
+  });
+
+  let draft: string;
+  try {
+    draft = await model.generate({
+      instruction: composed.instruction,
+      context: composed.context,
+      ...(composed.targetWords ? { targetWords: composed.targetWords } : {}),
+    });
+  } catch (error) {
+    return {
+      noteId: null,
+      draft: '',
+      label: '',
+      unsupported: [],
+      reason: error instanceof Error ? error.message : 'Drafting failed.',
+    };
+  }
+
+  const now = new Date().toISOString();
+  const noteId = crypto.randomUUID();
+  await noteRepo.put({
+    id: noteId,
+    courseId: courseId ?? null,
+    taskId: checklist?.taskId ?? null,
+    title: `Draft — ${message.title}`.slice(0, 200),
+    tags: ['draft'],
+    blocks: [
+      {
+        id: crypto.randomUUID(),
+        origin: 'generated',
+        text: draft,
+        generatedBy: 'chrome-on-device',
+        createdAt: now,
+      },
+    ],
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  return {
+    noteId,
+    draft,
+    label: GENERATED_LABEL,
+    unsupported: unsupportedClaims(draft),
+  };
+}
+
+async function handleModelStatus(): Promise<{ availability: string; explanation: string }> {
+  const availability = await new ChromeLanguageModelCapability().availability();
+  return { availability, explanation: explainAvailability(availability) };
 }
 
 /** Asks the content script for the current page's content, once. */
