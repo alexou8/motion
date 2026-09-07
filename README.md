@@ -85,18 +85,18 @@ npm run build     # emits dist/
 
 ### Install it in Chrome
 
-**Without building anything.** Every push and pull request produces a build you
-can download:
+**Download the latest merged build:** [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/latest/download/motion-extension-latest.zip)
 
-1. Open the repository's **Actions** tab and pick the most recent **Build** run.
-2. Download the `motion-extension-<sha>` artifact from the Artifacts section.
-3. Unzip it.
-4. Open `chrome://extensions` and turn on **Developer mode**.
-5. Choose **Load unpacked** and select the unzipped folder.
-6. Open a D2L or MyLearningSpace course page and click the Motion icon.
+This download is refreshed after every pull request merged into `main`, but only
+after the extension passes its type checks, tests, build, and package validation.
 
-Tagged releases (`v*`) also attach a zip to the Releases page, which does not
-expire the way workflow artifacts do.
+1. Download and unzip `motion-extension-latest.zip`.
+2. Open `chrome://extensions` and turn on **Developer mode**.
+3. Choose **Load unpacked** and select the unzipped folder.
+4. Open a D2L or MyLearningSpace course page and click the Motion icon.
+
+Builds for open pull requests remain available from GitHub Actions. Tagged
+version releases (`v*`) continue to provide permanent versioned downloads.
 
 **From a checkout:**
 
