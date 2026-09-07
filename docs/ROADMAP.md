@@ -65,6 +65,6 @@ reliable end to end.
 ## Explicitly out of scope for the MVP
 
 Assignment submission, graded-quiz actions, and deletion of LMS data are not
-"later" — they are [prohibited](ACADEMIC_INTEGRITY.md). Discussion posting waits
+"later" — they are refused in code. Discussion posting waits
 for a production-ready approval path. No accounts, no sync, no backend
 ([ADR 0002](adr/0002-local-first-no-backend.md)).

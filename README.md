@@ -8,10 +8,11 @@ pages you are already authorized to see, pulls out what is due and what is asked
 of you, keeps notes linked back to their source, and runs longer jobs in the
 background while showing you every step it takes.
 
-> **Motion is not an answer-submission bot.** It will not complete assessed work,
-> answer a graded quiz, or submit anything on your behalf. Those are not features
-> that were left out of this release — they are outside the product. See
-> [`docs/ACADEMIC_INTEGRITY.md`](docs/ACADEMIC_INTEGRITY.md).
+> **Motion helps you do the work; it does not do it for you.** It explains what
+> an assignment asks for, turns instructions into a checklist, compares your
+> draft against the rubric, and builds practice questions. It will not submit
+> your work or act inside a graded attempt — the boundary is enforced in code
+> and covered by tests, not just stated here.
 
 ## Status
 
@@ -101,7 +102,6 @@ Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 | [`docs/DATA.md`](docs/DATA.md) | Data model, provenance, retention, deletion |
 | [`docs/SECURITY.md`](docs/SECURITY.md) | Trust boundaries and secure-development rules |
 | [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md) | Threats, controls, residual risk |
-| [`docs/ACADEMIC_INTEGRITY.md`](docs/ACADEMIC_INTEGRITY.md) | Allowed, gated, restricted, prohibited |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phased milestones with evidence-based status |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`SKILLS.md`](SKILLS.md) | Installed agent skills and when they apply |

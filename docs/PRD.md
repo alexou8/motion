@@ -19,12 +19,17 @@ accessible workflows are a first-class case, not an afterthought.
 TAs organizing course information, and students on institution-specific LMS
 deployments such as Laurier's MyLearningSpace.
 
-## What Motion is not
+## Where Motion helps, and where it stops
 
-Not an answer-submission bot. It does not complete assessed work, answer graded
-quizzes, or submit on a student's behalf — see
-[`ACADEMIC_INTEGRITY.md`](ACADEMIC_INTEGRITY.md). Marketing never claims
-otherwise.
+Motion assists with coursework directly: explaining what an assignment asks
+for, extracting grading criteria, building a checklist, identifying missing
+sections in a draft, suggesting an outline, comparing a draft against a rubric,
+checking citations and formatting, explaining an error in code or a
+calculation, and generating practice questions before an assessment.
+
+It stops at submitting assessed work and at acting inside a graded attempt.
+That boundary is enforced in `src/core/policy` and covered by tests rather than
+asserted in prose.
 
 ## MVP scope
 

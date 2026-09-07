@@ -37,8 +37,12 @@ change and why it was made, and stop there.
 
 ## Safety rules that are not negotiable
 
-- Motion never submits assessed work, acts within a graded attempt, or modifies
-  remote course data. See `docs/ACADEMIC_INTEGRITY.md`.
+- Motion assists with coursework generously: explaining requirements, building
+  checklists, comparing drafts to a rubric, drafting for the student to edit,
+  and generating practice questions.
+- It never submits assessed work, acts within a graded attempt, or modifies
+  remote course data. That boundary lives in `src/core/policy` and is covered
+  by tests; do not weaken it without the user explicitly asking.
 - Never weaken, skip, or delete a test to make a build pass.
 - Never broaden Chrome permissions to work around a bug.
 - Never commit real course content, student names, identifiers, grades, cookies
