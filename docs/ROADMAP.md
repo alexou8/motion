@@ -49,11 +49,15 @@ steps). See [`THREAT_MODEL.md`](THREAT_MODEL.md) T7 and T8.
 
 ## Phase D — Learning assistance
 
-| Item | Status |
-| --- | --- |
-| Requirement extraction → checklist | **Not started** — schema exists |
-| Rubric review, study guides, practice questions | **Not started** — requires a model gateway, out of MVP |
-| AI labelling and minimal-context requests | **Partial** — note blocks already separate captured / student / generated |
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Requirement extraction → checklist | **Done** | `src/core/assist/requirements.ts`; source-linked, refuses to invent items |
+| Draft composition (outline, draft, section, reply, revision) | **Done** | `src/core/assist/compose.ts` + on-device model; [ADR 0004](adr/0004-on-device-model.md) |
+| Draft-vs-requirements review | **Done** | `src/core/assist/draftReview.ts`; reports "no evidence", not "missing" |
+| AI labelling | **Done** | `origin: 'generated'` stored with the text, not applied by the UI |
+| Prompt-injection defence | **Done** | Context fenced, delimiters neutralised, instruction last; tested with a planted directive |
+| Practice questions and study guides | **Not started** | — |
+| Citation and formatting checks | **Partial** | Numeric constraints (word counts) checked exactly; citation style not yet |
 | Assessment restriction enforcement | **Done** | `src/core/policy/assessment.ts`, tested |
 
 ## Phase E — Expansion

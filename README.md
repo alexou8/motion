@@ -8,11 +8,10 @@ pages you are already authorized to see, pulls out what is due and what is asked
 of you, keeps notes linked back to their source, and runs longer jobs in the
 background while showing you every step it takes.
 
-> **Motion helps you do the work; it does not do it for you.** It explains what
-> an assignment asks for, turns instructions into a checklist, compares your
-> draft against the rubric, and builds practice questions. It will not submit
-> your work or act inside a graded attempt — the boundary is enforced in code
-> and covered by tests, not just stated here.
+> Motion takes coursework all the way to a draft you review — then stops. It
+> does not submit your work and does not act inside a graded quiz attempt. You
+> read it, rewrite it in your own words, and hand it in yourself. That boundary
+> is enforced in code and covered by tests, not just stated here.
 
 ## Status
 
@@ -35,6 +34,15 @@ Motion knows what an assignment page is.
 
 - **Reads the LMS you are on.** D2L Brightspace first, including
   institution deployments such as Laurier's MyLearningSpace.
+- **Turns an assignment into a checklist.** Every item traces back to the
+  sentence in the instructions it came from. When nothing on the page is
+  actually stated as a requirement, Motion says so rather than inventing one.
+- **Drafts the work.** Outlines, first drafts, sections, discussion replies,
+  revisions — written from your requirements and your own notes, on-device.
+  Anything the material could not support comes back marked
+  `[needs a source]` so you can see exactly what to check.
+- **Checks your draft against the rubric** before you hand it in, and tells you
+  where it compared wording only rather than pretending to grade you.
 - **Extracts deadlines with their receipts.** Every due date keeps the raw text
   it came from, the page it came from, when it was read, and how confident the
   parser was. Anything ambiguous is shown as needing review rather than
@@ -87,8 +95,12 @@ Motion requests the narrowest permissions that make the current feature work,
 and the supported domains are visible in the extension's options. It stores data
 locally in IndexedDB, makes no network requests of its own, and bundles its
 fonts rather than loading them from a CDN — so using Motion does not tell a
-third party that you are using it. It never stores passwords or session tokens,
-and never bypasses institutional authentication.
+third party that you are using it.
+
+Drafting runs on Chrome's built-in on-device model, so your coursework, notes
+and drafts are never sent anywhere ([ADR 0004](docs/adr/0004-on-device-model.md)).
+Motion never stores passwords or session tokens, and never bypasses
+institutional authentication.
 
 Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
