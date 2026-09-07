@@ -83,11 +83,33 @@ npm run typecheck
 npm run build     # emits dist/
 ```
 
-To load the extension:
+### Install it in Chrome
 
-1. `npm run build`
-2. Open `chrome://extensions`, enable **Developer mode**
-3. **Load unpacked** → select `dist/`
+**Without building anything.** Every push and pull request produces a build you
+can download:
+
+1. Open the repository's **Actions** tab and pick the most recent **Build** run.
+2. Download the `motion-extension-<sha>` artifact from the Artifacts section.
+3. Unzip it.
+4. Open `chrome://extensions` and turn on **Developer mode**.
+5. Choose **Load unpacked** and select the unzipped folder.
+6. Open a D2L or MyLearningSpace course page and click the Motion icon.
+
+Tagged releases (`v*`) also attach a zip to the Releases page, which does not
+expire the way workflow artifacts do.
+
+**From a checkout:**
+
+```bash
+npm run dist     # build + package
+```
+
+That writes `motion-extension-<version>.zip`. Unzip it and load the folder as
+above, or load `dist/` directly with **Load unpacked**.
+
+Chrome 116 or newer. Drafting additionally needs Chrome's built-in on-device
+model — Motion says so plainly if it is unavailable rather than failing when you
+press the button.
 
 ## Privacy
 

@@ -2,7 +2,7 @@
   "name": "motion-extension",
   "version": "0.1.0",
   "private": true,
-  "description": "Motion: From Coursework to Completion — an asynchronous learning workspace for LMS coursework.",
+  "description": "Motion: From Coursework to Completion \u2014 an asynchronous learning workspace for LMS coursework.",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -17,7 +17,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src --ext .ts,.tsx",
-    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"docs/**/*.md\""
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"docs/**/*.md\"",
+    "package": "node scripts/package.mjs",
+    "dist": "npm run build && npm run package"
   },
   "dependencies": {
     "clsx": "^2.1.1",

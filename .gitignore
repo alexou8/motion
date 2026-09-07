@@ -8,3 +8,6 @@ coverage/
 .vite/
 test-results/
 playwright-report/
+
+# Packaged extension builds
+motion-extension-*.zip

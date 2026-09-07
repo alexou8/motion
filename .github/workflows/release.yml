@@ -1,0 +1,47 @@
+name: Release
+
+# Pushing a tag like v0.1.0 publishes a Release with the packaged extension
+# attached, giving a stable download link that does not expire the way a
+# workflow artifact does.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+      - run: npm run package
+
+      - name: Publish the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: motion-extension-*.zip
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            1. Download `motion-extension-*.zip` below and unzip it.
+            2. Open `chrome://extensions` and turn on **Developer mode**.
+            3. Choose **Load unpacked** and select the unzipped folder.
+            4. Open a D2L or MyLearningSpace course page and click the Motion icon.
+
+            Requires Chrome 116 or newer. Drafting additionally needs Chrome's
+            built-in on-device model; Motion says so plainly if it is unavailable
+            rather than failing when you press the button.
+
+            This is an unpacked developer build, not a Chrome Web Store listing.
