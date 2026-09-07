@@ -1,0 +1,70 @@
+# Roadmap
+
+Status is evidence-based. **Done** means implemented *and* covered by tests that
+run in `npm test`. **Partial** names exactly what is missing. Nothing is marked
+done because it was designed or documented.
+
+Last reconciled against the tree: see `git log` for the most recent commit.
+
+## Phase A — Foundation
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Repository and tooling | **Done** | Vite 8 + CRXJS, strict TS, Vitest; `npm audit` clean; [ADR 0001](adr/0001-build-tooling.md) |
+| Documentation and ADRs | **Done** | `docs/`, three ADRs, `AGENTS.md`, `CLAUDE.md` |
+| Design-system foundation | **Done** | `src/ui/tokens.css`; WCAG AA enforced by `tokens.contrast.test.ts` |
+| Local persistence + migrations | **Done** | `src/core/storage`; migration replay, corrupted-row recovery tested |
+| Risk, approval and assessment policy | **Done** | `src/core/policy`; 21 tests incl. forged-approval and replay cases |
+| Page detection | **Partial** | Adapter implemented; realistic-markup rewrite in progress |
+| Typed messaging + sender authorization | **Not started** | Design settled in `ARCHITECTURE.md`, `THREAT_MODEL.md` T2 |
+| Extension shell (worker, panel, popup) | **Not started** | — |
+| Basic tab grouping | **Not started** | — |
+
+## Phase B — Course organization
+
+| Item | Status |
+| --- | --- |
+| D2L adapter and synthetic fixtures | **Partial** — being rewritten onto route-based selectors after the first pass was found to depend on invented `data-*` attributes |
+| MyLearningSpace (institution deployment) support | **Partial** — host matching and policy tests pass; a dedicated skin fixture and equivalence test are the current work |
+| Deadline extraction with provenance and confidence | **Partial** — domain model and parser exist; not yet wired to storage |
+| Course dashboard | **Not started** |
+| Task correction and archive | **Not started** — model supports it (`corrections`, `studentEdited`) |
+| Source-linked notes | **Not started** — schema exists |
+
+## Phase C — Workflow execution
+
+| Item | Status |
+| --- | --- |
+| State machine with durable checkpoints | **Not started** — design revised after review; see below |
+| Step claiming via compare-and-swap lease | **Not started** |
+| Durable intents (`prepared → applied → reconciled`) | **Not started** |
+| Pause, resume, retry, cancel | **Not started** |
+| Idempotent tab and tab-group operations | **Not started** |
+| Worker suspension and restart tests | **Not started** |
+
+An earlier engine draft was discarded before it shipped: it used an in-memory
+concurrency guard and a persisted cursor *index*, both of which fail exactly
+when they matter (a worker restart, and an extension update that reorders
+steps). See [`THREAT_MODEL.md`](THREAT_MODEL.md) T7 and T8.
+
+## Phase D — Learning assistance
+
+| Item | Status |
+| --- | --- |
+| Requirement extraction → checklist | **Not started** — schema exists |
+| Rubric review, study guides, practice questions | **Not started** — requires a model gateway, out of MVP |
+| AI labelling and minimal-context requests | **Partial** — note blocks already separate captured / student / generated |
+| Assessment restriction enforcement | **Done** | `src/core/policy/assessment.ts`, tested |
+
+## Phase E — Expansion
+
+Not started, and deliberately gated: Canvas, Moodle, Blackboard and any backend
+each require an ADR first. Multi-LMS work does not begin until the D2L path is
+reliable end to end.
+
+## Explicitly out of scope for the MVP
+
+Assignment submission, graded-quiz actions, and deletion of LMS data are not
+"later" — they are [prohibited](ACADEMIC_INTEGRITY.md). Discussion posting waits
+for a production-ready approval path. No accounts, no sync, no backend
+([ADR 0002](adr/0002-local-first-no-backend.md)).
