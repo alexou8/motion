@@ -1,0 +1,67 @@
+name: Publish merged PR build
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+concurrency:
+  group: publish-latest-main-build
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Package
+        run: |
+          npm run package
+          mv motion-extension-*.zip motion-extension-latest.zip
+
+      - name: Verify package contents
+        run: |
+          unzip -t motion-extension-latest.zip
+          unzip -p motion-extension-latest.zip manifest.json > /tmp/motion-manifest.json
+          node -e "const m = require('/tmp/motion-manifest.json'); if (m.manifest_version !== 3) process.exit(1); console.log('Verified Manifest V3 package');"
+
+      - name: Publish latest main build
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: main-build-${{ github.event.pull_request.merge_commit_sha }}
+          target_commitish: ${{ github.event.pull_request.merge_commit_sha }}
+          name: Motion main build (PR #${{ github.event.pull_request.number }})
+          make_latest: true
+          files: motion-extension-latest.zip
+          body: |
+            Chrome extension build from merged PR #${{ github.event.pull_request.number }}.
+
+            1. Download `motion-extension-latest.zip` below and unzip it.
+            2. Open `chrome://extensions` and enable Developer mode.
+            3. Choose Load unpacked and select the unzipped folder.
+
+            Source commit: `${{ github.event.pull_request.merge_commit_sha }}`
