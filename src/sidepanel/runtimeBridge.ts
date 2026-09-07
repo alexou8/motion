@@ -34,6 +34,50 @@ async function ask(message: unknown): Promise<WorkerResponse> {
   }
 }
 
+/**
+ * Translates a panel command into the worker's message vocabulary.
+ *
+ * The two are kept separate on purpose: the panel speaks in terms of what the
+ * student did, and the worker in terms of what it will do. Anything requiring a
+ * tab id is resolved here from the live active tab rather than trusted from the
+ * command, so a view cannot name a tab it has no business touching.
+ */
+async function toWorkerMessage(
+  command: MotionCommand,
+  state: PanelState,
+): Promise<Record<string, unknown> | null> {
+  switch (command.type) {
+    case 'build-checklist': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id === undefined) return null;
+      return { type: 'build-checklist', tabId: tab.id, taskId: null };
+    }
+    case 'toggle-requirement':
+      return {
+        type: 'toggle-requirement',
+        checklistId: command.checklistId,
+        requirementId: command.requirementId,
+        done: command.done,
+      };
+    case 'compose-draft':
+      return {
+        type: 'compose-draft',
+        kind: command.kind,
+        checklistId: command.checklistId ?? null,
+        title: command.title || state.page.title || 'Coursework',
+        ...(command.existingDraft ? { existingDraft: command.existingDraft } : {}),
+        ...(command.studentDirection ? { studentDirection: command.studentDirection } : {}),
+        ...(command.targetWords ? { targetWords: command.targetWords } : {}),
+      };
+    case 'review-draft':
+      return { type: 'review-draft', checklistId: command.checklistId, draft: command.draft };
+    case 'model-status':
+      return { type: 'model-status' };
+    default:
+      return null;
+  }
+}
+
 export function createRuntimeBridge(): MotionBridge {
   let state: PanelState = EMPTY_PANEL_STATE;
   const listeners = new Set<Listener>();
@@ -92,8 +136,19 @@ export function createRuntimeBridge(): MotionBridge {
     if (changeInfo.status === 'complete' || changeInfo.url) void refresh();
   });
 
+  /** Sends a command and returns the worker's answer for the panel to render. */
+  const request = async <T,>(command: MotionCommand): Promise<T | null> => {
+    const payload = await toWorkerMessage(command, state);
+    if (!payload) return null;
+    const response = await ask(payload);
+    if (!response.ok) return null;
+    await refresh();
+    return (response.result as T) ?? null;
+  };
+
   return {
     getState: () => state,
+    request,
 
     subscribe: (listener) => {
       listeners.add(listener);

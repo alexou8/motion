@@ -129,6 +129,11 @@ export const composeDraftSchema = z.object({
 
 export const modelStatusSchema = z.object({ type: z.literal('model-status') });
 
+export const getChecklistSchema = z.object({
+  type: z.literal('get-checklist'),
+  checklistId: z.string().min(1),
+});
+
 export const correctTaskSchema = z.object({
   type: z.literal('correct-task'),
   taskId: z.string().min(1),
@@ -152,6 +157,7 @@ export const messageSchema = z.discriminatedUnion('type', [
   toggleRequirementSchema,
   composeDraftSchema,
   modelStatusSchema,
+  getChecklistSchema,
 ]);
 export type Message = z.infer<typeof messageSchema>;
 export type MessageType = Message['type'];
@@ -175,6 +181,7 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'toggle-requirement': ['extension-ui'],
   'compose-draft': ['extension-ui'],
   'model-status': ['extension-ui'],
+  'get-checklist': ['extension-ui'],
 };
 
 export function maySend(type: MessageType, role: SenderRole): boolean {

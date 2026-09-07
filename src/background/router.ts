@@ -78,6 +78,11 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleComposeDraft(message);
     case 'model-status':
       return handleModelStatus();
+    case 'get-checklist': {
+      const db = await openDatabase();
+      const checklists = new Repository(db, STORE.checklists, checklistSchema);
+      return checklists.get(message.checklistId);
+    }
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
   }
