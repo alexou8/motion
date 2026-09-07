@@ -22,16 +22,25 @@ import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './reco
 // --- Registered synchronously. Do not move these into an async function. ---
 
 chrome.runtime.onInstalled.addListener((details) => {
-  // Opening the panel from the toolbar icon requires this; a `default_popup`
-  // in the manifest would silently disable it.
-  void chrome.sidePanel
-    .setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((error: unknown) => console.warn('Motion: could not set panel behaviour', error));
-
   if (details.reason === 'update') {
     // An update can change workflow definitions; recovery decides per version
     // whether an in-flight workflow is upgraded or cancelled.
     void recoverWorkflows();
+  }
+});
+
+// Register the action directly instead of relying on setPanelBehavior state
+// written during installation. Development reloads can replace the worker
+// without replaying onInstalled, while this listener exists on every start.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (tab.windowId === undefined) return;
+  try {
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+  } catch (error) {
+    console.warn(
+      'Motion: could not open the side panel —',
+      error instanceof Error ? error.message : error,
+    );
   }
 });
 
