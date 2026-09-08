@@ -64,6 +64,9 @@ beforeEach(async () => {
         set: vi.fn(async (values: Record<string, unknown>) => {
           Object.assign(sessionStore, values);
         }),
+        remove: vi.fn(async (key: string) => {
+          delete sessionStore[key];
+        }),
         clear: vi.fn(async () => {
           sessionStore = {};
         }),
@@ -663,5 +666,34 @@ describe('the connection state the panel receives', () => {
     await handleMessage(observation('course-home'));
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
     expect(state.connection).toBe('supported');
+  });
+});
+
+describe('an observation from a restricted page', () => {
+  it('stores nothing and drops the previous page rather than leaving it on screen', async () => {
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+      pageType: 'course-home',
+      title: 'Course',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    });
+
+    const result = (await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=999999',
+      pageType: 'quiz-attempt',
+      title: 'Quiz',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: true,
+    })) as { stored: boolean };
+
+    expect(result).toEqual({ stored: false });
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('idle');
+    expect(state.page.url).toBeNull();
   });
 });

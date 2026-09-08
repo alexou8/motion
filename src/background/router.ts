@@ -91,11 +91,20 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
 /**
  * A page observation is a signal, not data to keep. Nothing from a page marked
  * restricted is stored — that is the point of restricted mode.
+ *
+ * Storing nothing is not the same as leaving the previous observation in place:
+ * that showed the last course page's workspace over a graded attempt, which is
+ * both stale and the wrong thing to offer there. The stored observation is
+ * dropped instead, so the panel falls back to its idle state. This writes
+ * strictly less than before; nothing about the attempt is recorded.
  */
 async function handlePageObserved(
   message: Extract<Message, { type: 'page-observed' }>,
 ): Promise<{ stored: boolean }> {
-  if (message.restricted) return { stored: false };
+  if (message.restricted) {
+    await chrome.storage.session.remove('lastObservation');
+    return { stored: false };
+  }
   await chrome.storage.session.set({
     lastObservation: {
       url: message.url,

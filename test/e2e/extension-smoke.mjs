@@ -209,6 +209,18 @@ try {
     `got ${afterSpa?.result?.page?.pageType}`,
   );
 
+  // A graded attempt must not leave the previous course page on screen.
+  await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(900);
+  await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(900);
+  const duringAttempt = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  check(
+    'a graded attempt clears the previous page rather than showing it',
+    duringAttempt?.result?.connection === 'idle' && duringAttempt?.result?.page?.url === null,
+    `connection ${duringAttempt?.result?.connection}, url ${duringAttempt?.result?.page?.url}`,
+  );
+
   // The panel must name the state it is in, not fall back to the workspace.
   for (const [path, connection] of [
     ['/d2l/lp/whatever/unknown', 'unsupported'],
