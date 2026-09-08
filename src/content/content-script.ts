@@ -14,6 +14,11 @@ import type { Message } from '@/core/messaging';
 const EXTRACT_REQUEST = 'motion:extract';
 const CONTENT_REQUEST = 'motion:extract-content';
 
+/** Milliseconds of DOM quiet before a page counts as rendered. */
+const SETTLE_MS = 400;
+
+let lastObservation = '';
+
 function send(message: Message): void {
   // A failure here means the worker is asleep or the panel is closed; neither
   // is worth surfacing to the student on a page they are reading.
@@ -51,6 +56,14 @@ function observe(): void {
     pageTitle: document.title,
     visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
   });
+
+  // D2L renders its web components after document_idle, so the same page is
+  // observed several times as it settles. Only a change in what Motion would
+  // show is worth a message; repeating the previous observation would churn
+  // the panel and the worker for no new information.
+  const signature = [url, detection.pageType, detection.confidence, assessment.restricted, document.title].join('\u0000');
+  if (signature === lastObservation) return;
+  lastObservation = signature;
 
   send({
     type: 'page-observed',
@@ -168,3 +181,26 @@ setInterval(() => {
   lastUrl = url;
   observe();
 }, 1_000);
+
+/**
+ * `document_idle` fires before D2L's web components have rendered, so the first
+ * look at an assignment list can see an empty skeleton. Rather than guess at a
+ * delay, watch the document and re-observe once it has been quiet for a moment.
+ * `observe()` is a pure read and reports only when the observation changed, so
+ * running it again is free when the page was already settled.
+ */
+let settleTimer: ReturnType<typeof setTimeout> | undefined;
+const settleObserver = new MutationObserver(() => {
+  if (settleTimer !== undefined) clearTimeout(settleTimer);
+  settleTimer = setTimeout(observe, SETTLE_MS);
+});
+if (document.documentElement) {
+  settleObserver.observe(document.documentElement, { childList: true, subtree: true });
+}
+
+// Coming back through the back/forward cache does not re-run the script, and
+// the service worker may have been suspended meanwhile: re-announce the page.
+window.addEventListener('pageshow', () => {
+  lastObservation = '';
+  observe();
+});
