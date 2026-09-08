@@ -594,3 +594,43 @@ describe('drafting coursework for review', () => {
     expect(status.availability).toBe('available');
   });
 });
+
+describe('talking to the content script', () => {
+  it('addresses the main frame explicitly', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    send.mockImplementation(async () => undefined);
+
+    await handleMessage({ type: 'request-extraction', tabId: 11 });
+
+    expect(send).toHaveBeenCalledWith(11, { type: 'motion:extract' }, { frameId: 0 });
+  });
+
+  it('retries a listener that has not registered yet before giving up', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    let calls = 0;
+    send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('Could not establish connection. Receiving end does not exist.');
+      return undefined;
+    });
+
+    const result = (await handleMessage({ type: 'request-extraction', tabId: 11 })) as { requested: boolean };
+
+    expect(calls).toBe(2);
+    expect(result).toEqual({ requested: true });
+    send.mockImplementation(async () => undefined);
+  });
+
+  it('reports that extraction was not requested when no content script answers', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    send.mockRejectedValue(new Error('Could not establish connection. Receiving end does not exist.'));
+
+    const result = (await handleMessage({ type: 'request-extraction', tabId: 11 })) as { requested: boolean };
+
+    expect(result).toEqual({ requested: false });
+    send.mockImplementation(async () => undefined);
+  });
+});

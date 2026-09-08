@@ -432,12 +432,49 @@ async function handleModelStatus(): Promise<{ availability: string; explanation:
   return { availability, explanation: explainAvailability(availability) };
 }
 
+/** The only frame Motion reads: `all_frames` is false and stays false. */
+const MAIN_FRAME_ID = 0;
+
+/** Attempts, and the pause between them, when reaching the content script. */
+const CONTENT_SCRIPT_ATTEMPTS = 3;
+const CONTENT_SCRIPT_RETRY_MS = 150;
+
+/**
+ * Sends one message to the content script in the tab's main frame.
+ *
+ * Two browser facts shape this:
+ *
+ *   1. The script is declared with `all_frames: false`, and the authorizer
+ *      accepts observations from the main frame only. A tab-wide send is not
+ *      reliably delivered to it -- in Chrome 141 it fails with "Receiving end
+ *      does not exist" while the script is running -- so frame 0 is addressed
+ *      explicitly.
+ *   2. The bundled script registers its listener after an async import, so for
+ *      a moment after a page loads there is no receiver. A page opened before
+ *      the extension has none at all. Retrying a couple of times separates
+ *      "not ready yet" from "not there", and the caller is told which.
+ */
+async function sendToContentScript(tabId: number, message: { type: string; requestId?: string }): Promise<unknown> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CONTENT_SCRIPT_ATTEMPTS; attempt += 1) {
+    try {
+      return await chrome.tabs.sendMessage(tabId, message, { frameId: MAIN_FRAME_ID });
+    } catch (error) {
+      lastError = error;
+      if (attempt < CONTENT_SCRIPT_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, CONTENT_SCRIPT_RETRY_MS));
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Asks the content script for the current page's content, once. */
 async function askContentScript(tabId: number): Promise<PageContent | null> {
   try {
-    const response = (await chrome.tabs.sendMessage(tabId, {
-      type: 'motion:extract-content',
-    })) as { content?: unknown } | undefined;
+    const response = (await sendToContentScript(tabId, { type: 'motion:extract-content' })) as
+      | { content?: unknown }
+      | undefined;
     const parsed = pageContentSchema.safeParse(response?.content);
     return parsed.success ? parsed.data : null;
   } catch {
@@ -454,10 +491,24 @@ async function currentCourseId(): Promise<string | null> {
 
 async function requestExtraction(tabId: number | undefined): Promise<{ requested: boolean }> {
   if (tabId === undefined) return { requested: false };
-  // The content script does the reading; the worker never scrapes a page.
-  await chrome.tabs.sendMessage(tabId, { type: 'motion:extract' }).catch(() => undefined);
-  return { requested: true };
+  try {
+    // The content script does the reading; the worker never scrapes a page.
+    await sendToContentScript(tabId, { type: 'motion:extract' });
+    return { requested: true };
+  } catch {
+    // No content script in the tab: the page loaded before the extension, or it
+    // is not a page Motion is injected into. Reporting success here left the
+    // panel waiting for a result that was never coming.
+    return { requested: false };
+  }
 }
+
+/**
+ * Stands in for a course with no external id. It cannot appear in a URL, so a
+ * course missing its id never matches the observed page by accident. (This was
+ * a literal NUL byte, which made the file read as binary to ordinary tools.)
+ */
+const NO_EXTERNAL_ID = '\u0000';
 
 /** Assembles everything the panel renders. */
 export async function buildPanelState(): Promise<PanelState> {
@@ -490,7 +541,7 @@ export async function buildPanelState(): Promise<PanelState> {
 
   const course =
     allCourses.records.find((candidate) =>
-      observation?.url ? observation.url.includes(candidate.externalId ?? ' ') : false,
+      observation?.url ? observation.url.includes(candidate.externalId ?? NO_EXTERNAL_ID) : false,
     ) ??
     allCourses.records[0] ??
     null;
