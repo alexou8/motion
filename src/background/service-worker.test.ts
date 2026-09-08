@@ -24,7 +24,7 @@ describe('service worker browser entry points', () => {
         open,
         setPanelBehavior: vi.fn(async () => undefined),
       },
-      tabs: { onUpdated: event() },
+      tabs: { onUpdated: event(), onRemoved: event() },
     });
 
     await import('./service-worker');

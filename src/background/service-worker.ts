@@ -16,7 +16,7 @@ import { resolveAdapter, supportedHosts } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
-import { handleMessage } from './router';
+import { handleMessage, forgetTab } from './router';
 import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './recovery';
 
 // --- Registered synchronously. Do not move these into an async function. ---
@@ -96,12 +96,23 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   void recoverWorkflows(workflowId);
 });
 
+/** A closed tab has no page for the panel to describe. */
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void forgetTab(tabId);
+});
+
 /**
  * A tab finishing navigation is a chance to notice work that stalled while the
  * worker was asleep. Stored state does not wake a worker on its own, so every
  * relevant inbound event doubles as a recovery trigger.
  */
-chrome.tabs.onUpdated.addListener((_tabId, changeInfo, tab) => {
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  // A tab that has started going somewhere else is no longer showing what it
+  // reported. Drop it now rather than describing the old page — including its
+  // URL, which a note would otherwise be filed against — until the new page
+  // reports itself.
+  if (changeInfo.url !== undefined) void forgetTab(tabId);
+
   if (changeInfo.status !== 'complete' || !tab.url) return;
   if (!resolveAdapter(tab.url)) return;
   void recoverWorkflows();

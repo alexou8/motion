@@ -192,3 +192,38 @@ describe('shape validation', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+describe('an extension page that lives in a tab', () => {
+  it('is recognised as extension UI even though it carries a tab id', () => {
+    const result = authorizeMessage(
+      { type: 'get-state' },
+      {
+        extensionId: RUNTIME_ID,
+        runtimeId: RUNTIME_ID,
+        tabId: 42,
+        senderUrl: `${EXTENSION_ORIGIN}/src/options/index.html`,
+        frameId: 0,
+      },
+      policy,
+    );
+    expect(result).toMatchObject({ ok: true, role: 'extension-ui' });
+  });
+
+  it('does not let a page whose URL merely starts with the origin string claim the role', () => {
+    const result = authorizeMessage(
+      { type: 'get-state' },
+      {
+        extensionId: RUNTIME_ID,
+        runtimeId: RUNTIME_ID,
+        tabId: 42,
+        senderUrl: `${EXTENSION_ORIGIN}.example.com/`,
+        frameId: 0,
+      },
+      policy,
+    );
+    // Not merely refused: it must not have been read as an extension page at
+    // all. A content-script role is what a look-alike origin should collapse to.
+    expect(result).toMatchObject({ ok: false });
+    expect((result as { reason: string }).reason).toContain('A content-script may not send');
+  });
+});

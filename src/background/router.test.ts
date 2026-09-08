@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** The tab the mocked browser reports as active. */
+const ACTIVE_TAB = 3;
 import {
   checklistSchema,
   courseTaskSchema,
   noteSchema,
   EXTRACTION_VERSION,
   type CourseTask,
+  type PageType,
 } from '@/core/domain';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
-import { handleMessage } from './router';
+import { forgetTab, handleMessage } from './router';
 
 /**
  * Exercises the worker's data handling through the same entry point the real
@@ -63,13 +67,21 @@ beforeEach(async () => {
         set: vi.fn(async (values: Record<string, unknown>) => {
           Object.assign(sessionStore, values);
         }),
+        remove: vi.fn(async (key: string) => {
+          delete sessionStore[key];
+        }),
         clear: vi.fn(async () => {
           sessionStore = {};
         }),
       },
       local: { clear: vi.fn(async () => undefined) },
     },
-    tabs: { sendMessage: vi.fn(async () => undefined) },
+    tabs: {
+      sendMessage: vi.fn(async () => undefined),
+      // The panel describes the active tab, so state building asks for it.
+      query: vi.fn(async () => [{ id: ACTIVE_TAB, active: true }]),
+      onRemoved: { addListener: vi.fn() },
+    },
     runtime: { id: 'test-extension-id' },
   });
 });
@@ -223,10 +235,12 @@ describe('restricted pages', () => {
       detectionConfidence: 'high',
       warnings: [],
       restricted: true,
-    })) as { stored: boolean };
+    }, ACTIVE_TAB)) as { stored: boolean };
 
     expect(result.stored).toBe(false);
-    expect(sessionStore['lastObservation']).toBeUndefined();
+    // A marker that the tab is restricted, and nothing else from the page.
+    const stored = sessionStore[`observation:${ACTIVE_TAB}`] as Record<string, unknown>;
+    expect(stored).toMatchObject({ restricted: true, url: null, title: '', warnings: [] });
   });
 
   it('records an ordinary page observation', async () => {
@@ -238,10 +252,11 @@ describe('restricted pages', () => {
       detectionConfidence: 'high',
       warnings: [],
       restricted: false,
-    })) as { stored: boolean };
+    }, ACTIVE_TAB)) as { stored: boolean };
 
     expect(result.stored).toBe(true);
-    expect(sessionStore['lastObservation']).toMatchObject({ pageType: 'course-home' });
+    const stored = sessionStore[`observation:${ACTIVE_TAB}`] as Record<string, unknown>;
+    expect(stored).toMatchObject({ pageType: 'course-home' });
   });
 });
 
@@ -592,5 +607,165 @@ describe('drafting coursework for review', () => {
     stubModel('available');
     const status = (await handleMessage({ type: 'model-status' })) as { availability: string };
     expect(status.availability).toBe('available');
+  });
+});
+
+describe('talking to the content script', () => {
+  it('addresses the main frame explicitly', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    send.mockImplementation(async () => undefined);
+
+    await handleMessage({ type: 'request-extraction', tabId: 11 });
+
+    expect(send).toHaveBeenCalledWith(11, { type: 'motion:extract' }, { frameId: 0 });
+  });
+
+  it('retries a listener that has not registered yet before giving up', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    let calls = 0;
+    send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('Could not establish connection. Receiving end does not exist.');
+      return undefined;
+    });
+
+    const result = (await handleMessage({ type: 'request-extraction', tabId: 11 })) as { requested: boolean };
+
+    expect(calls).toBe(2);
+    expect(result).toEqual({ requested: true });
+    send.mockImplementation(async () => undefined);
+  });
+
+  it('reports that extraction was not requested when no content script answers', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    send.mockRejectedValue(new Error('Could not establish connection. Receiving end does not exist.'));
+
+    const result = (await handleMessage({ type: 'request-extraction', tabId: 11 })) as { requested: boolean };
+
+    expect(result).toEqual({ requested: false });
+    send.mockImplementation(async () => undefined);
+  });
+});
+
+describe('the connection state the panel receives', () => {
+  const observation = (pageType: PageType) => ({
+    type: 'page-observed' as const,
+    url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+    pageType,
+    title: 'Course',
+    detectionConfidence: 'high' as const,
+    warnings: [],
+    restricted: false,
+  });
+
+  it('does not call an unsupported page supported', async () => {
+    await handleMessage(observation('unsupported'), ACTIVE_TAB);
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('unsupported');
+  });
+
+  it('surfaces a signed-out page as its own state', async () => {
+    await handleMessage(observation('signed-out'), ACTIVE_TAB);
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('signed-out');
+  });
+
+  it('calls a readable course page supported', async () => {
+    await handleMessage(observation('course-home'), ACTIVE_TAB);
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('supported');
+  });
+});
+
+describe('an observation from a restricted page', () => {
+  it('shows restricted for the active tab even while another tab holds a course page', async () => {
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+        pageType: 'course-home',
+        title: 'Course',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: false,
+      },
+      4,
+    );
+
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=999999',
+        pageType: 'quiz-attempt',
+        title: 'Quiz',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: true,
+      },
+      ACTIVE_TAB,
+    );
+
+    // ACTIVE_TAB is the graded attempt; tab 4 still holds its course page.
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('restricted');
+    expect(state.page.url).toBeNull();
+
+    // The other tab's observation survives: it is that tab's, not this one's.
+    expect(sessionStore['observation:4']).toMatchObject({ pageType: 'course-home' });
+  });
+
+  it('stores nothing and drops the previous page rather than leaving it on screen', async () => {
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+      pageType: 'course-home',
+      title: 'Course',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    });
+
+    const result = (await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=999999',
+      pageType: 'quiz-attempt',
+      title: 'Quiz',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: true,
+    })) as { stored: boolean };
+
+    expect(result).toEqual({ stored: false });
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('idle');
+    expect(state.page.url).toBeNull();
+  });
+});
+
+describe('a tab that navigates away', () => {
+  it('is no longer described by the page it used to show', async () => {
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+        pageType: 'course-home',
+        title: 'Course',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: false,
+      },
+      ACTIVE_TAB,
+    );
+    expect(sessionStore[`observation:${ACTIVE_TAB}`]).toBeDefined();
+
+    await forgetTab(ACTIVE_TAB);
+
+    expect(sessionStore[`observation:${ACTIVE_TAB}`]).toBeUndefined();
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('idle');
+    expect(state.page.url).toBeNull();
   });
 });

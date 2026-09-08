@@ -131,3 +131,151 @@ describe('D2L host matching', () => {
   it.each([`${STOCK_ORIGIN}/d2l/home`, 'https://campus.desire2learn.com/d2l/home', `${WLU_ORIGIN}/d2l/home`])('accepts %s', (url) => expect(d2lAdapter.matchesHost(url)).toBe(true));
   it.each(['https://brightspace.example.com/d2l/home', 'https://notbrightspace.com/d2l/home', 'not a URL'])('rejects %s', (url) => expect(d2lAdapter.matchesHost(url)).toBe(false));
 });
+
+describe('MyLearningSpace live-validation regressions', () => {
+  const additionalRoutes: [string, string][] = [
+    ['/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201', 'quiz-list'],
+    ['/d2l/lms/dropbox/user/folder_user_view_src.d2l?ou=999999&db=101', 'assignment'],
+    ['/d2l/le/content/999999/navigateContent/424242/Next', 'content-topic'],
+    ['/d2l/lp/ouHome/home.d2l?ou=999999', 'course-home'],
+    ['/d2l/lms/grades/my_grades/main.d2l?ou=999999', 'grades'],
+  ];
+
+  it.each(additionalRoutes)('detects %s as %s', (path, pageType) => {
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}${path}`, fixture('course-home')))).toMatchObject({
+      pageType,
+      confidence: 'high',
+    });
+  });
+
+  it('does not treat a non-numeric /d2l/home segment as a course home', () => {
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/settings`, fixture('course-home')))).toMatchObject({
+      pageType: 'unsupported',
+    });
+  });
+
+  it('reads the org unit from a legacy uppercase OU parameter', () => {
+    const course = d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/lp/ouHome/home.d2l?OU=999999`, fixture('course-home')));
+    expect(course).toMatchObject({ id: 'd2l:999999', externalId: '999999' });
+  });
+
+  it('never turns course-navbar list links into tasks', () => {
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar')));
+    expect(tasks.map((task) => task.title)).toEqual(['Week 1 reading']);
+    expect(tasks.every((task) => !/folders_list|quizzes_list|discussions\/List|\/grades|\/calendar/i.test(task.id))).toBe(true);
+  });
+
+  it('produces no tasks on grades and calendar routes', () => {
+    // The grades route reaches the guard only because it is detected as grades:
+    // before the my_grades route was covered it fell through to unsupported.
+    for (const path of ['/d2l/lms/grades/my_grades/main.d2l?ou=999999', '/d2l/le/calendar/999999?ou=999999']) {
+      const page = input(`${WLU_ORIGIN}${path}`, fixture('course-home-navbar'));
+      expect(d2lAdapter.detectPage(page)?.pageType).toMatch(/grades|calendar/);
+      expect(d2lAdapter.extractTasks(page)).toEqual([]);
+    }
+  });
+
+  it('keeps a quiz pre-attempt summary readable while the attempt itself stays restricted', () => {
+    const summaryUrl = `${WLU_ORIGIN}/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201`;
+    const summary = d2lAdapter.detectPage(input(summaryUrl, fixture('quiz-list')));
+    expect(summary?.pageType).toBe('quiz-list');
+    expect(evaluateAssessmentContext({ pageType: 'quiz-list', url: summaryUrl }).restricted).toBe(false);
+    expect(
+      evaluateAssessmentContext({ pageType: 'quiz-attempt', url: `${WLU_ORIGIN}/d2l/lms/quizzing/user/attempt/201` }).restricted,
+    ).toBe(true);
+  });
+});
+
+describe('a session that has ended', () => {
+  it('reports signed-out for the redirect stub D2L serves in place of the page', () => {
+    const detection = d2lAdapter.detectPage(
+      input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('signed-out-redirect')),
+    );
+    expect(detection).toMatchObject({ pageType: 'signed-out', confidence: 'high' });
+    expect(detection?.warnings[0]).toMatch(/session has ended/i);
+  });
+
+  it('reports signed-out on the sign-in route itself', () => {
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/login?sessionExpired=0&target=%2fd2l%2fhome`, fixture('signed-out-redirect'))),
+    ).toMatchObject({ pageType: 'signed-out' });
+  });
+
+  it('invents no course and no tasks from a page that has no content', () => {
+    const page = input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('signed-out-redirect'));
+    expect(d2lAdapter.extractCourse(page)).toBeNull();
+    expect(d2lAdapter.extractTasks(page)).toEqual([]);
+    expect(d2lAdapter.getSupportedActions('signed-out')).toEqual([]);
+  });
+
+  it('still reads a real page that happens to link to the login route', () => {
+    const page = new DOMParser().parseFromString(
+      '<html><body><nav><a href="/d2l/login?target=%2fd2l%2fhome">Sign in as another user</a></nav><main><h1>CS101 Example Course</h1></main></body></html>',
+      'text/html',
+    );
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page))).toMatchObject({
+      pageType: 'course-home',
+    });
+  });
+});
+
+describe('regressions found in review', () => {
+  const parse = (html: string) => new DOMParser().parseFromString(html, 'text/html');
+
+  it('keeps an assignment row that titles itself with its own header element', () => {
+    const page = parse(
+      '<main><div class="d2l-datalist-item"><header><a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&db=5">Essay 1</a></header><span class="d2l-dates-text">Due January 20, 2099 11:59 PM</span></div></main>',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, page));
+    expect(tasks.map((task) => task.title)).toEqual(['Essay 1']);
+  });
+
+  it('keeps a link to a single calendar event while still dropping the calendar tab', () => {
+    const page = parse(
+      '<main><div class="d2l-datalist-item"><a href="/d2l/le/calendar/999999/event/321">Lab check-in</a><time datetime="2099-01-20">January 20, 2099</time></div><nav><a href="/d2l/le/calendar/999999">Calendar</a></nav></main>',
+    );
+    const titles = d2lAdapter
+      .extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home?ou=999999`, page))
+      .map((task) => task.title);
+    expect(titles).toContain('Lab check-in');
+    expect(titles).not.toContain('Calendar');
+  });
+
+  it('does not call a page signed out just because it ships a session-expiry script', () => {
+    const page = parse(
+      "<html><head><script>function d2lTimeout(){ window.location.replace('/d2l/login?sessionExpired=1'); }</script></head><body><d2l-list></d2l-list></body></html>",
+    );
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, page)),
+    ).toMatchObject({ pageType: 'assignment-list' });
+  });
+
+  it('recognizes the sign-in route even when that page has rendered content', () => {
+    const loginPage = parse('<html><body><main><h1>Sign in</h1><form><input name="user" /></form></main></body></html>');
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/login?target=%2fd2l%2fhome`, loginPage))).toMatchObject({
+      pageType: 'signed-out',
+    });
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/lp/auth/saml/login`, loginPage))).toMatchObject({
+      pageType: 'signed-out',
+    });
+  });
+});
+
+describe('a login wall rendered at a course URL', () => {
+  it('is signed out, whatever the route says', () => {
+    const wall = new DOMParser().parseFromString(
+      '<html><body><main><h1>Sign in to continue</h1><form><input name="user" /><input type="password" name="pass" /></form></main></body></html>',
+      'text/html',
+    );
+    const page = input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, wall);
+    expect(d2lAdapter.detectPage(page)).toMatchObject({ pageType: 'signed-out' });
+    expect(d2lAdapter.extractCourse(page)).toBeNull();
+    expect(d2lAdapter.extractTasks(page)).toEqual([]);
+  });
+
+  it('does not mistake an ordinary course page for one', () => {
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar'))),
+    ).toMatchObject({ pageType: 'course-home' });
+  });
+});

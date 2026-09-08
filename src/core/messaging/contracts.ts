@@ -187,3 +187,19 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
 export function maySend(type: MessageType, role: SenderRole): boolean {
   return ALLOWED_SENDERS[type].includes(role);
 }
+
+/**
+ * The two instructions the worker may send *into* a page.
+ *
+ * This direction crosses a context boundary too, so it is a schema rather than
+ * a hand-rolled cast: the content script rejects anything that does not match,
+ * and neither message carries page data inward.
+ */
+export const contentRequestSchema = z.discriminatedUnion('type', [
+  // A UUID, because the result that comes back carries it under the same
+  // contract (extractionResult above). Two spellings of the same id would let
+  // a request produce a result the schema then rejects.
+  z.object({ type: z.literal('motion:extract'), requestId: z.string().uuid().optional() }),
+  z.object({ type: z.literal('motion:extract-content') }),
+]);
+export type ContentRequest = z.infer<typeof contentRequestSchema>;

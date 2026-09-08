@@ -30,13 +30,19 @@ export interface AuthorizationPolicy {
 }
 
 /**
- * A content script always carries a tab; extension pages never do. That is a
- * browser-asserted fact, which is why the role is derived from it rather than
- * from anything the message says about itself.
+ * The role comes from browser-asserted facts, never from what the message says
+ * about itself.
+ *
+ * The extension origin is checked first, because "carries a tab" does not mean
+ * "is a content script": an options page, or the panel opened in a tab, is an
+ * extension page *with* a tab id. Chrome sets `sender.url` for a content script
+ * to the page it runs in, and a web page can never be served from
+ * `chrome-extension://<our id>`, so this ordering recognises our own pages
+ * without giving a hostile page a way to claim the role.
  */
 function inferRole(facts: SenderFacts, extensionOrigin: string): SenderRole | null {
+  if (facts.senderUrl && facts.senderUrl.startsWith(`${extensionOrigin}/`)) return 'extension-ui';
   if (facts.tabId !== undefined) return 'content-script';
-  if (facts.senderUrl && facts.senderUrl.startsWith(extensionOrigin)) return 'extension-ui';
   return null;
 }
 

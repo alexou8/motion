@@ -1,0 +1,17 @@
+<!-- Synthetic fixture modeled on the document a signed-out D2L serves for any
+     route: an empty page whose only content is a script sending the browser to
+     the sign-in route. No real student data, identifiers, session values, or
+     tokens — the target below is an invented course home. -->
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script>
+      var hash = window.location.hash;
+      if (hash) hash = '%23' + hash.substring(1);
+      window.location.replace('/d2l/login?sessionExpired=0&target=%2fd2l%2fhome%2f999999' + hash);
+    </script>
+    <title></title>
+  </head>
+  <body></body>
+</html>

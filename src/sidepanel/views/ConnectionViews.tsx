@@ -40,6 +40,33 @@ export function UnsupportedView({ state, send }: ConnectionViewProps) {
   );
 }
 
+export function SignedOutView({ state, send }: ConnectionViewProps) {
+  return (
+    <section className="grid gap-4" aria-labelledby="signed-out-title">
+      <div>
+        <p className="mb-1 text-xs font-medium text-ink-muted">Signed out</p>
+        <h1 className="text-lg font-medium text-balance" id="signed-out-title">
+          Your D2L session has ended
+        </h1>
+      </div>
+      <Callout variant="warning" title="Sign in to continue">
+        <p>
+          D2L sent this tab to its sign-in page, so there is no coursework on it to read. Sign in
+          again in the tab, then ask Motion to read the page.
+        </p>
+      </Callout>
+      <p className="text-sm text-ink-muted text-pretty">
+        Deadlines and notes Motion already saved are unaffected and stay available.
+      </p>
+      <div>
+        <Button variant="primary" onClick={() => send({ type: 'read-page', url: state.page.url })}>
+          Read the page again
+        </Button>
+      </div>
+    </section>
+  );
+}
+
 export function PermissionNeededView({ state, send }: ConnectionViewProps) {
   return (
     <section className="grid gap-4" aria-labelledby="permission-title">

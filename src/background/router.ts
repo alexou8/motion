@@ -1,4 +1,4 @@
-import type { Message } from '@/core/messaging';
+import { contentRequestSchema, type ContentRequest, type Message } from '@/core/messaging';
 import {
   checklistSchema,
   courseSchema,
@@ -40,7 +40,7 @@ import { createEngine } from './recovery';
 export async function handleMessage(message: Message, tabId?: number): Promise<unknown> {
   switch (message.type) {
     case 'page-observed':
-      return handlePageObserved(message);
+      return handlePageObserved(message, tabId);
     case 'extraction-result':
       return handleExtraction(message);
     case 'get-state':
@@ -91,21 +91,87 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
 /**
  * A page observation is a signal, not data to keep. Nothing from a page marked
  * restricted is stored — that is the point of restricted mode.
+ *
+ * Storing nothing is not the same as leaving the previous observation in place:
+ * that showed the last course page's workspace over a graded attempt, which is
+ * both stale and the wrong thing to offer there. The stored observation is
+ * dropped instead, so the panel falls back to its idle state. This writes
+ * strictly less than before; nothing about the attempt is recorded.
+ */
+type StoredObservation = PanelState['page'] & { restricted?: boolean };
+
+/**
+ * One session-storage key per tab.
+ *
+ * Deliberately not a single object holding every tab: that is a
+ * read-modify-write, and two tabs reporting at once can lose an update. Losing
+ * *this* update matters — the dropped one could be the marker saying a tab is a
+ * graded attempt, which would put the workspace back in front of one.
+ */
+const OBSERVATION_PREFIX = 'observation:';
+
+const observationKey = (tabId: number): string => `${OBSERVATION_PREFIX}${tabId}`;
+
+async function readObservation(tabId: number): Promise<StoredObservation | undefined> {
+  const key = observationKey(tabId);
+  const session = await chrome.storage.session.get(key);
+  const stored = session[key];
+  return typeof stored === 'object' && stored !== null ? (stored as StoredObservation) : undefined;
+}
+
+/**
+ * Records what a tab is showing, so the panel can describe the tab the student
+ * is actually looking at.
+ *
+ * One observation per tab, rather than one for the whole browser. A single slot
+ * meant a second tab could overwrite or erase the first, and — worse — a graded
+ * attempt in the active tab could leave another tab's coursework workspace on
+ * screen, offering drafting beside an assessment.
+ *
+ * A restricted page records that it is restricted and nothing else: no URL, no
+ * title, no warnings, no content. That is enough for the panel to say why it is
+ * standing back, and it is all the assessment boundary allows.
  */
 async function handlePageObserved(
   message: Extract<Message, { type: 'page-observed' }>,
+  tabId?: number,
 ): Promise<{ stored: boolean }> {
-  if (message.restricted) return { stored: false };
-  await chrome.storage.session.set({
-    lastObservation: {
-      url: message.url,
-      pageType: message.pageType,
-      title: message.title,
-      warnings: message.warnings,
-      observedAt: new Date().toISOString(),
-    },
-  });
-  return { stored: true };
+  if (tabId === undefined) return { stored: false };
+  const observedAt = new Date().toISOString();
+
+  const observation: StoredObservation = message.restricted
+    ? {
+        url: null,
+        pageType: message.pageType,
+        title: '',
+        restrictionReason: 'This page looks like a graded attempt.',
+        warnings: [],
+        observedAt,
+        restricted: true,
+      }
+    : {
+        url: message.url,
+        pageType: message.pageType,
+        title: message.title,
+        restrictionReason: null,
+        warnings: message.warnings,
+        observedAt,
+      };
+
+  await chrome.storage.session.set({ [observationKey(tabId)]: observation });
+  return { stored: !message.restricted };
+}
+
+/**
+ * Forgets what a tab was showing: it closed, or it navigated somewhere new.
+ *
+ * Called at the start of a navigation as well as on close. Until the new page
+ * reports itself, the panel must not keep describing the page that was there
+ * before — a note taken in that window would otherwise be filed against the
+ * previous page's URL.
+ */
+export async function forgetTab(tabId: number): Promise<void> {
+  await chrome.storage.session.remove(observationKey(tabId));
 }
 
 async function handleExtraction(
@@ -432,12 +498,53 @@ async function handleModelStatus(): Promise<{ availability: string; explanation:
   return { availability, explanation: explainAvailability(availability) };
 }
 
+/** The only frame Motion reads: `all_frames` is false and stays false. */
+const MAIN_FRAME_ID = 0;
+
+/** Attempts, and the pause between them, when reaching the content script. */
+const CONTENT_SCRIPT_ATTEMPTS = 3;
+const CONTENT_SCRIPT_RETRY_MS = 150;
+
+/**
+ * Sends one message to the content script in the tab's main frame.
+ *
+ * Two browser facts shape this:
+ *
+ *   1. The script is declared with `all_frames: false`, and the authorizer
+ *      accepts observations from the main frame only. A tab-wide send is not
+ *      reliably delivered to it -- in Chrome 141 it fails with "Receiving end
+ *      does not exist" while the script is running -- so frame 0 is addressed
+ *      explicitly.
+ *   2. The bundled script registers its listener after an async import, so for
+ *      a moment after a page loads there is no receiver. A page opened before
+ *      the extension has none at all. Retrying a couple of times separates
+ *      "not ready yet" from "not there", and the caller is told which.
+ */
+async function sendToContentScript(tabId: number, message: ContentRequest): Promise<unknown> {
+  // Validated on the way out as well as on the way in, and it is the *parsed*
+  // value that travels: anything the schema does not describe is left behind
+  // rather than crossing the boundary unexamined.
+  const payload = contentRequestSchema.parse(message);
+  let lastError: unknown;
+  for (let attempt = 0; attempt < CONTENT_SCRIPT_ATTEMPTS; attempt += 1) {
+    try {
+      return await chrome.tabs.sendMessage(tabId, payload, { frameId: MAIN_FRAME_ID });
+    } catch (error) {
+      lastError = error;
+      if (attempt < CONTENT_SCRIPT_ATTEMPTS - 1) {
+        await new Promise((resolve) => setTimeout(resolve, CONTENT_SCRIPT_RETRY_MS));
+      }
+    }
+  }
+  throw lastError;
+}
+
 /** Asks the content script for the current page's content, once. */
 async function askContentScript(tabId: number): Promise<PageContent | null> {
   try {
-    const response = (await chrome.tabs.sendMessage(tabId, {
-      type: 'motion:extract-content',
-    })) as { content?: unknown } | undefined;
+    const response = (await sendToContentScript(tabId, { type: 'motion:extract-content' })) as
+      | { content?: unknown }
+      | undefined;
     const parsed = pageContentSchema.safeParse(response?.content);
     return parsed.success ? parsed.data : null;
   } catch {
@@ -454,9 +561,44 @@ async function currentCourseId(): Promise<string | null> {
 
 async function requestExtraction(tabId: number | undefined): Promise<{ requested: boolean }> {
   if (tabId === undefined) return { requested: false };
-  // The content script does the reading; the worker never scrapes a page.
-  await chrome.tabs.sendMessage(tabId, { type: 'motion:extract' }).catch(() => undefined);
-  return { requested: true };
+  try {
+    // The content script does the reading; the worker never scrapes a page.
+    await sendToContentScript(tabId, { type: 'motion:extract' });
+    return { requested: true };
+  } catch {
+    // No content script in the tab: the page loaded before the extension, or it
+    // is not a page Motion is injected into. Reporting success here left the
+    // panel waiting for a result that was never coming.
+    return { requested: false };
+  }
+}
+
+/**
+ * Stands in for a course with no external id. It cannot appear in a URL, so a
+ * course missing its id never matches the observed page by accident. (This was
+ * a literal NUL byte, which made the file read as binary to ordinary tools.)
+ */
+const NO_EXTERNAL_ID = '\u0000';
+
+/**
+ * What the panel should show, from what was actually observed.
+ *
+ * This used to be `observation ? 'supported' : 'idle'`, so an unsupported page
+ * rendered the coursework workspace: the panel claimed a page Motion could not
+ * read. The page type is the fact that decides it.
+ */
+function connectionFor(observation: StoredObservation | null | undefined): PanelState['connection'] {
+  if (!observation) return 'idle';
+  if (observation.restricted) return 'restricted';
+  if (observation.pageType === 'signed-out') return 'signed-out';
+  if (observation.pageType === 'unsupported' || observation.pageType === null) return 'unsupported';
+  return 'supported';
+}
+
+/** The panel is shown the observation, never the internal restricted flag. */
+function toPageContext(observation: StoredObservation): PanelState['page'] {
+  const { restricted: _restricted, ...page } = observation;
+  return page;
 }
 
 /** Assembles everything the panel renders. */
@@ -467,8 +609,10 @@ export async function buildPanelState(): Promise<PanelState> {
   const approvals = new Repository(db, STORE.approvals, approvalRequestSchema);
   const workflowStore = new IndexedDbWorkflowStore(db);
 
-  const session = await chrome.storage.session.get('lastObservation');
-  const observation = session['lastObservation'] as PanelState['page'] | undefined;
+  // The panel describes the tab the student is looking at, not the last tab to
+  // report. Anything else lets one tab's workspace stand in front of another's.
+  const [activeTab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  const observation = activeTab?.id === undefined ? undefined : await readObservation(activeTab.id);
 
   const allTasks = await taskRepo.all();
   const allApprovals = await approvals.all();
@@ -490,15 +634,15 @@ export async function buildPanelState(): Promise<PanelState> {
 
   const course =
     allCourses.records.find((candidate) =>
-      observation?.url ? observation.url.includes(candidate.externalId ?? ' ') : false,
+      observation?.url ? observation.url.includes(candidate.externalId ?? NO_EXTERNAL_ID) : false,
     ) ??
     allCourses.records[0] ??
     null;
 
   return {
     ...EMPTY_PANEL_STATE,
-    connection: observation ? 'supported' : 'idle',
-    page: observation ?? EMPTY_PANEL_STATE.page,
+    connection: connectionFor(observation),
+    page: observation ? toPageContext(observation) : EMPTY_PANEL_STATE.page,
     course,
     tasks: upcoming,
     workflows: await workflowStore.list(),

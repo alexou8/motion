@@ -30,19 +30,60 @@ const HOST_PATTERNS: readonly RegExp[] = [
 
 const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
   { pattern: /^\/d2l\/home\/?$/i, pageType: 'dashboard' },
-  { pattern: /^\/d2l\/home\/[^/]+\/?$/i, pageType: 'course-home' },
+  { pattern: /^\/d2l\/home\/\d+\/?$/i, pageType: 'course-home' },
+  // The legacy org-unit home is still what several course-navbar links point at.
+  { pattern: /^\/d2l\/lp\/ouHome\/home(?:\.d2l)?\/?$/i, pageType: 'course-home' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/home\/?$/i, pageType: 'content-module' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/viewContent\//i, pageType: 'content-topic' },
+  { pattern: /^\/d2l\/le\/content\/[^/]+\/navigateContent\//i, pageType: 'content-topic' },
   { pattern: /^\/d2l\/le\/news(?:\/|$)/i, pageType: 'announcements' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?\/?$/i, pageType: 'assignment-list' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_submit_files(?:\/|\.|$)/i, pageType: 'assignment' },
+  // Opening a submitted assignment for feedback lands here, not on the submit page.
+  { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_user_view_src(?:\/|\.|$)/i, pageType: 'assignment' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/List(?:\/|$)/i, pageType: 'discussion-list' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/topics\//i, pageType: 'discussion-topic' },
   { pattern: /^\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?\/?$/i, pageType: 'quiz-list' },
+  // The pre-attempt summary is metadata about a quiz, not an attempt: it stays
+  // outside ASSESSMENT_PAGE_TYPES so Motion may read it, and the attempt route
+  // below is the only quizzing route that trips restricted mode.
+  { pattern: /^\/d2l\/lms\/quizzing\/user\/quiz_summary(?:\.d2l)?\/?$/i, pageType: 'quiz-list' },
   { pattern: /^\/d2l\/lms\/quizzing\/user\/attempt\//i, pageType: 'quiz-attempt' },
   { pattern: /^\/d2l\/lms\/grades(?:\/|$)/i, pageType: 'grades' },
   { pattern: /^\/d2l\/le\/calendar(?:\/|$)/i, pageType: 'calendar' },
+  { pattern: /^\/d2l\/login(?:\/|$)/i, pageType: 'signed-out' },
+  { pattern: /^\/d2l\/lp\/auth\/(?:login|saml)(?:\/|$)/i, pageType: 'signed-out' },
 ];
+
+/**
+ * A signed-out D2L serves the requested route as a near-empty document whose
+ * only content is a script redirecting to `/d2l/login`. Detected from the
+ * document rather than the URL, because the URL is still the course page the
+ * student asked for: reporting that as a dashboard, at high confidence, with an
+ * empty body behind it, is how a stale panel starts.
+ */
+function looksSignedOut(document: Document): boolean {
+  const body = document.body;
+  if (!body) return false;
+
+  // A login wall served *at* the course URL: the route still says course home,
+  // but what is on screen is a password prompt. A page asking for a password is
+  // never a page to read coursework from, whatever its URL claims.
+  if (body.querySelector('input[type="password" i]')) return true;
+
+  if (normalizedText(body)) return false;
+  // A page that has rendered nothing *yet* still has its elements: D2L ships
+  // session-expiry redirect scripts on ordinary pages, so the script alone
+  // proves nothing. The stub has no body content at all.
+  const hasContentElements = Array.from(body.children).some(
+    (child) => !['SCRIPT', 'NOSCRIPT', 'TEMPLATE'].includes(child.tagName),
+  );
+  if (hasContentElements) return false;
+  const scripts = Array.from(document.querySelectorAll('head script, body script'))
+    .map((script) => script.textContent ?? '')
+    .join(' ');
+  return /location\.(?:replace|href)\s*[(=]\s*['"][^'"]*\/d2l\/login/i.test(scripts);
+}
 
 const DOCUMENTED_ROW_SELECTORS = [
   '.d2l-datalist-item',
@@ -55,6 +96,42 @@ const DOCUMENTED_ROW_SELECTORS = [
 ] as const;
 
 const SEMANTIC_ROW_SELECTORS = ['table tr'] as const;
+
+/**
+ * Page chrome: regions that hold navigation rather than coursework. A course
+ * navbar links to the assignments, quizzes and discussions *lists*, so reading
+ * it as coursework produced tasks called "Assignments" and "Quizzes" that exist
+ * on no due-date list. Candidates inside these regions are dropped entirely.
+ *
+ * Deliberately not `header` or `footer` as bare tags: `closest` walks to the
+ * root, and a list row may title itself with its own `<header>`. Matching those
+ * would drop a real, due-dated assignment silently. Page chrome identifies
+ * itself with a role or a D2L navigation class.
+ */
+const NAVIGATION_REGION_SELECTOR =
+  'nav, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, .d2l-breadcrumbs, .d2l-menu';
+
+/**
+ * Routes that are a place to look rather than a thing to do. A link to a list
+ * page is navigation even when it appears in the body of a page.
+ */
+const NAVIGATION_HREF_PATTERNS: readonly RegExp[] = [
+  /\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?(?:[/?#]|$)/i,
+  /\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?(?:[/?#]|$)/i,
+  /\/d2l\/le\/[^/]+\/discussions\/List(?:[/?#]|$)/i,
+  /\/d2l\/le\/content\/[^/]+\/home(?:[/?#]|$)/i,
+  /\/d2l\/lms\/grades(?:[/?#]|$)/i,
+  /\/d2l\/le\/calendar(?:\/\d+)?(?:[?#]|$)/i,
+  /\/d2l\/home(?:\/\d+)?(?:[/?#]|$)/i,
+];
+
+function isNavigationHref(href: string | null): boolean {
+  return href !== null && NAVIGATION_HREF_PATTERNS.some((pattern) => pattern.test(href));
+}
+
+function inNavigationRegion(element: Element): boolean {
+  return element.closest(NAVIGATION_REGION_SELECTOR) !== null;
+}
 
 const READ_ACTIONS: readonly ActionType[] = ['read-page', 'extract-deadlines', 'extract-requirements'];
 const ASSESSMENT_READ_ACTIONS: readonly ActionType[] = ['read-page'];
@@ -74,11 +151,11 @@ type TaskCandidate = {
 
 const TASK_ROUTE_PATTERNS: readonly { pattern: RegExp; route: RouteTask }[] = [
   {
-    pattern: /\/d2l\/lms\/dropbox\/user\/(?:folder_submit_files|folders_list)(?:\.d2l)?(?:[/?]|$)/i,
+    pattern: /\/d2l\/lms\/dropbox\/user\/(?:folder_submit_files|folder_user_view_src)(?:\.d2l)?(?:[/?]|$)/i,
     route: { kind: 'assignment', strategy: 'route:assignment' },
   },
   {
-    pattern: /(?:\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?(?:[/?]|$)|quiz_summary|\/quizzing\/user\/attempt\/)/i,
+    pattern: /(?:\/d2l\/lms\/quizzing\/user\/quiz_summary(?:\.d2l)?(?:[/?]|$)|\/quizzing\/user\/attempt\/)/i,
     route: { kind: 'quiz', strategy: 'route:quiz' },
   },
   {
@@ -101,10 +178,16 @@ function pathnameOf(url: string): string | null {
 
 function queryValue(url: string, names: readonly string[]): string | null {
   try {
+    // D2L emits `ou` on modern routes and `OU` on some legacy ones, so the
+    // lookup is case-insensitive rather than trusting one spelling.
     const params = new URL(url).searchParams;
-    for (const name of names) {
-      const value = params.get(name)?.trim();
-      if (value) return value;
+    const wanted = names.map((name) => name.toLowerCase());
+    for (const wantedName of wanted) {
+      for (const [key, value] of params) {
+        if (key.toLowerCase() !== wantedName) continue;
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+      }
     }
   } catch {
     return null;
@@ -174,6 +257,13 @@ function semanticCandidate(element: Element, input: AdapterInput): TaskCandidate
   return { row: element, anchor, href, route, strategy: 'semantic table row' };
 }
 
+function isCoursework(candidate: TaskCandidate): boolean {
+  if (isNavigationHref(candidate.href)) return false;
+  if (inNavigationRegion(candidate.row)) return false;
+  if (candidate.anchor && inNavigationRegion(candidate.anchor)) return false;
+  return true;
+}
+
 function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[] {
   const candidates: TaskCandidate[] = [];
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
@@ -182,7 +272,7 @@ function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[
   }
   for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) candidates.push(documentedCandidate(element, input));
   for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) candidates.push(semanticCandidate(element, input));
-  return candidates;
+  return candidates.filter(isCoursework);
 }
 
 function taskAnchor(candidate: TaskCandidate): HTMLAnchorElement | null {
@@ -291,13 +381,32 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     const pathname = pathnameOf(input.url);
     if (!pathname) return { pageType: 'unsupported', confidence: 'low', warnings: ['The page URL could not be parsed.'] };
 
+    if (looksSignedOut(input.document)) {
+      return {
+        pageType: 'signed-out',
+        confidence: 'high',
+        warnings: ['This D2L session has ended. Sign in again to let Motion read the page.'],
+      };
+    }
+
     const route = ROUTES.find((candidate) => candidate.pattern.test(pathname));
-    if (route) return { pageType: route.pageType, confidence: 'high', warnings: [] };
+    if (route) {
+      return {
+        pageType: route.pageType,
+        confidence: 'high',
+        warnings:
+          route.pageType === 'signed-out'
+            ? ['This D2L session has ended. Sign in again to let Motion read the page.']
+            : [],
+      };
+    }
 
     return { pageType: 'unsupported', confidence: 'low', warnings: [`Unsupported D2L route: ${pathname}`] };
   }
 
   extractCourse(input: AdapterInput): Course | null {
+    // A sign-in stub carries the course URL but none of the course.
+    if (this.detectPage(input)?.pageType === 'signed-out') return null;
     const externalId = courseExternalId(input);
     const name = courseName(input.document);
     if (!externalId || !name) return null;
@@ -320,7 +429,14 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   extractTasks(input: AdapterInput): CourseTask[] {
     const detection = this.detectPage(input);
     const pageType = detection?.pageType ?? 'unsupported';
-    if (pageType === 'unsupported' || pageType === 'dashboard' || pageType === 'grades' || pageType === 'calendar') return [];
+    if (
+      pageType === 'unsupported' ||
+      pageType === 'signed-out' ||
+      pageType === 'dashboard' ||
+      pageType === 'grades' ||
+      pageType === 'calendar'
+    )
+      return [];
 
     const externalCourseId = courseExternalId(input);
     const tasks: CourseTask[] = [];
@@ -374,6 +490,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   }
 
   getSupportedActions(pageType: PageType): readonly ActionType[] {
+    if (pageType === 'signed-out') return [];
     return ASSESSMENT_PAGE_TYPES.includes(pageType) ? ASSESSMENT_READ_ACTIONS : READ_ACTIONS;
   }
 }
