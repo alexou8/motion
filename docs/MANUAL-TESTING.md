@@ -63,6 +63,16 @@ Also exercise: refreshing, navigating between course pages without a reload,
 switching the active tab, closing and reopening the panel, and letting the
 service worker go idle (~30s) before using the panel again.
 
+Two things the harness cannot reach, so check them by hand:
+
+- **A signed-in page that renders slowly.** Motion treats a document with an
+  empty body and a `/d2l/login` redirect script as a signed-out stub. A real
+  page that renders late should never show "your session has ended" — if it
+  does, the heuristic in `looksSignedOut` is too loose for this deployment.
+- **A login wall served at the course URL, or at the deployment root.** Both are
+  known gaps: the root is not a recognised route, and a login page with rendered
+  content at a course URL is still read as a course page.
+
 ## Recording a defect
 
 Record the route *shape*, not the URL — no org unit ids, course codes, student

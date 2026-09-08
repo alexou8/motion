@@ -9,10 +9,8 @@
  */
 import { resolveAdapter } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
-import type { Message } from '@/core/messaging';
+import { contentRequestSchema, type Message } from '@/core/messaging';
 
-const EXTRACT_REQUEST = 'motion:extract';
-const CONTENT_REQUEST = 'motion:extract-content';
 
 /** Milliseconds of DOM quiet before a page counts as rendered. */
 const SETTLE_MS = 400;
@@ -165,20 +163,17 @@ function readContent(): { content: unknown } | { refused: string } {
 }
 
 chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
-  // The only instructions this script accepts, and neither carries page data in.
-  if (typeof raw !== 'object' || raw === null) return undefined;
-  const message = raw as { type?: unknown; requestId?: unknown };
+  // The only instructions this script accepts, validated rather than cast.
+  // Neither carries page data inward.
+  const parsed = contentRequestSchema.safeParse(raw);
+  if (!parsed.success) return undefined;
 
-  if (message.type === EXTRACT_REQUEST) {
-    extract(typeof message.requestId === 'string' ? message.requestId : crypto.randomUUID());
+  if (parsed.data.type === 'motion:extract') {
+    extract(parsed.data.requestId ?? crypto.randomUUID());
     return undefined;
   }
 
-  if (message.type === CONTENT_REQUEST) {
-    sendResponse(readContent());
-    return undefined;
-  }
-
+  sendResponse(readContent());
   return undefined;
 });
 
@@ -191,12 +186,25 @@ observe();
  * string comparison per second.
  */
 let lastUrl = currentUrl();
-const urlPoll = setInterval(() => {
-  const url = currentUrl();
-  if (url === lastUrl) return;
-  lastUrl = url;
-  observe();
-}, 1_000);
+let urlPoll: ReturnType<typeof setInterval> | undefined;
+
+function startUrlPoll(): void {
+  if (urlPoll !== undefined) return;
+  urlPoll = setInterval(() => {
+    const url = currentUrl();
+    if (url === lastUrl) return;
+    lastUrl = url;
+    observe();
+  }, 1_000);
+}
+
+function stopUrlPoll(): void {
+  if (urlPoll === undefined) return;
+  clearInterval(urlPoll);
+  urlPoll = undefined;
+}
+
+startUrlPoll();
 
 /**
  * `document_idle` fires before D2L's web components have rendered, so the first
@@ -221,9 +229,30 @@ const settleObserver = new MutationObserver(() => {
   settleTimer = setTimeout(settled, SETTLE_MS);
   if (settleDeadline === undefined) settleDeadline = setTimeout(settled, SETTLE_MAX_MS);
 });
-if (document.documentElement) {
-  settleObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+/**
+ * `characterData` as well as `childList`: D2L swaps the text of an existing
+ * node — "Loading" becoming a quiz's own controls — without touching the
+ * structure, and that changes what kind of page this is.
+ */
+function watchPage(): void {
+  if (!document.documentElement) return;
+  settleObserver.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  });
 }
+
+function stopWatchingPage(): void {
+  settleObserver.disconnect();
+  if (settleTimer !== undefined) clearTimeout(settleTimer);
+  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
+  settleTimer = undefined;
+  settleDeadline = undefined;
+}
+
+watchPage();
 
 // Coming back through the back/forward cache does not re-run the script, and
 // the service worker may have been suspended meanwhile: re-announce the page.
@@ -231,6 +260,11 @@ if (document.documentElement) {
 // has already run and a second identical report would be noise.
 window.addEventListener('pageshow', (event) => {
   if (!event.persisted) return;
+  // A restore reuses the document that pagehide tore down, so start watching
+  // again before reporting: otherwise the page is observed once and then never
+  // again for as long as the student stays on it.
+  watchPage();
+  startUrlPoll();
   lastObservation = '';
   observe();
 });
@@ -247,8 +281,6 @@ document.addEventListener('visibilitychange', () => {
 // Leave the page as we found it: stop watching before it is frozen or unloaded,
 // so the observer and the poll cannot hold a bfcache entry open.
 window.addEventListener('pagehide', () => {
-  settleObserver.disconnect();
-  if (settleTimer !== undefined) clearTimeout(settleTimer);
-  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
-  clearInterval(urlPoll);
+  stopWatchingPage();
+  stopUrlPoll();
 });
