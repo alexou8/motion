@@ -17,6 +17,13 @@ const CONTENT_REQUEST = 'motion:extract-content';
 /** Milliseconds of DOM quiet before a page counts as rendered. */
 const SETTLE_MS = 400;
 
+/**
+ * Longest wait before observing anyway. A page with a clock, a live region or
+ * any other continuous churn never goes quiet, and without a ceiling the
+ * re-observe this mechanism exists for would never run at all.
+ */
+const SETTLE_MAX_MS = 3_000;
+
 let lastObservation = '';
 
 function send(message: Message): void {
@@ -61,7 +68,16 @@ function observe(): void {
   // observed several times as it settles. Only a change in what Motion would
   // show is worth a message; repeating the previous observation would churn
   // the panel and the worker for no new information.
-  const signature = [url, detection.pageType, detection.confidence, assessment.restricted, document.title].join('\u0000');
+  const signature = [
+    url,
+    detection.pageType,
+    detection.confidence,
+    assessment.restricted,
+    document.title,
+    // Warnings are part of the payload: a page that reports a partial load and
+    // then resolves it must not keep the stale warning in the panel.
+    detection.warnings.join('\u001f'),
+  ].join('\u0000');
   if (signature === lastObservation) return;
   lastObservation = signature;
 
@@ -175,7 +191,7 @@ observe();
  * string comparison per second.
  */
 let lastUrl = currentUrl();
-setInterval(() => {
+const urlPoll = setInterval(() => {
   const url = currentUrl();
   if (url === lastUrl) return;
   lastUrl = url;
@@ -190,9 +206,20 @@ setInterval(() => {
  * running it again is free when the page was already settled.
  */
 let settleTimer: ReturnType<typeof setTimeout> | undefined;
+let settleDeadline: ReturnType<typeof setTimeout> | undefined;
+
+function settled(): void {
+  if (settleTimer !== undefined) clearTimeout(settleTimer);
+  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
+  settleTimer = undefined;
+  settleDeadline = undefined;
+  observe();
+}
+
 const settleObserver = new MutationObserver(() => {
   if (settleTimer !== undefined) clearTimeout(settleTimer);
-  settleTimer = setTimeout(observe, SETTLE_MS);
+  settleTimer = setTimeout(settled, SETTLE_MS);
+  if (settleDeadline === undefined) settleDeadline = setTimeout(settled, SETTLE_MAX_MS);
 });
 if (document.documentElement) {
   settleObserver.observe(document.documentElement, { childList: true, subtree: true });
@@ -200,7 +227,28 @@ if (document.documentElement) {
 
 // Coming back through the back/forward cache does not re-run the script, and
 // the service worker may have been suspended meanwhile: re-announce the page.
-window.addEventListener('pageshow', () => {
+// Only on a restore -- pageshow also fires on an ordinary load, where observe()
+// has already run and a second identical report would be noise.
+window.addEventListener('pageshow', (event) => {
+  if (!event.persisted) return;
   lastObservation = '';
   observe();
+});
+
+// Returning to a tab is the other moment the panel may be showing something
+// else: the worker keeps one observation for all tabs, so the visible tab
+// re-announces itself.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  lastObservation = '';
+  observe();
+});
+
+// Leave the page as we found it: stop watching before it is frozen or unloaded,
+// so the observer and the poll cannot hold a bfcache entry open.
+window.addEventListener('pagehide', () => {
+  settleObserver.disconnect();
+  if (settleTimer !== undefined) clearTimeout(settleTimer);
+  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
+  clearInterval(urlPoll);
 });

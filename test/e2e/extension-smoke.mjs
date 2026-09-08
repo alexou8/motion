@@ -15,7 +15,7 @@
  *
  * Run with: npm run test:extension  (after npm run build)
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -25,7 +25,9 @@ import { chromium } from 'playwright';
 const here = dirname(fileURLToPath(import.meta.url));
 const distPath = resolve(here, '../../dist');
 const fixtureDir = resolve(here, '../../src/test/fixtures/d2l');
-const executablePath = process.env.MOTION_CHROME ?? '/opt/pw-browsers/chromium';
+const executablePath =
+  process.env.MOTION_CHROME ??
+  (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : chromium.executablePath());
 const ORIGIN = 'https://mylearningspace.wlu.ca';
 
 let failures = 0;
@@ -92,6 +94,16 @@ try {
     JSON.stringify(manifest.host_permissions) ===
       JSON.stringify([`https://*.brightspace.com/*`, `https://*.desire2learn.com/*`, `${ORIGIN}/*`]),
     JSON.stringify(manifest.host_permissions),
+  );
+
+  // Role inference hands `extension-ui` to anything served from the extension
+  // origin, which is safe only while no HTML page is web-accessible: a page
+  // could then be opened by a website and would carry that role.
+  const webAccessible = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
+  check(
+    'no HTML page is web-accessible',
+    webAccessible.every((resource) => !/\.html?$/i.test(resource)),
+    webAccessible.join(', ') || 'none',
   );
 
   const options = await context.newPage();
