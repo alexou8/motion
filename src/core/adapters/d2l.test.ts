@@ -131,3 +131,53 @@ describe('D2L host matching', () => {
   it.each([`${STOCK_ORIGIN}/d2l/home`, 'https://campus.desire2learn.com/d2l/home', `${WLU_ORIGIN}/d2l/home`])('accepts %s', (url) => expect(d2lAdapter.matchesHost(url)).toBe(true));
   it.each(['https://brightspace.example.com/d2l/home', 'https://notbrightspace.com/d2l/home', 'not a URL'])('rejects %s', (url) => expect(d2lAdapter.matchesHost(url)).toBe(false));
 });
+
+describe('MyLearningSpace live-validation regressions', () => {
+  const additionalRoutes: [string, string][] = [
+    ['/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201', 'quiz-list'],
+    ['/d2l/lms/dropbox/user/folder_user_view_src.d2l?ou=999999&db=101', 'assignment'],
+    ['/d2l/le/content/999999/navigateContent/424242/Next', 'content-topic'],
+    ['/d2l/lp/ouHome/home.d2l?ou=999999', 'course-home'],
+    ['/d2l/lms/grades/my_grades/main.d2l?ou=999999', 'grades'],
+  ];
+
+  it.each(additionalRoutes)('detects %s as %s', (path, pageType) => {
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}${path}`, fixture('course-home')))).toMatchObject({
+      pageType,
+      confidence: 'high',
+    });
+  });
+
+  it('does not treat a non-numeric /d2l/home segment as a course home', () => {
+    expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/settings`, fixture('course-home')))).toMatchObject({
+      pageType: 'unsupported',
+    });
+  });
+
+  it('reads the org unit from a legacy uppercase OU parameter', () => {
+    const course = d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/lp/ouHome/home.d2l?OU=999999`, fixture('course-home')));
+    expect(course).toMatchObject({ id: 'd2l:999999', externalId: '999999' });
+  });
+
+  it('never turns course-navbar list links into tasks', () => {
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar')));
+    expect(tasks.map((task) => task.title)).toEqual(['Week 1 reading']);
+    expect(tasks.every((task) => !/folders_list|quizzes_list|discussions\/List|\/grades|\/calendar/i.test(task.id))).toBe(true);
+  });
+
+  it('produces no tasks on grades and calendar routes', () => {
+    for (const path of ['/d2l/lms/grades/my_grades/main.d2l?ou=999999', '/d2l/le/calendar/999999?ou=999999']) {
+      expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}${path}`, fixture('course-home-navbar')))).toEqual([]);
+    }
+  });
+
+  it('keeps a quiz pre-attempt summary readable while the attempt itself stays restricted', () => {
+    const summaryUrl = `${WLU_ORIGIN}/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201`;
+    const summary = d2lAdapter.detectPage(input(summaryUrl, fixture('quiz-list')));
+    expect(summary?.pageType).toBe('quiz-list');
+    expect(evaluateAssessmentContext({ pageType: 'quiz-list', url: summaryUrl }).restricted).toBe(false);
+    expect(
+      evaluateAssessmentContext({ pageType: 'quiz-attempt', url: `${WLU_ORIGIN}/d2l/lms/quizzing/user/attempt/201` }).restricted,
+    ).toBe(true);
+  });
+});
