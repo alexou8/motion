@@ -1,4 +1,25 @@
-# Manual live test procedure (D2L / MyLearningSpace)
+# Live test procedures (D2L / MyLearningSpace)
+
+There are two live checks, and they answer different questions.
+
+## 1. Automated extension harness — `npm run test:extension`
+
+`test/e2e/extension-smoke.mjs` loads the built `dist/` into a real Chromium as
+an unpacked MV3 extension and exercises the contexts a unit test cannot reach:
+the service worker, the content script inside a page, the messaging boundary
+between them, and the side-panel document. Requests to the matched host are
+fulfilled from the synthetic fixtures, so it needs no account and touches no
+real course data.
+
+```bash
+npm run build && npm run test:extension
+```
+
+It answers "does the extension actually work end to end on markup we support?"
+It cannot answer "does that markup match the real deployment?" — only the
+procedure below can.
+
+## 2. Manual signed-in walkthrough
 
 Automated tests run against synthetic fixtures only. They cannot tell you
 whether Motion works on a real, signed-in Brightspace deployment: no fixture
@@ -6,8 +27,8 @@ reproduces D2L's web components, its client-side navigation, or an institution
 skin. This procedure is the check that does, and it must be run by a person with
 their own account.
 
-**Nothing in this procedure is currently recorded as passing.** Fill in the
-matrix when you run it, and say which build you ran it against.
+**Nothing in the signed-in matrix below is currently recorded as passing.** Fill
+it in when you run it, and say which build you ran it against.
 
 ## Setup
 

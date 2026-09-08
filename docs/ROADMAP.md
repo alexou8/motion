@@ -15,9 +15,9 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Design-system foundation | **Done** | `src/ui/tokens.css`; WCAG AA enforced by `tokens.contrast.test.ts` |
 | Local persistence + migrations | **Done** | `src/core/storage`; migration replay, corrupted-row recovery tested |
 | Risk, approval and assessment policy | **Done** | `src/core/policy`; 21 tests incl. forged-approval and replay cases |
-| Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures; **not verified against a live authenticated deployment** |
-| Typed messaging + sender authorization | **Not started** | Design settled in `ARCHITECTURE.md`, `THREAT_MODEL.md` T2 |
-| Extension shell (worker, panel, popup) | **Not started** | — |
+| Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures and against the built extension in a real Chromium (`npm run test:extension`); **not verified against a live authenticated deployment** |
+| Typed messaging + sender authorization | **Partial** | Implemented and unit-tested; the worker/content-script/panel path is exercised in a real browser by `npm run test:extension`, including a page script failing to reach the worker |
+| Extension shell (worker, panel, popup) | **Partial** | Worker, side panel and options page load in Chromium 141 and the panel renders state from the worker (`npm run test:extension`); panel views beyond the connection states are unfinished |
 | Basic tab grouping | **Not started** | — |
 
 ## Phase B — Course organization
