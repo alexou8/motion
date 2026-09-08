@@ -136,6 +136,17 @@ export function createRuntimeBridge(): MotionBridge {
     if (changeInfo.status === 'complete' || changeInfo.url) void refresh();
   });
 
+  /**
+   * A page reports itself after the tab events have already fired -- the
+   * content script loads asynchronously, so on a same-tab navigation the panel
+   * would otherwise still be showing the previous page when the new one turns
+   * out to be a graded attempt. Observations are written to session storage, so
+   * watching that is watching the fact itself rather than a proxy for it.
+   */
+  chrome.storage.session.onChanged.addListener((changes) => {
+    if (Object.keys(changes).some((key) => key.startsWith('observation:'))) void refresh();
+  });
+
   /** Sends a command and returns the worker's answer for the panel to render. */
   const request = async <T,>(command: MotionCommand): Promise<T | null> => {
     const payload = await toWorkerMessage(command, state);

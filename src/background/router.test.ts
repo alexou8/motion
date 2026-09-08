@@ -13,7 +13,7 @@ import {
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
-import { handleMessage } from './router';
+import { forgetTab, handleMessage } from './router';
 
 /**
  * Exercises the worker's data handling through the same entry point the real
@@ -239,7 +239,7 @@ describe('restricted pages', () => {
 
     expect(result.stored).toBe(false);
     // A marker that the tab is restricted, and nothing else from the page.
-    const stored = (sessionStore['observations'] as Record<string, Record<string, unknown>>)[String(ACTIVE_TAB)];
+    const stored = sessionStore[`observation:${ACTIVE_TAB}`] as Record<string, unknown>;
     expect(stored).toMatchObject({ restricted: true, url: null, title: '', warnings: [] });
   });
 
@@ -255,7 +255,7 @@ describe('restricted pages', () => {
     }, ACTIVE_TAB)) as { stored: boolean };
 
     expect(result.stored).toBe(true);
-    const stored = (sessionStore['observations'] as Record<string, Record<string, unknown>>)[String(ACTIVE_TAB)];
+    const stored = sessionStore[`observation:${ACTIVE_TAB}`] as Record<string, unknown>;
     expect(stored).toMatchObject({ pageType: 'course-home' });
   });
 });
@@ -681,7 +681,7 @@ describe('the connection state the panel receives', () => {
 });
 
 describe('an observation from a restricted page', () => {
-  it('leaves another tab\'s observation alone', async () => {
+  it('shows restricted for the active tab even while another tab holds a course page', async () => {
     await handleMessage(
       {
         type: 'page-observed',
@@ -692,7 +692,7 @@ describe('an observation from a restricted page', () => {
         warnings: [],
         restricted: false,
       },
-      3,
+      4,
     );
 
     await handleMessage(
@@ -705,11 +705,16 @@ describe('an observation from a restricted page', () => {
         warnings: [],
         restricted: true,
       },
-      9,
+      ACTIVE_TAB,
     );
 
-    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
-    expect(state.connection).toBe('supported');
+    // ACTIVE_TAB is the graded attempt; tab 4 still holds its course page.
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('restricted');
+    expect(state.page.url).toBeNull();
+
+    // The other tab's observation survives: it is that tab's, not this one's.
+    expect(sessionStore['observation:4']).toMatchObject({ pageType: 'course-home' });
   });
 
   it('stores nothing and drops the previous page rather than leaving it on screen', async () => {
@@ -734,6 +739,31 @@ describe('an observation from a restricted page', () => {
     })) as { stored: boolean };
 
     expect(result).toEqual({ stored: false });
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
+    expect(state.connection).toBe('idle');
+    expect(state.page.url).toBeNull();
+  });
+});
+
+describe('a tab that navigates away', () => {
+  it('is no longer described by the page it used to show', async () => {
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+        pageType: 'course-home',
+        title: 'Course',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: false,
+      },
+      ACTIVE_TAB,
+    );
+    expect(sessionStore[`observation:${ACTIVE_TAB}`]).toBeDefined();
+
+    await forgetTab(ACTIVE_TAB);
+
+    expect(sessionStore[`observation:${ACTIVE_TAB}`]).toBeUndefined();
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
     expect(state.connection).toBe('idle');
     expect(state.page.url).toBeNull();

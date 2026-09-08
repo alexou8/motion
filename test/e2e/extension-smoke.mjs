@@ -265,6 +265,16 @@ try {
     `connection ${onAttemptTab?.result?.connection}`,
   );
 
+  // What the worker answers is not what the student sees. Assert the rendered
+  // panel: it must refresh itself when the observation changes, with no tab
+  // event to prompt it.
+  const renderedOnAttempt = await panel.innerText('body');
+  check(
+    'the rendered panel shows restricted mode beside a graded attempt',
+    /Restricted mode/i.test(renderedOnAttempt) && !/Coursework workspace/i.test(renderedOnAttempt),
+    renderedOnAttempt.replace(/\s+/g, ' ').slice(0, 120),
+  );
+
   await courseTab.bringToFront();
   await panel.waitForTimeout(1_200);
   const backOnCourseTab = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
@@ -272,6 +282,20 @@ try {
     'returning to the course tab restores its state',
     backOnCourseTab?.result?.connection === 'supported',
     `connection ${backOnCourseTab?.result?.connection}`,
+  );
+  check(
+    'the rendered panel leaves restricted mode with it',
+    !/Restricted mode/i.test(await panel.innerText('body')),
+  );
+
+  // A same-tab navigation into an attempt: the tab events fire before the
+  // content script reports, so only an observation-driven refresh catches it.
+  await courseTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(1_200);
+  check(
+    'navigating the same tab into an attempt reaches the rendered panel',
+    /Restricted mode/i.test(await panel.innerText('body')),
+    (await panel.innerText('body')).replace(/\s+/g, ' ').slice(0, 120),
   );
   await attemptTab.close();
   await courseTab.close();
