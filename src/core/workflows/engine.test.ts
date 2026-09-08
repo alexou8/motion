@@ -502,7 +502,7 @@ describe('failure handling', () => {
 
     await engine.advance(created.id);
     expect(scheduleRetry).toHaveBeenCalledTimes(1);
-    let current = await store.get(created.id);
+    const current = await store.get(created.id);
     expect(current?.status).toBe('retry-scheduled');
 
     time.advance(60_000);
