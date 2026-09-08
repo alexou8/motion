@@ -196,7 +196,10 @@ export function maySend(type: MessageType, role: SenderRole): boolean {
  * and neither message carries page data inward.
  */
 export const contentRequestSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('motion:extract'), requestId: z.string().min(1).max(200).optional() }),
+  // A UUID, because the result that comes back carries it under the same
+  // contract (extractionResult above). Two spellings of the same id would let
+  // a request produce a result the schema then rejects.
+  z.object({ type: z.literal('motion:extract'), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('motion:extract-content') }),
 ]);
 export type ContentRequest = z.infer<typeof contentRequestSchema>;

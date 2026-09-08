@@ -64,7 +64,14 @@ const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
  */
 function looksSignedOut(document: Document): boolean {
   const body = document.body;
-  if (!body || normalizedText(body)) return false;
+  if (!body) return false;
+
+  // A login wall served *at* the course URL: the route still says course home,
+  // but what is on screen is a password prompt. A page asking for a password is
+  // never a page to read coursework from, whatever its URL claims.
+  if (body.querySelector('input[type="password" i]')) return true;
+
+  if (normalizedText(body)) return false;
   // A page that has rendered nothing *yet* still has its elements: D2L ships
   // session-expiry redirect scripts on ordinary pages, so the script alone
   // proves nothing. The stub has no body content at all.

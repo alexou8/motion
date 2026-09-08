@@ -260,3 +260,22 @@ describe('regressions found in review', () => {
     });
   });
 });
+
+describe('a login wall rendered at a course URL', () => {
+  it('is signed out, whatever the route says', () => {
+    const wall = new DOMParser().parseFromString(
+      '<html><body><main><h1>Sign in to continue</h1><form><input name="user" /><input type="password" name="pass" /></form></main></body></html>',
+      'text/html',
+    );
+    const page = input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, wall);
+    expect(d2lAdapter.detectPage(page)).toMatchObject({ pageType: 'signed-out' });
+    expect(d2lAdapter.extractCourse(page)).toBeNull();
+    expect(d2lAdapter.extractTasks(page)).toEqual([]);
+  });
+
+  it('does not mistake an ordinary course page for one', () => {
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar'))),
+    ).toMatchObject({ pageType: 'course-home' });
+  });
+});
