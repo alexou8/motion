@@ -15,7 +15,7 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Design-system foundation | **Done** | `src/ui/tokens.css`; WCAG AA enforced by `tokens.contrast.test.ts` |
 | Local persistence + migrations | **Done** | `src/core/storage`; migration replay, corrupted-row recovery tested |
 | Risk, approval and assessment policy | **Done** | `src/core/policy`; 21 tests incl. forged-approval and replay cases |
-| Page detection | **Partial** | Adapter implemented; realistic-markup rewrite in progress |
+| Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures; **not verified against a live authenticated deployment** |
 | Typed messaging + sender authorization | **Not started** | Design settled in `ARCHITECTURE.md`, `THREAT_MODEL.md` T2 |
 | Extension shell (worker, panel, popup) | **Not started** | — |
 | Basic tab grouping | **Not started** | — |
@@ -25,7 +25,7 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Item | Status |
 | --- | --- |
 | D2L adapter and synthetic fixtures | **Partial** — being rewritten onto route-based selectors after the first pass was found to depend on invented `data-*` attributes |
-| MyLearningSpace (institution deployment) support | **Partial** — host matching and policy tests pass; a dedicated skin fixture and equivalence test are the current work |
+| MyLearningSpace (institution deployment) support | **Partial** — host matching, a skin fixture and a stock/skin equivalence test pass; the live signed-in matrix in `docs/MANUAL-TESTING.md` has not been run |
 | Deadline extraction with provenance and confidence | **Partial** — domain model and parser exist; not yet wired to storage |
 | Course dashboard | **Not started** |
 | Task correction and archive | **Not started** — model supports it (`corrections`, `studentEdited`) |
