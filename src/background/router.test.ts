@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+/** The tab the mocked browser reports as active. */
+const ACTIVE_TAB = 3;
 import {
   checklistSchema,
   courseTaskSchema,
@@ -73,7 +76,12 @@ beforeEach(async () => {
       },
       local: { clear: vi.fn(async () => undefined) },
     },
-    tabs: { sendMessage: vi.fn(async () => undefined) },
+    tabs: {
+      sendMessage: vi.fn(async () => undefined),
+      // The panel describes the active tab, so state building asks for it.
+      query: vi.fn(async () => [{ id: ACTIVE_TAB, active: true }]),
+      onRemoved: { addListener: vi.fn() },
+    },
     runtime: { id: 'test-extension-id' },
   });
 });
@@ -227,10 +235,12 @@ describe('restricted pages', () => {
       detectionConfidence: 'high',
       warnings: [],
       restricted: true,
-    })) as { stored: boolean };
+    }, ACTIVE_TAB)) as { stored: boolean };
 
     expect(result.stored).toBe(false);
-    expect(sessionStore['lastObservation']).toBeUndefined();
+    // A marker that the tab is restricted, and nothing else from the page.
+    const stored = (sessionStore['observations'] as Record<string, Record<string, unknown>>)[String(ACTIVE_TAB)];
+    expect(stored).toMatchObject({ restricted: true, url: null, title: '', warnings: [] });
   });
 
   it('records an ordinary page observation', async () => {
@@ -242,10 +252,11 @@ describe('restricted pages', () => {
       detectionConfidence: 'high',
       warnings: [],
       restricted: false,
-    })) as { stored: boolean };
+    }, ACTIVE_TAB)) as { stored: boolean };
 
     expect(result.stored).toBe(true);
-    expect(sessionStore['lastObservation']).toMatchObject({ pageType: 'course-home' });
+    const stored = (sessionStore['observations'] as Record<string, Record<string, unknown>>)[String(ACTIVE_TAB)];
+    expect(stored).toMatchObject({ pageType: 'course-home' });
   });
 });
 
@@ -651,19 +662,19 @@ describe('the connection state the panel receives', () => {
   });
 
   it('does not call an unsupported page supported', async () => {
-    await handleMessage(observation('unsupported'));
+    await handleMessage(observation('unsupported'), ACTIVE_TAB);
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
     expect(state.connection).toBe('unsupported');
   });
 
   it('surfaces a signed-out page as its own state', async () => {
-    await handleMessage(observation('signed-out'));
+    await handleMessage(observation('signed-out'), ACTIVE_TAB);
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
     expect(state.connection).toBe('signed-out');
   });
 
   it('calls a readable course page supported', async () => {
-    await handleMessage(observation('course-home'));
+    await handleMessage(observation('course-home'), ACTIVE_TAB);
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
     expect(state.connection).toBe('supported');
   });

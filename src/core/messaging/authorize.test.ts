@@ -221,6 +221,9 @@ describe('an extension page that lives in a tab', () => {
       },
       policy,
     );
+    // Not merely refused: it must not have been read as an extension page at
+    // all. A content-script role is what a look-alike origin should collapse to.
     expect(result).toMatchObject({ ok: false });
+    expect((result as { reason: string }).reason).toContain('A content-script may not send');
   });
 });

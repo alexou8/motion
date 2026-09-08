@@ -101,8 +101,9 @@ try {
   // could then be opened by a website and would carry that role.
   const webAccessible = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
   check(
-    'no HTML page is web-accessible',
-    webAccessible.every((resource) => !/\.html?$/i.test(resource)),
+    'only script bundles are web-accessible',
+    webAccessible.length > 0 && webAccessible.every((resource) => /\.(?:js|mjs|css|woff2?|png|svg)$/i.test(resource)) &&
+      webAccessible.every((resource) => !/\.(?:html?|xht(?:ml)?|svg)$/i.test(resource) && !resource.includes('*')),
     webAccessible.join(', ') || 'none',
   );
 
@@ -191,7 +192,16 @@ try {
     `got ${state?.result?.page?.pageType}`,
   );
 
-  const tasks = state?.result?.tasks ?? [];
+  // Extract from the navbar page itself, so this asserts what the navbar page
+  // produces rather than what the assignment list left behind.
+  await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await panel.evaluate(async (origin) => {
+    const [tab] = await chrome.tabs.query({ url: `${origin}/*` });
+    return chrome.runtime.sendMessage({ type: 'request-extraction', tabId: tab?.id });
+  }, ORIGIN);
+  await panel.waitForTimeout(1_000);
+  const afterNavbar = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  const tasks = afterNavbar?.result?.tasks ?? [];
   check(
     'no navigation link became a task',
     !tasks.some((task) => /^(Assignments|Quizzes|Discussions|Grades|Calendar|Course Home|Content)$/i.test((task.title ?? '').trim())),
@@ -221,17 +231,50 @@ try {
     `got ${afterSpa?.result?.page?.pageType}`,
   );
 
-  // A graded attempt must not leave the previous course page on screen.
+  // A graded attempt must not leave the previous course page on screen, and must
+  // not carry the attempt's URL or title into stored state either.
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(900);
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(900);
   const duringAttempt = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
   check(
-    'a graded attempt clears the previous page rather than showing it',
-    duringAttempt?.result?.connection === 'idle' && duringAttempt?.result?.page?.url === null,
-    `connection ${duringAttempt?.result?.connection}, url ${duringAttempt?.result?.page?.url}`,
+    'a graded attempt puts the panel in restricted mode',
+    duringAttempt?.result?.connection === 'restricted',
+    `connection ${duringAttempt?.result?.connection}`,
   );
+  check(
+    'nothing from the attempt is stored',
+    duringAttempt?.result?.page?.url === null && duringAttempt?.result?.page?.title === '',
+    `url ${duringAttempt?.result?.page?.url}, title "${duringAttempt?.result?.page?.title}"`,
+  );
+
+  // Two tabs: a graded attempt in the active one must not inherit the other
+  // tab's coursework workspace, and going back must restore it.
+  const courseTab = await context.newPage();
+  await courseTab.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(900);
+  const attemptTab = await context.newPage();
+  await attemptTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await attemptTab.bringToFront();
+  await panel.waitForTimeout(900);
+  const onAttemptTab = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  check(
+    'a second tab on a graded attempt does not inherit the first tab workspace',
+    onAttemptTab?.result?.connection === 'restricted',
+    `connection ${onAttemptTab?.result?.connection}`,
+  );
+
+  await courseTab.bringToFront();
+  await panel.waitForTimeout(1_200);
+  const backOnCourseTab = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  check(
+    'returning to the course tab restores its state',
+    backOnCourseTab?.result?.connection === 'supported',
+    `connection ${backOnCourseTab?.result?.connection}`,
+  );
+  await attemptTab.close();
+  await courseTab.close();
 
   // The panel must name the state it is in, not fall back to the workspace.
   for (const [path, connection] of [

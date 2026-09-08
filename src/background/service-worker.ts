@@ -16,7 +16,7 @@ import { resolveAdapter, supportedHosts } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
-import { handleMessage } from './router';
+import { handleMessage, forgetTab } from './router';
 import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './recovery';
 
 // --- Registered synchronously. Do not move these into an async function. ---
@@ -94,6 +94,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   if (!alarm.name.startsWith(RETRY_ALARM_PREFIX)) return;
   const workflowId = alarm.name.slice(RETRY_ALARM_PREFIX.length);
   void recoverWorkflows(workflowId);
+});
+
+/** A closed tab has no page for the panel to describe. */
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void forgetTab(tabId);
 });
 
 /**
