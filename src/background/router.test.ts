@@ -670,6 +670,37 @@ describe('the connection state the panel receives', () => {
 });
 
 describe('an observation from a restricted page', () => {
+  it('leaves another tab\'s observation alone', async () => {
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+        pageType: 'course-home',
+        title: 'Course',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: false,
+      },
+      3,
+    );
+
+    await handleMessage(
+      {
+        type: 'page-observed',
+        url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=999999',
+        pageType: 'quiz-attempt',
+        title: 'Quiz',
+        detectionConfidence: 'high',
+        warnings: [],
+        restricted: true,
+      },
+      9,
+    );
+
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('supported');
+  });
+
   it('stores nothing and drops the previous page rather than leaving it on screen', async () => {
     await handleMessage({
       type: 'page-observed',

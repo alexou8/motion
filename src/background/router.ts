@@ -40,7 +40,7 @@ import { createEngine } from './recovery';
 export async function handleMessage(message: Message, tabId?: number): Promise<unknown> {
   switch (message.type) {
     case 'page-observed':
-      return handlePageObserved(message);
+      return handlePageObserved(message, tabId);
     case 'extraction-result':
       return handleExtraction(message);
     case 'get-state':
@@ -100,9 +100,20 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
  */
 async function handlePageObserved(
   message: Extract<Message, { type: 'page-observed' }>,
+  tabId?: number,
 ): Promise<{ stored: boolean }> {
   if (message.restricted) {
-    await chrome.storage.session.remove('lastObservation');
+    // Only the tab that owns the stored observation may clear it. A quiz
+    // attempt opened in a second tab must not blank the panel for the course
+    // page still open in the first, which would leave it idle until the
+    // student navigated there again.
+    const stored = (await chrome.storage.session.get('lastObservation')) as {
+      lastObservation?: { tabId?: number };
+    };
+    const ownerTabId = stored.lastObservation?.tabId;
+    if (ownerTabId === undefined || tabId === undefined || ownerTabId === tabId) {
+      await chrome.storage.session.remove('lastObservation');
+    }
     return { stored: false };
   }
   await chrome.storage.session.set({
@@ -112,6 +123,7 @@ async function handlePageObserved(
       title: message.title,
       warnings: message.warnings,
       observedAt: new Date().toISOString(),
+      ...(tabId === undefined ? {} : { tabId }),
     },
   });
   return { stored: true };
