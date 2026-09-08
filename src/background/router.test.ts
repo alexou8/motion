@@ -5,6 +5,7 @@ import {
   noteSchema,
   EXTRACTION_VERSION,
   type CourseTask,
+  type PageType,
 } from '@/core/domain';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
@@ -632,5 +633,35 @@ describe('talking to the content script', () => {
 
     expect(result).toEqual({ requested: false });
     send.mockImplementation(async () => undefined);
+  });
+});
+
+describe('the connection state the panel receives', () => {
+  const observation = (pageType: PageType) => ({
+    type: 'page-observed' as const,
+    url: 'https://mylearningspace.wlu.ca/d2l/home/999999?ou=999999',
+    pageType,
+    title: 'Course',
+    detectionConfidence: 'high' as const,
+    warnings: [],
+    restricted: false,
+  });
+
+  it('does not call an unsupported page supported', async () => {
+    await handleMessage(observation('unsupported'));
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('unsupported');
+  });
+
+  it('surfaces a signed-out page as its own state', async () => {
+    await handleMessage(observation('signed-out'));
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('signed-out');
+  });
+
+  it('calls a readable course page supported', async () => {
+    await handleMessage(observation('course-home'));
+    const state = (await handleMessage({ type: 'get-state' })) as { connection: string };
+    expect(state.connection).toBe('supported');
   });
 });

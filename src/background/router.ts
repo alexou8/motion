@@ -510,6 +510,20 @@ async function requestExtraction(tabId: number | undefined): Promise<{ requested
  */
 const NO_EXTERNAL_ID = '\u0000';
 
+/**
+ * What the panel should show, from what was actually observed.
+ *
+ * This used to be `observation ? 'supported' : 'idle'`, so an unsupported page
+ * rendered the coursework workspace: the panel claimed a page Motion could not
+ * read. The page type is the fact that decides it.
+ */
+function connectionFor(observation: PanelState['page'] | null | undefined): PanelState['connection'] {
+  if (!observation) return 'idle';
+  if (observation.pageType === 'signed-out') return 'signed-out';
+  if (observation.pageType === 'unsupported' || observation.pageType === null) return 'unsupported';
+  return 'supported';
+}
+
 /** Assembles everything the panel renders. */
 export async function buildPanelState(): Promise<PanelState> {
   const db = await openDatabase();
@@ -548,7 +562,7 @@ export async function buildPanelState(): Promise<PanelState> {
 
   return {
     ...EMPTY_PANEL_STATE,
-    connection: observation ? 'supported' : 'idle',
+    connection: connectionFor(observation),
     page: observation ?? EMPTY_PANEL_STATE.page,
     course,
     tasks: upcoming,
