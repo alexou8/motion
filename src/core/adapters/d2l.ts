@@ -30,15 +30,24 @@ const HOST_PATTERNS: readonly RegExp[] = [
 
 const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
   { pattern: /^\/d2l\/home\/?$/i, pageType: 'dashboard' },
-  { pattern: /^\/d2l\/home\/[^/]+\/?$/i, pageType: 'course-home' },
+  { pattern: /^\/d2l\/home\/\d+\/?$/i, pageType: 'course-home' },
+  // The legacy org-unit home is still what several course-navbar links point at.
+  { pattern: /^\/d2l\/lp\/ouHome\/home(?:\.d2l)?\/?$/i, pageType: 'course-home' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/home\/?$/i, pageType: 'content-module' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/viewContent\//i, pageType: 'content-topic' },
+  { pattern: /^\/d2l\/le\/content\/[^/]+\/navigateContent\//i, pageType: 'content-topic' },
   { pattern: /^\/d2l\/le\/news(?:\/|$)/i, pageType: 'announcements' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?\/?$/i, pageType: 'assignment-list' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_submit_files(?:\/|\.|$)/i, pageType: 'assignment' },
+  // Opening a submitted assignment for feedback lands here, not on the submit page.
+  { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_user_view_src(?:\/|\.|$)/i, pageType: 'assignment' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/List(?:\/|$)/i, pageType: 'discussion-list' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/topics\//i, pageType: 'discussion-topic' },
   { pattern: /^\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?\/?$/i, pageType: 'quiz-list' },
+  // The pre-attempt summary is metadata about a quiz, not an attempt: it stays
+  // outside ASSESSMENT_PAGE_TYPES so Motion may read it, and the attempt route
+  // below is the only quizzing route that trips restricted mode.
+  { pattern: /^\/d2l\/lms\/quizzing\/user\/quiz_summary(?:\.d2l)?\/?$/i, pageType: 'quiz-list' },
   { pattern: /^\/d2l\/lms\/quizzing\/user\/attempt\//i, pageType: 'quiz-attempt' },
   { pattern: /^\/d2l\/lms\/grades(?:\/|$)/i, pageType: 'grades' },
   { pattern: /^\/d2l\/le\/calendar(?:\/|$)/i, pageType: 'calendar' },
@@ -55,6 +64,37 @@ const DOCUMENTED_ROW_SELECTORS = [
 ] as const;
 
 const SEMANTIC_ROW_SELECTORS = ['table tr'] as const;
+
+/**
+ * Chrome regions that hold navigation rather than coursework. A course navbar
+ * links to the assignments, quizzes and discussions *lists*, so reading it as
+ * coursework produced tasks called "Assignments" and "Quizzes" that exist on
+ * no due-date list. Candidates inside these regions are dropped entirely.
+ */
+const NAVIGATION_REGION_SELECTOR =
+  'nav, header, footer, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, .d2l-breadcrumbs, .d2l-menu';
+
+/**
+ * Routes that are a place to look rather than a thing to do. A link to a list
+ * page is navigation even when it appears in the body of a page.
+ */
+const NAVIGATION_HREF_PATTERNS: readonly RegExp[] = [
+  /\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?(?:[/?#]|$)/i,
+  /\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?(?:[/?#]|$)/i,
+  /\/d2l\/le\/[^/]+\/discussions\/List(?:[/?#]|$)/i,
+  /\/d2l\/le\/content\/[^/]+\/home(?:[/?#]|$)/i,
+  /\/d2l\/lms\/grades(?:[/?#]|$)/i,
+  /\/d2l\/le\/calendar(?:[/?#]|$)/i,
+  /\/d2l\/home(?:\/\d+)?(?:[/?#]|$)/i,
+];
+
+function isNavigationHref(href: string | null): boolean {
+  return href !== null && NAVIGATION_HREF_PATTERNS.some((pattern) => pattern.test(href));
+}
+
+function inNavigationRegion(element: Element): boolean {
+  return element.closest(NAVIGATION_REGION_SELECTOR) !== null;
+}
 
 const READ_ACTIONS: readonly ActionType[] = ['read-page', 'extract-deadlines', 'extract-requirements'];
 const ASSESSMENT_READ_ACTIONS: readonly ActionType[] = ['read-page'];
@@ -74,11 +114,11 @@ type TaskCandidate = {
 
 const TASK_ROUTE_PATTERNS: readonly { pattern: RegExp; route: RouteTask }[] = [
   {
-    pattern: /\/d2l\/lms\/dropbox\/user\/(?:folder_submit_files|folders_list)(?:\.d2l)?(?:[/?]|$)/i,
+    pattern: /\/d2l\/lms\/dropbox\/user\/(?:folder_submit_files|folder_user_view_src)(?:\.d2l)?(?:[/?]|$)/i,
     route: { kind: 'assignment', strategy: 'route:assignment' },
   },
   {
-    pattern: /(?:\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?(?:[/?]|$)|quiz_summary|\/quizzing\/user\/attempt\/)/i,
+    pattern: /(?:\/d2l\/lms\/quizzing\/user\/quiz_summary(?:\.d2l)?(?:[/?]|$)|\/quizzing\/user\/attempt\/)/i,
     route: { kind: 'quiz', strategy: 'route:quiz' },
   },
   {
@@ -101,10 +141,16 @@ function pathnameOf(url: string): string | null {
 
 function queryValue(url: string, names: readonly string[]): string | null {
   try {
+    // D2L emits `ou` on modern routes and `OU` on some legacy ones, so the
+    // lookup is case-insensitive rather than trusting one spelling.
     const params = new URL(url).searchParams;
-    for (const name of names) {
-      const value = params.get(name)?.trim();
-      if (value) return value;
+    const wanted = names.map((name) => name.toLowerCase());
+    for (const wantedName of wanted) {
+      for (const [key, value] of params) {
+        if (key.toLowerCase() !== wantedName) continue;
+        const trimmed = value.trim();
+        if (trimmed) return trimmed;
+      }
     }
   } catch {
     return null;
@@ -174,6 +220,13 @@ function semanticCandidate(element: Element, input: AdapterInput): TaskCandidate
   return { row: element, anchor, href, route, strategy: 'semantic table row' };
 }
 
+function isCoursework(candidate: TaskCandidate): boolean {
+  if (isNavigationHref(candidate.href)) return false;
+  if (inNavigationRegion(candidate.row)) return false;
+  if (candidate.anchor && inNavigationRegion(candidate.anchor)) return false;
+  return true;
+}
+
 function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[] {
   const candidates: TaskCandidate[] = [];
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
@@ -182,7 +235,7 @@ function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[
   }
   for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) candidates.push(documentedCandidate(element, input));
   for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) candidates.push(semanticCandidate(element, input));
-  return candidates;
+  return candidates.filter(isCoursework);
 }
 
 function taskAnchor(candidate: TaskCandidate): HTMLAnchorElement | null {
