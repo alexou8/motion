@@ -181,3 +181,32 @@ describe('MyLearningSpace live-validation regressions', () => {
     ).toBe(true);
   });
 });
+
+describe('a session that has ended', () => {
+  it('reports signed-out for the redirect stub D2L serves in place of the page', () => {
+    const detection = d2lAdapter.detectPage(
+      input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('signed-out-redirect')),
+    );
+    expect(detection).toMatchObject({ pageType: 'signed-out', confidence: 'high' });
+    expect(detection?.warnings[0]).toMatch(/session has ended/i);
+  });
+
+  it('reports signed-out on the sign-in route itself', () => {
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/login?sessionExpired=0&target=%2fd2l%2fhome`, fixture('signed-out-redirect'))),
+    ).toMatchObject({ pageType: 'signed-out' });
+  });
+
+  it('invents no course and no tasks from a page that has no content', () => {
+    const page = input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('signed-out-redirect'));
+    expect(d2lAdapter.extractCourse(page)).toBeNull();
+    expect(d2lAdapter.extractTasks(page)).toEqual([]);
+    expect(d2lAdapter.getSupportedActions('signed-out')).toEqual([]);
+  });
+
+  it('still reads a real page that happens to link to the login route', () => {
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar'))),
+    ).toMatchObject({ pageType: 'course-home' });
+  });
+});

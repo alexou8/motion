@@ -51,7 +51,24 @@ const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
   { pattern: /^\/d2l\/lms\/quizzing\/user\/attempt\//i, pageType: 'quiz-attempt' },
   { pattern: /^\/d2l\/lms\/grades(?:\/|$)/i, pageType: 'grades' },
   { pattern: /^\/d2l\/le\/calendar(?:\/|$)/i, pageType: 'calendar' },
+  { pattern: /^\/d2l\/login(?:\/|$)/i, pageType: 'signed-out' },
+  { pattern: /^\/d2l\/lp\/auth\/(?:login|saml)(?:\/|$)/i, pageType: 'signed-out' },
 ];
+
+/**
+ * A signed-out D2L serves the requested route as a near-empty document whose
+ * only content is a script redirecting to `/d2l/login`. Detected from the
+ * document rather than the URL, because the URL is still the course page the
+ * student asked for: reporting that as a dashboard, at high confidence, with an
+ * empty body behind it, is how a stale panel starts.
+ */
+function looksSignedOut(document: Document): boolean {
+  if (normalizedText(document.body)) return false;
+  const scripts = Array.from(document.querySelectorAll('head script, body script'))
+    .map((script) => script.textContent ?? '')
+    .join(' ');
+  return /location\.(?:replace|href)\s*[(=]\s*['"][^'"]*\/d2l\/login/i.test(scripts);
+}
 
 const DOCUMENTED_ROW_SELECTORS = [
   '.d2l-datalist-item',
@@ -344,13 +361,32 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     const pathname = pathnameOf(input.url);
     if (!pathname) return { pageType: 'unsupported', confidence: 'low', warnings: ['The page URL could not be parsed.'] };
 
+    if (looksSignedOut(input.document)) {
+      return {
+        pageType: 'signed-out',
+        confidence: 'high',
+        warnings: ['This D2L session has ended. Sign in again to let Motion read the page.'],
+      };
+    }
+
     const route = ROUTES.find((candidate) => candidate.pattern.test(pathname));
-    if (route) return { pageType: route.pageType, confidence: 'high', warnings: [] };
+    if (route) {
+      return {
+        pageType: route.pageType,
+        confidence: 'high',
+        warnings:
+          route.pageType === 'signed-out'
+            ? ['This D2L session has ended. Sign in again to let Motion read the page.']
+            : [],
+      };
+    }
 
     return { pageType: 'unsupported', confidence: 'low', warnings: [`Unsupported D2L route: ${pathname}`] };
   }
 
   extractCourse(input: AdapterInput): Course | null {
+    // A sign-in stub carries the course URL but none of the course.
+    if (this.detectPage(input)?.pageType === 'signed-out') return null;
     const externalId = courseExternalId(input);
     const name = courseName(input.document);
     if (!externalId || !name) return null;
@@ -373,7 +409,14 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   extractTasks(input: AdapterInput): CourseTask[] {
     const detection = this.detectPage(input);
     const pageType = detection?.pageType ?? 'unsupported';
-    if (pageType === 'unsupported' || pageType === 'dashboard' || pageType === 'grades' || pageType === 'calendar') return [];
+    if (
+      pageType === 'unsupported' ||
+      pageType === 'signed-out' ||
+      pageType === 'dashboard' ||
+      pageType === 'grades' ||
+      pageType === 'calendar'
+    )
+      return [];
 
     const externalCourseId = courseExternalId(input);
     const tasks: CourseTask[] = [];
@@ -427,6 +470,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   }
 
   getSupportedActions(pageType: PageType): readonly ActionType[] {
+    if (pageType === 'signed-out') return [];
     return ASSESSMENT_PAGE_TYPES.includes(pageType) ? ASSESSMENT_READ_ACTIONS : READ_ACTIONS;
   }
 }

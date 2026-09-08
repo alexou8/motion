@@ -7,6 +7,7 @@ import {
   IdleView,
   PermissionNeededView,
   RestrictedView,
+  SignedOutView,
   UnsupportedView,
   WorkingPanel,
 } from './views';
@@ -42,6 +43,7 @@ function ConnectionContent({ state, bridge, now }: { state: PanelState; bridge: 
     case 'unsupported': return <UnsupportedView state={state} send={send} />;
     case 'permission-needed': return <PermissionNeededView state={state} send={send} />;
     case 'restricted': return <RestrictedView state={state} send={send} />;
+    case 'signed-out': return <SignedOutView state={state} send={send} />;
     case 'supported':
       return (
         <>

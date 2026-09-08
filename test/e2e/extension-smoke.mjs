@@ -51,6 +51,8 @@ const ROUTES = [
   { path: '/d2l/lms/grades/my_grades/main.d2l?ou=999999', fixture: 'course-home-navbar', expect: 'grades' },
   { path: '/d2l/lms/quizzing/user/attempt/201?ou=999999', fixture: 'quiz-attempt', expect: 'quiz-attempt', restricted: true },
   { path: '/d2l/lp/whatever/unknown', fixture: 'broken', expect: 'unsupported' },
+  // The document a signed-out D2L serves for any route.
+  { path: '/d2l/home/424242?ou=424242', fixture: 'signed-out-redirect', expect: 'signed-out' },
 ];
 
 const userDataDir = await mkdtemp(join(tmpdir(), 'motion-e2e-'));
@@ -206,6 +208,18 @@ try {
     afterSpa?.result?.page?.pageType === 'grades',
     `got ${afterSpa?.result?.page?.pageType}`,
   );
+
+  // The panel must name the state it is in, not fall back to the workspace.
+  for (const [path, connection] of [
+    ['/d2l/lp/whatever/unknown', 'unsupported'],
+    ['/d2l/home/424242?ou=424242', 'signed-out'],
+    ['/d2l/home/999999?ou=999999', 'supported'],
+  ]) {
+    await page.goto(`${ORIGIN}${path}`, { waitUntil: 'load' });
+    await panel.waitForTimeout(900);
+    const current = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+    check(`${path} — panel connection state is ${connection}`, current?.result?.connection === connection, `got ${current?.result?.connection}`);
+  }
 
   check('side panel raised no uncaught error', panelErrors.length === 0, panelErrors.join('; ').slice(0, 300));
   check('service worker logged no error', workerErrors.length === 0, workerErrors.join('; ').slice(0, 300));

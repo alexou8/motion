@@ -15,6 +15,8 @@ export const pageTypeSchema = z.enum([
   'quiz-attempt',
   'grades',
   'calendar',
+  /** A D2L page that redirected to sign-in: the student's session has ended. */
+  'signed-out',
   'unsupported',
 ]);
 export type PageType = z.infer<typeof pageTypeSchema>;

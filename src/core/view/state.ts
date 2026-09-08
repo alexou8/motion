@@ -21,6 +21,8 @@ export const connectionStateSchema = z.enum([
   'permission-needed',
   /** Page looks like a graded attempt: restricted learning-support mode. */
   'restricted',
+  /** The LMS redirected to sign-in; nothing can be read until the student returns. */
+  'signed-out',
   /** No active tab, or the panel opened before a page was observed. */
   'idle',
 ]);
