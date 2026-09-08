@@ -63,7 +63,15 @@ const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
  * empty body behind it, is how a stale panel starts.
  */
 function looksSignedOut(document: Document): boolean {
-  if (normalizedText(document.body)) return false;
+  const body = document.body;
+  if (!body || normalizedText(body)) return false;
+  // A page that has rendered nothing *yet* still has its elements: D2L ships
+  // session-expiry redirect scripts on ordinary pages, so the script alone
+  // proves nothing. The stub has no body content at all.
+  const hasContentElements = Array.from(body.children).some(
+    (child) => !['SCRIPT', 'NOSCRIPT', 'TEMPLATE'].includes(child.tagName),
+  );
+  if (hasContentElements) return false;
   const scripts = Array.from(document.querySelectorAll('head script, body script'))
     .map((script) => script.textContent ?? '')
     .join(' ');
@@ -83,13 +91,18 @@ const DOCUMENTED_ROW_SELECTORS = [
 const SEMANTIC_ROW_SELECTORS = ['table tr'] as const;
 
 /**
- * Chrome regions that hold navigation rather than coursework. A course navbar
- * links to the assignments, quizzes and discussions *lists*, so reading it as
- * coursework produced tasks called "Assignments" and "Quizzes" that exist on
- * no due-date list. Candidates inside these regions are dropped entirely.
+ * Page chrome: regions that hold navigation rather than coursework. A course
+ * navbar links to the assignments, quizzes and discussions *lists*, so reading
+ * it as coursework produced tasks called "Assignments" and "Quizzes" that exist
+ * on no due-date list. Candidates inside these regions are dropped entirely.
+ *
+ * Deliberately not `header` or `footer` as bare tags: `closest` walks to the
+ * root, and a list row may title itself with its own `<header>`. Matching those
+ * would drop a real, due-dated assignment silently. Page chrome identifies
+ * itself with a role or a D2L navigation class.
  */
 const NAVIGATION_REGION_SELECTOR =
-  'nav, header, footer, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, .d2l-breadcrumbs, .d2l-menu';
+  'nav, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, .d2l-breadcrumbs, .d2l-menu';
 
 /**
  * Routes that are a place to look rather than a thing to do. A link to a list
@@ -101,7 +114,7 @@ const NAVIGATION_HREF_PATTERNS: readonly RegExp[] = [
   /\/d2l\/le\/[^/]+\/discussions\/List(?:[/?#]|$)/i,
   /\/d2l\/le\/content\/[^/]+\/home(?:[/?#]|$)/i,
   /\/d2l\/lms\/grades(?:[/?#]|$)/i,
-  /\/d2l\/le\/calendar(?:[/?#]|$)/i,
+  /\/d2l\/le\/calendar(?:\/\d+)?(?:[?#]|$)/i,
   /\/d2l\/home(?:\/\d+)?(?:[/?#]|$)/i,
 ];
 
