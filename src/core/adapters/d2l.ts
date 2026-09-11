@@ -109,7 +109,7 @@ const SEMANTIC_ROW_SELECTORS = ['table tr'] as const;
  * itself with a role or a D2L navigation class.
  */
 const NAVIGATION_REGION_SELECTOR =
-  'nav, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, .d2l-breadcrumbs, .d2l-menu';
+  'nav, [role="navigation"], [role="banner"], [role="contentinfo"], .d2l-navigation, .d2l-navigation-header, d2l-navigation, d2l-navigation-main-header, d2l-labs-navigation, d2l-labs-navigation-main-header, d2l-labs-navigation-main-footer, d2l-labs-navigation-band, .d2l-breadcrumbs, .d2l-menu';
 
 /**
  * Routes that are a place to look rather than a thing to do. A link to a list
@@ -127,6 +127,71 @@ const NAVIGATION_HREF_PATTERNS: readonly RegExp[] = [
 
 function isNavigationHref(href: string | null): boolean {
   return href !== null && NAVIGATION_HREF_PATTERNS.some((pattern) => pattern.test(href));
+}
+
+/**
+ * Links that describe a row without naming it.
+ *
+ * A D2L list row carries more than one link to the same piece of work: the
+ * submission history ("1 Submission, 1 File"), the feedback view, and — on a
+ * discussion list — an "Unread for topic ..." counter that differs from the
+ * topic's own link only by a `filters=unread` query. Taking whichever link came
+ * first in the DOM named assignments after their submission count, and turned
+ * every discussion topic into two tasks. These never supply a title, and never
+ * stand in for the row's own link.
+ */
+const SECONDARY_LINK_PATTERNS: readonly RegExp[] = [
+  /\/d2l\/lms\/dropbox\/user\/folders_history(?:\.d2l)?(?:[/?#]|$)/i,
+  /\/d2l\/lms\/dropbox\/user\/folder_user_view_feedback(?:\.d2l)?(?:[/?#]|$)/i,
+  /[?&]filters=unread\b/i,
+  /\/d2l\/le\/userprogress\//i,
+];
+
+function isSecondaryHref(href: string | null): boolean {
+  return href !== null && SECONDARY_LINK_PATTERNS.some((pattern) => pattern.test(href));
+}
+
+/**
+ * Where a row states its own name, most specific first.
+ *
+ * D2L puts the name in a dedicated container and the dates, counts and grades
+ * in siblings. Reading the container rather than the first anchor is what keeps
+ * a *closed* assignment — whose name is a plain label because there is nothing
+ * left to submit — from being titled after the only link left on the row.
+ */
+const TASK_NAME_SELECTORS = [
+  '.d2l-foldername-medium-font',
+  '.d2l-linkheading-link',
+  '.d2l-le-listitem-name',
+] as const;
+
+/**
+ * The name held by a row's name container, without the dates D2L nests inside
+ * it. Prefers the container's own link or label over its full text, so a
+ * wrapper that also holds a due date cannot smuggle the date into the title.
+ */
+function nameText(container: Element): string {
+  const link = Array.from(container.querySelectorAll<HTMLAnchorElement>('a[href]')).find(
+    (candidate) => !isSecondaryHref(candidate.getAttribute('href')),
+  );
+  const linkText = normalizedText(link ?? null);
+  if (linkText) return linkText;
+
+  const label = container.querySelector('label');
+  const labelText = normalizedText(label);
+  if (labelText) return labelText;
+
+  const copy = container.cloneNode(true) as Element;
+  for (const dates of copy.querySelectorAll('.d2l-dates-text, .d2l-folderdates-wrapper')) dates.remove();
+  return normalizedText(copy);
+}
+
+/** The row's own link: the first that is not one of the secondary links above. */
+function primaryAnchor(row: Element): HTMLAnchorElement | null {
+  const anchors = Array.from(row.querySelectorAll<HTMLAnchorElement>('a[href]'));
+  return (
+    anchors.find((candidate) => !isSecondaryHref(candidate.getAttribute('href'))) ?? anchors[0] ?? null
+  );
 }
 
 function inNavigationRegion(element: Element): boolean {
@@ -199,27 +264,58 @@ function pageTitle(document: Document): string {
   return normalizedText(firstMatch(document, ['.d2l-page-title', 'h1'])) || document.title.trim() || 'D2L page';
 }
 
-function courseName(document: Document): string {
+const COURSE_CODE_PATTERN = /\b[A-Za-z]{2,}[A-Za-z0-9-]*\d[A-Za-z0-9-]*\b/;
+
+/**
+ * The document title's segments, with the page's own heading removed.
+ *
+ * D2L titles a page "<what this page is> - <course code> - <course name>", so
+ * the first segment names the page, not the course. Dropping the segment that
+ * repeats the visible heading is what stops a course being renamed "Grades" or
+ * "Dropbox Folders" by whichever page the student happened to open.
+ */
+function titleSegments(document: Document): string[] {
+  const heading = normalizedText(firstMatch(document, ['.d2l-page-title', 'h1'])).toLowerCase();
+  return document.title
+    .split(/\s+-\s+|\s+\|\s+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .filter((part) => part.toLowerCase() !== heading);
+}
+
+/**
+ * The course this page belongs to, as a name and a code.
+ *
+ * Element lookups come first, because a stock Brightspace skin states the
+ * course in its navigation. This deliberately does *not* fall back to
+ * `.d2l-page-title` or `h1`: on MyLearningSpace those hold the name of the
+ * page, and accepting them meant every visit overwrote the stored course with
+ * the title of whatever page had just been read.
+ */
+function courseIdentity(document: Document): { name: string; code: string | null } {
   const namedElement = firstMatch(document, [
     '.d2l-navigation-s-course-name',
     'd2l-navigation-link-text',
     '[class*="course-name"]',
-    '.d2l-page-title',
-    'h1',
   ]);
   const visibleName = normalizedText(namedElement);
-  if (visibleName) return visibleName;
+  if (visibleName) return { name: visibleName, code: courseCodeFromName(visibleName) };
 
-  const titleParts = document.title
-    .split(/\s+-\s+|\s+\|\s+/)
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const courseCodePattern = /\b[A-Za-z]{2,}[A-Za-z0-9-]*\d[A-Za-z0-9-]*\b/;
-  return titleParts.find((part) => courseCodePattern.test(part)) ?? titleParts[0] ?? '';
+  const segments = titleSegments(document);
+  const codeIndex = segments.findIndex((part) => part.length <= 40 && COURSE_CODE_PATTERN.test(part));
+  if (codeIndex === -1) return { name: segments[0] ?? '', code: null };
+
+  const codeSegment = segments[codeIndex] ?? '';
+  const code = codeSegment.match(COURSE_CODE_PATTERN)?.[0] ?? null;
+  // "CS101 Example Course" names the course and carries its code; a bare
+  // "CS-101-A" does not, and the segment after it is the course's name.
+  const following = segments[codeIndex + 1];
+  const name = codeSegment === code && following ? following : codeSegment;
+  return { name, code };
 }
 
 function courseCodeFromName(name: string): string | null {
-  return name.match(/\b[A-Za-z]{2,}[A-Za-z0-9-]*\d[A-Za-z0-9-]*\b/)?.[0] ?? null;
+  return name.match(COURSE_CODE_PATTERN)?.[0] ?? null;
 }
 
 function termFromName(name: string): string | null {
@@ -235,26 +331,30 @@ function meaningfulAncestor(element: Element): Element {
 }
 
 function routeAnchorCandidate(anchor: HTMLAnchorElement, input: AdapterInput): TaskCandidate | null {
-  const href = absoluteUrl(anchor.getAttribute('href') ?? '', input.url);
-  if (!href) return null;
+  const raw = anchor.getAttribute('href') ?? '';
+  // A secondary link points at the same work as the row's own link. Letting it
+  // start a candidate is what produced the duplicate "Unread for topic ..." task.
+  if (isSecondaryHref(raw)) return null;
+  const href = absoluteUrl(raw, input.url);
+  if (!href || isSecondaryHref(href)) return null;
   const route = pageTypeFromTaskHref(href);
   if (!route) return null;
   return { row: meaningfulAncestor(anchor), anchor, href, route, strategy: route.strategy };
 }
 
-function documentedCandidate(element: Element, input: AdapterInput): TaskCandidate {
-  const row = meaningfulAncestor(element);
-  const anchor = row.querySelector<HTMLAnchorElement>('a[href]');
+function rowCandidate(row: Element, input: AdapterInput, strategy: string): TaskCandidate {
+  const anchor = primaryAnchor(row);
   const href = anchor ? absoluteUrl(anchor.getAttribute('href') ?? '', input.url) : null;
   const route = href ? pageTypeFromTaskHref(href) : null;
-  return { row, anchor, href, route, strategy: 'documented D2L class convention' };
+  return { row, anchor, href, route, strategy };
+}
+
+function documentedCandidate(element: Element, input: AdapterInput): TaskCandidate {
+  return rowCandidate(meaningfulAncestor(element), input, 'documented D2L class convention');
 }
 
 function semanticCandidate(element: Element, input: AdapterInput): TaskCandidate {
-  const anchor = element.querySelector<HTMLAnchorElement>('a[href]');
-  const href = anchor ? absoluteUrl(anchor.getAttribute('href') ?? '', input.url) : null;
-  const route = href ? pageTypeFromTaskHref(href) : null;
-  return { row: element, anchor, href, route, strategy: 'semantic table row' };
+  return rowCandidate(element, input, 'semantic table row');
 }
 
 function isCoursework(candidate: TaskCandidate): boolean {
@@ -264,28 +364,73 @@ function isCoursework(candidate: TaskCandidate): boolean {
   return true;
 }
 
+/**
+ * Whether `next` describes a row better than the candidate already held for it.
+ *
+ * A candidate that recognised the row's route knows what kind of work it is, so
+ * it wins over one that only matched a class convention.
+ */
+function isBetterCandidate(next: TaskCandidate, current: TaskCandidate): boolean {
+  if ((next.route !== null) !== (current.route !== null)) return next.route !== null;
+  return next.href !== null && current.href === null;
+}
+
+/**
+ * The rows on this page that might be coursework — at most one candidate each.
+ *
+ * A row is the unit, not a link. D2L puts several links to the same work on one
+ * row, and treating each as its own candidate produced a second task per
+ * discussion topic and titled closed assignments after their submission count.
+ */
 function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[] {
-  const candidates: TaskCandidate[] = [];
+  const byRow = new Map<Element, TaskCandidate>();
+  const consider = (candidate: TaskCandidate | null): void => {
+    if (!candidate) return;
+    const current = byRow.get(candidate.row);
+    if (!current || isBetterCandidate(candidate, current)) byRow.set(candidate.row, candidate);
+  };
+
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    const candidate = routeAnchorCandidate(anchor, input);
-    if (candidate) candidates.push(candidate);
+    consider(routeAnchorCandidate(anchor, input));
   }
-  for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) candidates.push(documentedCandidate(element, input));
-  for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) candidates.push(semanticCandidate(element, input));
-  return candidates.filter(isCoursework);
+  for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) consider(documentedCandidate(element, input));
+  for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) consider(semanticCandidate(element, input));
+
+  // Report rows in the order the page lists them. The passes above run
+  // route-first, which would otherwise hand back a page's work in an order that
+  // matches neither the document nor anything the student can see.
+  return Array.from(byRow.values())
+    .filter(isCoursework)
+    .sort((a, b) =>
+      a.row === b.row
+        ? 0
+        : a.row.compareDocumentPosition(b.row) & Node.DOCUMENT_POSITION_FOLLOWING
+          ? -1
+          : 1,
+    );
 }
 
 function taskAnchor(candidate: TaskCandidate): HTMLAnchorElement | null {
   if (candidate.anchor) return candidate.anchor;
-  return candidate.row.querySelector<HTMLAnchorElement>('a[href]');
+  return primaryAnchor(candidate.row);
 }
 
+/**
+ * What the row calls this piece of work.
+ *
+ * The row's own name container is asked first. Only when a row does not use one
+ * does this fall back to the row's link, and then to a heading — which is what
+ * the simpler list markup on stock Brightspace relies on.
+ */
 function taskTitle(candidate: TaskCandidate): string {
-  const anchor = taskAnchor(candidate);
-  const heading = firstMatch(candidate.row, ['h1', 'h2', 'h3', 'h4', 'd2l-link']);
-  const anchorText = normalizedText(anchor);
-  const headingText = normalizedText(heading);
-  return anchorText || headingText;
+  const named = firstMatch(candidate.row, TASK_NAME_SELECTORS);
+  const namedText = named ? nameText(named) : '';
+  if (namedText) return namedText;
+
+  const anchorText = normalizedText(taskAnchor(candidate));
+  if (anchorText) return anchorText;
+
+  return normalizedText(firstMatch(candidate.row, ['h1', 'h2', 'h3', 'h4', 'd2l-link']));
 }
 
 function dueText(element: Element): string {
@@ -319,7 +464,11 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
   const resolvedCourseId = courseIdForTask(candidate, courseId);
   const dueRaw = dueText(candidate.row);
   const due = parseDueDate(dueRaw, input.now, input.timeZone);
-  const hasRouteEvidence = candidate.route !== null;
+  // A content route names reading material — a slide deck, a handout — which is
+  // something to open, not something due. Listing a module's files as undated
+  // deadlines buried the real ones, so a content row has to state a date of its
+  // own to count. Every other route is a piece of work in itself.
+  const hasRouteEvidence = candidate.route !== null && candidate.route.kind !== 'content';
   const hasDateEvidence = due.iso !== null;
   if ((!hasRouteEvidence && !hasDateEvidence) || !title || !resolvedCourseId) return null;
 
@@ -408,10 +557,9 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     // A sign-in stub carries the course URL but none of the course.
     if (this.detectPage(input)?.pageType === 'signed-out') return null;
     const externalId = courseExternalId(input);
-    const name = courseName(input.document);
+    const { name, code } = courseIdentity(input.document);
     if (!externalId || !name) return null;
     const capturedAt = input.now.toISOString();
-    const code = courseCodeFromName(name);
     const term = termFromName(name);
     return {
       id: `d2l:${externalId}`,

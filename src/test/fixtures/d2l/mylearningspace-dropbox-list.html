@@ -1,0 +1,65 @@
+<!--
+  Synthetic fixture modelled on the MyLearningSpace `folders_list.d2l` structure.
+  Contains no real student or course data: every name, id, date and grade below
+  is invented. Only the element/class shape is taken from the live deployment.
+
+  The shape that matters here: a row's name lives in `.d2l-foldername`, and it is
+  a link only while the assignment is still open. Once it closes, the name is a
+  plain `<label>` and the first anchor in the row is the submission-history link
+  ("1 Submission, 1 File"), which is not the assignment's name.
+-->
+<!doctype html>
+<html>
+  <head><title>Dropbox Folders - CS-101-A - Example Course - Example University</title></head>
+  <body>
+    <d2l-labs-navigation>
+      <a href="/d2l/home/999999">Course Home</a>
+      <a href="/d2l/le/content/999999/Home">Content</a>
+      <a href="/d2l/lms/dropbox/user/folders_list.d2l?ou=999999">Assignments</a>
+      <a href="/d2l/lms/grades/my_grades/main.d2l?ou=999999">Grades</a>
+    </d2l-labs-navigation>
+    <h1>Dropbox Folders</h1>
+    <d2l-table-wrapper>
+      <table class="d2l-table">
+        <thead>
+          <tr class="d2l-table-row-first"><th>Folder</th><th>Completion Status</th><th>Score</th><th>Evaluation Status</th></tr>
+        </thead>
+        <tbody>
+          <tr class="d2l-ggl2 d_dbold"><td class="d2l-table-cell-first"><label><span class="ds_i">Unit One</span></label></td></tr>
+
+          <!-- Closed: the name is a label, and the only anchors are secondary. -->
+          <tr>
+            <th class="d2l-table-cell-first">
+              <div class="dco d2l-foldername"><div class="dco_c">
+                <div class="dco d2l-foldername-medium-font"><div class="dco_c"><label>Example Assignment One</label></div></div>
+              </div></div>
+              <div class="dco d2l-folderdates-wrapper"><div class="dco_c">
+                <div class="dco d2l-dates-text"><div class="dco_c"><label>Due on Oct 10, 2025 11:30 PM</label></div></div>
+              </div></div>
+            </th>
+            <td class="d_gt"><a class="d2l-link" href="/d2l/lms/dropbox/user/folders_history.d2l?db=111&amp;ou=999999">1 Submission, 1 File</a></td>
+            <td class="d_gc d_gt"><div class="dco d2l-grades-score"><label>8</label><label>/</label><label>10</label></div></td>
+            <td class="d_gt d2l-table-cell-last"><label>Evaluated</label><a class="d2l-link" href="/d2l/lms/dropbox/user/folder_user_view_feedback.d2l?db=111&amp;ou=999999">View</a></td>
+          </tr>
+
+          <!-- Open: the name is itself the submit link. -->
+          <tr>
+            <th class="d2l-table-cell-first">
+              <div class="dco d2l-foldername"><div class="dco_c">
+                <div class="dco d2l-foldername-medium-font"><div class="dco_c">
+                  <a class="d2l-link" href="/d2l/lms/dropbox/user/folder_submit_files.d2l?db=112&amp;ou=999999">Example Assignment Two</a>
+                </div></div>
+              </div></div>
+              <div class="dco d2l-folderdates-wrapper"><div class="dco_c">
+                <div class="dco d2l-dates-text"><div class="dco_c"><label>Due on Nov 17, 2025 11:30 PM</label></div></div>
+              </div></div>
+            </th>
+            <td class="d_gt"><a class="d2l-link" href="/d2l/lms/dropbox/user/folders_history.d2l?db=112&amp;ou=999999">2 Submissions, 2 Files</a></td>
+            <td class="d_gc d_gt"><div class="dco d2l-grades-score"><label>-</label><label>/</label><label>10</label></div></td>
+            <td class="d_gt d2l-table-cell-last"><label>Unevaluated</label></td>
+          </tr>
+        </tbody>
+      </table>
+    </d2l-table-wrapper>
+  </body>
+</html>

@@ -1,0 +1,54 @@
+<!--
+  Synthetic fixture modelled on the MyLearningSpace `discussions/List` grid.
+  Contains no real student or course data: every topic name, id, count and date
+  below is invented. Only the element/class shape is taken from the deployment.
+
+  The shape that matters here: each row carries two links to the same topic — the
+  heading link that names it, and an "Unread for topic ..." link that differs only
+  by a `filters=unread` query. Treating both as coursework produced two tasks per
+  topic, the second titled after the unread counter.
+-->
+<!doctype html>
+<html>
+  <head><title>Discussions List - CS-101-A - Example Course - Example University</title></head>
+  <body>
+    <h1>Discussions List</h1>
+    <table class="d2l-table d2l-grid">
+      <thead><tr><th>Topic</th><th>Threads</th><th>Last Post</th></tr></thead>
+      <tbody>
+        <tr class="d2l-grid-row d2l-grid-unread">
+          <th class="d2l-grid-cell d2l-table-cell-first">
+            <div class="d2l-placeholder d2l-placeholder-live">
+              <h3 class="d2l-heading-3 d2l-heading-none">
+                <a class="d2l-linkheading-link d2l-clickable d2l-link" href="/d2l/le/999999/discussions/topics/501/View">Example Topic One</a>
+              </h3>
+            </div>
+            <div class="d2l-dates-text">Available until Mar 9, 2026 11:00 PM</div>
+          </th>
+          <td class="d2l-grid-cell">
+            <div class="d2l-placeholder d2l-placeholder-live">
+              <div><a class="d2l-link" title="View unread posts for Example Topic One" href="/d2l/le/999999/discussions/topics/501/View?filters=unread">Unread for topic Example Topic One: (12)</a></div>
+            </div>
+          </td>
+          <td class="d2l-grid-cell">Mar 1, 2026</td>
+        </tr>
+        <tr class="d2l-grid-row">
+          <th class="d2l-grid-cell d2l-table-cell-first">
+            <div class="d2l-placeholder d2l-placeholder-live">
+              <h3 class="d2l-heading-3 d2l-heading-none">
+                <a class="d2l-linkheading-link d2l-clickable d2l-link" href="/d2l/le/999999/discussions/topics/502/View">Example Topic Two</a>
+              </h3>
+            </div>
+            <div class="d2l-dates-text">Available until Mar 17, 2026 12:00 AM</div>
+          </th>
+          <td class="d2l-grid-cell">
+            <div class="d2l-placeholder d2l-placeholder-live">
+              <div><a class="d2l-link" title="View unread posts for Example Topic Two" href="/d2l/le/999999/discussions/topics/502/View?filters=unread">Unread for topic Example Topic Two: (4)</a></div>
+            </div>
+          </td>
+          <td class="d2l-grid-cell">Mar 2, 2026</td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>
