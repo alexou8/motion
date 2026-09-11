@@ -1,7 +1,9 @@
 # Threat model
 
-Scope: the Motion Chrome extension as built — local-first, no backend, no model
-calls. Findings below came from an adversarial architecture review; each names
+Scope: the Motion Chrome extension as built — local-first, no backend. Drafting
+and the chat about the page use Chrome's on-device model only; nothing is sent
+to a hosted model (ADR 0004). Findings below came from an adversarial
+architecture review; each names
 the control and its current status. Nothing is marked mitigated unless the code
 implementing the control exists.
 
@@ -281,22 +283,24 @@ reported itself yet — it opens the panel and does nothing else. The icon and
 tab's group rather than a second one. — *Mitigated (`src/background/router.ts`,
 `src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
 
-The click's tab object is a snapshot and decides nothing: every check runs on
-the live tab and the current observation inside the lock, synchronously, just
-before grouping, so a tab that navigated into an attempt or was dragged into a
-group while the click waited is declined. The adoption is recorded as pending
-before the tab is grouped and settled with the group id after, so a worker that
-dies in between still leaves a record: closing the workspace ungroups a pending
-tab it finds in the group, and never closes it. — *Mitigated (tested)*
+The click's tab object supplies only its id. Motion names the group from the
+stored observation and writes a title-bound pending intent as the workspace
+lock's first operation. It refreshes the matching group lookup while holding
+that lock, then reads the live tab and current observation. The synchronous
+checks confirm the tab is still ungrouped, supported and unrestricted, and that
+the observation still describes the page used for the name; `tabs.group` is the
+very next asynchronous operation. A navigation into an attempt or a drag into
+another group while any earlier operation waits is therefore declined. The
+record is settled with the group id after grouping; if the worker dies between
+those operations, closing only the workspace with the matching title can
+ungroup the pending tab, never close it. — *Mitigated (tested)*
 
-Residual: Chrome offers no atomic check-and-group, so a navigation landing in
-the milliseconds between the final check and the `tabs.group` call is not
-caught; the new page is then observed and restricted in the usual way, and
-nothing on it is read. A pending record whose grouping never happened stays in
-session storage; it can only ever cause that tab to be ungrouped, and only if
-it is later found in a Motion workspace's group. And a click racing a **Prepare
-workspace** press can create two groups of the same title, because the two take
-different locks; nothing is closed or read as a result. — *Accepted*
+Residual: Chrome's own check-and-group operation is not atomic, so Chrome can
+still change a tab while `tabs.group` is running. A stale pending record only
+matches a group with its own workspace title and can only ungroup, never close,
+that tab. A toolbar click racing **Prepare workspace** can also create two
+same-titled groups because they use different locks; neither race reads page
+content or closes a student tab. — *Accepted*
 
 ---
 

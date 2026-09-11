@@ -282,7 +282,7 @@ describe('the toolbar icon', () => {
     await handlePrepareWorkspace(tabId, tabs);
     expect([...tabs.groups.values()]).toEqual(['Motion · Synthetic Assignment 2']);
     expect([...tabs.tabs.values()].filter((tab) => tab.groupId !== null)).toHaveLength(3);
-    expect(tabs.adopted.get(tabId)).toBe([...tabs.groups.keys()][0]);
+    expect(tabs.adopted.get(tabId)).toEqual({ state: 'adopted', groupId: [...tabs.groups.keys()][0] });
   });
 
   it('ungroups an adopted tab while closing Motion tabs', async () => {
@@ -355,13 +355,79 @@ describe('the toolbar icon', () => {
     await expectDeclined(other.tabs, { id: other.tabId, url: ASSIGNMENT });
   });
 
+  it('abandons adoption when the tab becomes a graded attempt while the intent is written', async () => {
+    const { tabs, tabId } = await currentTab();
+    tabs.onRecordAdopted = async (_id, record) => {
+      if (record.state === 'pending') {
+        tabs.tabs.get(tabId)!.url = ATTEMPT;
+        await observe(tabId, true, ATTEMPT);
+      }
+    };
+
+    await expect(handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs)).resolves.toEqual({ grouped: false });
+
+    expect(tabs.tabs.has(tabId)).toBe(true);
+    expect(tabs.tabs.get(tabId)?.groupId).toBeNull();
+    expect(tabs.groups.size).toBe(0);
+    expect(tabs.adopted.has(tabId)).toBe(false);
+  });
+
+  it('abandons adoption when the student drags the tab into their group while finding a group', async () => {
+    const { tabs, tabId } = await currentTab();
+    const studentGroup = 900;
+    tabs.groups.set(studentGroup, 'My reading list');
+    tabs.onFindGroup = async () => {
+      tabs.tabs.get(tabId)!.groupId = studentGroup;
+    };
+
+    await expect(handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs)).resolves.toEqual({ grouped: false });
+
+    expect(tabs.tabs.has(tabId)).toBe(true);
+    expect(tabs.tabs.get(tabId)?.groupId).toBe(studentGroup);
+    expect(tabs.groups.size).toBe(1);
+    expect(tabs.adopted.has(tabId)).toBe(false);
+  });
+
+  it('clears the pending record when the existing group vanishes', async () => {
+    const { tabs, tabId } = await currentTab();
+    const groupId = 901;
+    tabs.groups.set(groupId, 'Motion · Synthetic Assignment 2');
+    let finds = 0;
+    tabs.onFindGroup = async () => {
+      finds += 1;
+      if (finds === 2) tabs.groups.delete(groupId);
+    };
+
+    await expect(handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs)).rejects.toThrow(/group no longer exists/i);
+
+    expect(tabs.tabs.has(tabId)).toBe(true);
+    expect(tabs.tabs.get(tabId)?.groupId).toBeNull();
+    expect(tabs.groups.size).toBe(0);
+    expect(tabs.adopted.has(tabId)).toBe(false);
+  });
+
+  it("does not ungroup a pending adoption titled for another workspace", async () => {
+    const { tabs, tabId } = await currentTab();
+    const { workflowId } = await handlePrepareWorkspace(tabId, tabs);
+    const groupId = [...tabs.groups.keys()][0];
+    if (groupId === undefined) throw new Error('workspace group was not created');
+    const otherTab = tabs.addStudentTab(ASSIGNMENT, groupId);
+    await tabs.recordAdopted(otherTab, { state: 'pending', title: 'Motion · Workspace A' });
+
+    await handleCloseWorkspace(workflowId!, tabs);
+
+    expect(tabs.tabs.has(otherTab)).toBe(true);
+    expect(tabs.tabs.get(otherTab)?.groupId).toBe(groupId);
+    expect(tabs.adopted.get(otherTab)).toEqual({ state: 'pending', title: 'Motion · Workspace A' });
+  });
+
   it('still ungroups, never closes, a tab whose adoption was cut short by a worker restart', async () => {
     const { tabs, tabId } = await currentTab();
     // The worker dies after grouping the tab and before recording the group id.
     const record = tabs.recordAdopted.bind(tabs);
-    tabs.recordAdopted = async (id, groupId) => {
-      if (groupId !== 'pending') throw new Error('worker stopped');
-      await record(id, groupId);
+    tabs.recordAdopted = async (id, adoption) => {
+      if (adoption.state === 'adopted') throw new Error('worker stopped');
+      await record(id, adoption);
     };
     await expect(
       handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs),
@@ -398,11 +464,29 @@ describe('the toolbar icon', () => {
     await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT });
   });
 
-  it('serializes two clicks into one group', async () => {
+  it('serializes two clicks on the same tab into one group', async () => {
     const { tabs, tabId } = await currentTab();
     const tab = { id: tabId, url: ASSIGNMENT } as const;
     await Promise.all([handleActionClick(tab, tabs), handleActionClick(tab, tabs)]);
     expect(tabs.groups.size).toBe(1);
-    expect(tabs.adopted.get(tabId)).toBe(100);
+    expect(tabs.adopted.get(tabId)).toEqual({ state: 'adopted', groupId: 100 });
+  });
+
+  it('serializes clicks on two tabs for the same page into one group', async () => {
+    const { tabs, tabId } = await currentTab();
+    const otherTab = tabs.addStudentTab(ASSIGNMENT);
+    await observe(otherTab);
+
+    await Promise.all([
+      handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs),
+      handleActionClick({ id: otherTab, url: ASSIGNMENT }, tabs),
+    ]);
+
+    expect(tabs.groups.size).toBe(1);
+    const [groupId] = tabs.groups.keys();
+    expect(tabs.tabs.get(tabId)?.groupId).toBe(groupId);
+    expect(tabs.tabs.get(otherTab)?.groupId).toBe(groupId);
+    expect(tabs.adopted.get(tabId)).toEqual({ state: 'adopted', groupId });
+    expect(tabs.adopted.get(otherTab)).toEqual({ state: 'adopted', groupId });
   });
 });

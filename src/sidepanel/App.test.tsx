@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { EMPTY_PANEL_STATE, type PanelState } from '../core/view/state';
 import type { MotionBridge, MotionCommand } from './bridge';
 import { App } from './App';
+import { parseWorkerResult } from './responses';
 
 /**
  * The panel shell: header, tasks, the chat about the page, and the composer.
@@ -38,7 +39,9 @@ function fakeBridge(state: PanelState, answers: Answers = {}) {
     },
     request: async <T,>(command: MotionCommand) => {
       requested.push(command);
-      if (command.type === 'model-status') return (answers.model ?? { availability: 'available', explanation: '' }) as T;
+      if (command.type === 'model-status') {
+        return parseWorkerResult(command.type, answers.model ?? { availability: 'available', explanation: '' }) as T | null;
+      }
       if (command.type === 'ask-about-page') return (answers.askAboutPage?.(command) ?? null) as T;
       return null;
     },
@@ -99,6 +102,17 @@ describe('the composer', () => {
     // Asserted on the composer itself: the drafting view says the same thing.
     await waitFor(() => expect(input).toHaveAccessibleDescription(/does not have an on-device model/i));
     expect(input).toBeDisabled();
+  });
+
+  it('keeps the composer usable when model status is malformed', async () => {
+    const { bridge } = fakeBridge(SUPPORTED, {
+      model: { availability: 'broken', explanation: 123 as unknown as string },
+    });
+    render(<App bridge={bridge} />);
+    const input = screen.getByLabelText('Ask about this page', { selector: 'textarea' });
+
+    await waitFor(() => expect(input).toBeEnabled());
+    expect(screen.queryByText('123')).not.toBeInTheDocument();
   });
 });
 

@@ -10,6 +10,7 @@ import { ChromeTabs, groupTitle, isOpenableUrl, markUrl, operationIdOf } from '.
 interface FakeTab {
   id: number;
   url: string;
+  windowId?: number;
   groupId?: number;
   active?: boolean;
 }
@@ -18,6 +19,7 @@ function fakeChrome() {
   const tabs: FakeTab[] = [];
   const groups = new Map<number, { id: number; title?: string; color?: string; windowId: number }>();
   const session: Record<string, unknown> = {};
+  const callOrder: string[] = [];
   let nextTabId = 1;
   let nextGroupId = 100;
 
@@ -26,14 +28,23 @@ function fakeChrome() {
       query: vi.fn(async (info: { groupId?: number }) =>
         info.groupId === undefined ? [...tabs] : tabs.filter((t) => t.groupId === info.groupId),
       ),
-      create: vi.fn(async (info: { url: string; active?: boolean }) => {
-        const tab: FakeTab = { id: nextTabId++, url: info.url, active: info.active ?? false };
+      create: vi.fn(async (info: { url: string; active?: boolean; windowId?: number }) => {
+        const tab: FakeTab = {
+          id: nextTabId++,
+          url: info.url,
+          active: info.active ?? false,
+          windowId: info.windowId ?? 1,
+        };
         tabs.push(tab);
         return tab;
       }),
       group: vi.fn(async (info: { groupId?: number; tabIds: number[] }) => {
+        callOrder.push('tabs.group');
         const groupId = info.groupId ?? nextGroupId++;
-        if (!groups.has(groupId)) groups.set(groupId, { id: groupId, windowId: 1 });
+        if (!groups.has(groupId)) {
+          const firstTab = tabs.find((tab) => info.tabIds.includes(tab.id));
+          groups.set(groupId, { id: groupId, windowId: firstTab?.windowId ?? 1 });
+        }
         for (const id of info.tabIds) {
           const tab = tabs.find((t) => t.id === id);
           if (tab) tab.groupId = groupId;
@@ -60,10 +71,14 @@ function fakeChrome() {
       }),
     },
     tabGroups: {
-      query: vi.fn(async (info: { title?: string }) =>
-        [...groups.values()].filter((g) => (info.title ? g.title === info.title : true)),
+      query: vi.fn(async (info: { title?: string; windowId?: number }) =>
+        [...groups.values()].filter((g) =>
+          (info.title ? g.title === info.title : true)
+          && (info.windowId === undefined || g.windowId === info.windowId),
+        ),
       ),
       update: vi.fn(async (groupId: number, props: { title?: string; color?: string }) => {
+        callOrder.push('tabGroups.update');
         const group = groups.get(groupId);
         if (group) Object.assign(group, props);
         return group;
@@ -85,7 +100,7 @@ function fakeChrome() {
         }),
       },
     },
-    _state: { tabs, groups, session },
+    _state: { tabs, groups, session, callOrder },
   };
   return api;
 }
@@ -192,16 +207,16 @@ describe('tab groups', () => {
     const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [adopted.tabId, moved.tabId, closed.tabId]);
     const studentTab = { id: 99, url: 'https://x.brightspace.com/student', groupId: groupId };
     api._state.tabs.push(studentTab);
-    await tabs.recordAdopted(studentTab.id, groupId);
-    await tabs.recordAdopted(moved.tabId, groupId);
-    await tabs.recordAdopted(closed.tabId, groupId);
+    await tabs.recordAdopted(studentTab.id, { state: 'adopted', groupId });
+    await tabs.recordAdopted(moved.tabId, { state: 'adopted', groupId });
+    await tabs.recordAdopted(closed.tabId, { state: 'adopted', groupId });
     await tabs.ungroup([moved.tabId]);
     await tabs.close([closed.tabId]);
-    expect(await tabs.adoptedTabsInGroup(groupId)).toEqual([studentTab.id]);
+    expect(await tabs.adoptedTabsInGroup(groupId, 'Motion · A')).toEqual([studentTab.id]);
     expect(await tabs.tabsOpenedBy('op')).toEqual([adopted.tabId, moved.tabId]);
   });
 
-  it('counts a pending adoption only while its tab is in the group', async () => {
+  it('matches adopted and title-bound pending records and ignores malformed records', async () => {
     const tabs = new ChromeTabs();
     const anchor = await tabs.open('https://x.brightspace.com/a', 'op-a');
     const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [anchor.tabId]);
@@ -209,11 +224,15 @@ describe('tab groups', () => {
     const cutShort = { id: 98, url: 'https://x.brightspace.com/cut-short', groupId };
     // A pending record whose grouping never happened.
     const neverGrouped = { id: 97, url: 'https://x.brightspace.com/never', groupId: -1 };
-    api._state.tabs.push(cutShort, neverGrouped);
-    await tabs.recordAdopted(cutShort.id, 'pending');
-    await tabs.recordAdopted(neverGrouped.id, 'pending');
+    const wrongTitle = { id: 96, url: 'https://x.brightspace.com/wrong-title', groupId };
+    const malformed = { id: 95, url: 'https://x.brightspace.com/malformed', groupId };
+    api._state.tabs.push(cutShort, neverGrouped, wrongTitle, malformed);
+    await tabs.recordAdopted(cutShort.id, { state: 'pending', title: 'Motion · A' });
+    await tabs.recordAdopted(neverGrouped.id, { state: 'pending', title: 'Motion · A' });
+    await tabs.recordAdopted(wrongTitle.id, { state: 'pending', title: 'Motion · B' });
+    api._state.session[`motion:adopted:${malformed.id}`] = { state: 'pending' };
 
-    expect(await tabs.adoptedTabsInGroup(groupId)).toEqual([cutShort.id]);
+    expect(await tabs.adoptedTabsInGroup(groupId, 'Motion · A')).toEqual([cutShort.id]);
   });
 
   it('reads a live tab with Chrome’s no-group value as ungrouped, and a closed one as gone', async () => {
@@ -238,6 +257,29 @@ describe('tab groups', () => {
       groupId,
       expect.objectContaining({ title: 'Motion · CP363 · A2' }),
     );
+  });
+
+  it('finds a group by title within the requested window', async () => {
+    const tabs = new ChromeTabs();
+    api._state.groups.set(200, { id: 200, title: 'Motion · A', windowId: 2 });
+    api._state.groups.set(201, { id: 201, title: 'Motion · A', windowId: 3 });
+
+    expect(await tabs.findGroup({ title: 'Motion · A', color: 'blue', windowId: 2 })).toBe(200);
+    expect(await tabs.findGroup({ title: 'Motion · A', color: 'blue', windowId: 4 })).toBeNull();
+  });
+
+  it('groups before making any other Chrome call in groupInto', async () => {
+    const tabs = new ChromeTabs();
+    const opened = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    api._state.callOrder.length = 0;
+
+    const groupId = await tabs.groupInto(null, [opened.tabId], {
+      title: 'Motion · A',
+      color: 'blue',
+    });
+
+    expect(groupId).toBe(100);
+    expect(api._state.callOrder).toEqual(['tabs.group', 'tabGroups.update']);
   });
 
   it('reuses an existing group instead of creating a duplicate', async () => {

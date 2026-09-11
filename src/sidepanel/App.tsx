@@ -70,7 +70,7 @@ function IconButton({ label, onClick, disabled, children }: { label: string; onC
 
 function PanelHeader({ state, onNewChat, canReset, onSettings }: { state: PanelState; onNewChat: () => void; canReset: boolean; onSettings: () => void }) {
   return (
-    <header className="sticky top-0 z-sticky border-b border-rule bg-paper px-4 py-2">
+    <header className="border-b border-rule bg-paper px-4 py-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <MotionMark />
@@ -120,7 +120,7 @@ function Tasks({ bridge, title }: { bridge: MotionBridge; title: string }) {
             className={cn(
               'min-h-8 rounded-full border px-3 py-1 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus',
               task === option.id
-                ? 'border-signal bg-sunken font-medium text-ink'
+                ? 'border-ink bg-sunken font-medium text-ink'
                 : 'border-edge bg-surface text-ink hover:bg-sunken',
             )}
           >
@@ -164,20 +164,22 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
   const chat = useChat(bridge, state);
 
   return (
-    <div className={cn('flex min-h-dvh flex-col bg-paper font-sans text-ink', className)}>
+    <div className={cn('flex h-dvh flex-col overflow-hidden bg-paper font-sans text-ink', className)}>
       <PanelHeader
         state={state}
         onNewChat={chat.reset}
         canReset={chat.turns.length > 0 && !chat.pending}
         onSettings={() => sendCommand(bridge, { type: 'open-settings' })}
       />
-      <main className="mx-auto grid w-full max-w-lg flex-1 content-start gap-6 px-4 py-5" id="main-content">
-        <ConnectionContent state={state} bridge={bridge} now={now} />
-        {/* Hidden, not forgotten, beside a graded attempt: earlier answers about
-            course material do not belong next to an assessment. */}
-        {state.connection === 'restricted' ? null : <Conversation turns={chat.turns} pending={chat.pending} />}
+      <main className="min-h-0 flex-1 overflow-y-auto" id="main-content">
+        <div className="mx-auto grid w-full max-w-lg content-start gap-6 px-4 py-5">
+          <ConnectionContent state={state} bridge={bridge} now={now} />
+          {/* Hidden, not forgotten, beside a graded attempt: earlier answers about
+              course material do not belong next to an assessment. */}
+          {state.connection === 'restricted' ? null : <Conversation turns={chat.turns} pending={chat.pending} />}
+        </div>
       </main>
-      <footer className="sticky bottom-0 z-sticky border-t border-rule bg-paper px-4 py-3">
+      <footer className="border-t border-rule bg-paper px-4 py-3">
         <div className="mx-auto w-full max-w-lg">
           <Composer bridge={bridge} state={state} pending={chat.pending} onAsk={(question) => void chat.ask(question)} />
         </div>

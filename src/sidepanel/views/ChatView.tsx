@@ -204,13 +204,13 @@ export function Composer({ bridge, state, pending, onAsk }: ComposerProps) {
   };
 
   return (
-    <form onSubmit={submit} className="grid gap-2" aria-label="Ask about this page">
+    <form onSubmit={submit} className="grid min-w-0 gap-2" aria-label="Ask about this page">
       {reason ? (
         <p id="composer-reason" className="text-xs text-ink-muted text-pretty">
           {reason}
         </p>
       ) : null}
-      <div className="flex items-end gap-2 rounded border border-edge bg-surface p-2 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
+      <div className="flex min-w-0 items-end gap-2 rounded border border-edge bg-surface p-2 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-focus">
         <label htmlFor="composer-input" className="sr-only">
           Ask about this page
         </label>
@@ -224,7 +224,7 @@ export function Composer({ bridge, state, pending, onAsk }: ComposerProps) {
           onKeyDown={onKeyDown}
           placeholder={disabled ? 'Chat is unavailable here' : 'Ask about this page'}
           {...(reason ? { 'aria-describedby': 'composer-reason' } : {})}
-          className="min-h-10 flex-1 resize-none bg-transparent px-1 text-sm text-ink placeholder:text-ink-muted focus:outline-none disabled:cursor-not-allowed"
+          className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-1 text-sm text-ink placeholder:text-ink-muted focus:outline-none disabled:cursor-not-allowed"
         />
         <button
           type="submit"

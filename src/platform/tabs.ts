@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 /**
  * Tab and tab-group capabilities.
  *
@@ -20,7 +22,11 @@ const OPERATION_KEY_PREFIX = 'motion:op:';
 const ADOPTED_KEY_PREFIX = 'motion:adopted:';
 
 /** An adoption recorded before its grouping, settled with the group id after. */
-export const ADOPTION_PENDING = 'pending';
+export const adoptionRecordSchema = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('pending'), title: z.string() }),
+  z.object({ state: z.literal('adopted'), groupId: z.number().int() }),
+]);
+export type AdoptionRecord = z.infer<typeof adoptionRecordSchema>;
 
 /** `chrome.tabGroups.TAB_GROUP_ID_NONE`, spelled out so tests need no tabGroups stub. */
 const TAB_GROUP_ID_NONE = -1;
@@ -86,6 +92,8 @@ export interface TabsCapability {
   findByOperation(operationId: string): Promise<OpenedTab | null>;
   open(url: string, operationId: string, windowId?: number): Promise<OpenedTab>;
   ensureGroup(plan: TabGroupPlan, tabIds: number[]): Promise<number>;
+  findGroup(plan: TabGroupPlan): Promise<number | null>;
+  groupInto(existingGroupId: number | null, tabIds: number[], plan: TabGroupPlan): Promise<number>;
   groupExists(groupId: number): Promise<boolean>;
   /** Of `tabIds`, the ones that still exist and are still in `groupId`. */
   ownedTabsInGroup(groupId: number, tabIds: number[]): Promise<number[]>;
@@ -97,12 +105,13 @@ export interface TabsCapability {
   get(tabId: number): Promise<LiveTab | null>;
   /**
    * Records a student's tab that Motion grouped because the student asked.
-   * Written as `ADOPTION_PENDING` before grouping and with the group id after,
+   * Written as a title-bound pending record before grouping and with the group id after,
    * so a worker that dies in between still leaves evidence to ungroup by.
    */
-  recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void>;
-  /** Adopted tabs — settled in `groupId`, or still pending — that are in it now. */
-  adoptedTabsInGroup(groupId: number): Promise<number[]>;
+  recordAdopted(tabId: number, record: AdoptionRecord): Promise<void>;
+  forgetAdopted(tabId: number): Promise<void>;
+  /** Adopted tabs in `groupId`, matching its settled id or pending title. */
+  adoptedTabsInGroup(groupId: number, groupTitle: string): Promise<number[]>;
   /**
    * Identifies the current browser session. A tab id recorded under a
    * different key belongs to a session that has ended, and Chrome may already
@@ -197,6 +206,26 @@ export class ChromeTabs implements TabsCapability {
     return groupId;
   }
 
+  async findGroup(plan: TabGroupPlan): Promise<number | null> {
+    const existingGroups = await chrome.tabGroups.query({
+      title: plan.title,
+      ...(plan.windowId === undefined ? {} : { windowId: plan.windowId }),
+    });
+    return existingGroups[0]?.id ?? null;
+  }
+
+  async groupInto(existingGroupId: number | null, tabIds: number[], plan: TabGroupPlan): Promise<number> {
+    if (tabIds.length === 0) throw new Error('No tabs to group');
+
+    const groupId = await chrome.tabs.group(
+      existingGroupId === null ? { tabIds } : { groupId: existingGroupId, tabIds },
+    );
+    if (existingGroupId === null) {
+      await chrome.tabGroups.update(groupId, { title: plan.title, color: plan.color });
+    }
+    return groupId;
+  }
+
   async groupExists(groupId: number): Promise<boolean> {
     try {
       await chrome.tabGroups.get(groupId);
@@ -254,25 +283,41 @@ export class ChromeTabs implements TabsCapability {
    * student's tabs: recording them separately from operation ownership keeps
    * workspace closing from ever treating adoption as permission to close.
    */
-  async recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void> {
-    await chrome.storage.session.set({ [`${ADOPTED_KEY_PREFIX}${tabId}`]: groupId });
+  async recordAdopted(tabId: number, record: AdoptionRecord): Promise<void> {
+    const key = `${ADOPTED_KEY_PREFIX}${tabId}`;
+    const existing = adoptionRecordSchema.safeParse((await chrome.storage.session.get(key))[key]);
+    // A serialized retry must not replace the evidence from a click that
+    // already grouped this tab while the retry was waiting for the lock.
+    if (existing.success && existing.data.state === 'adopted') return;
+    await chrome.storage.session.set({ [key]: record });
+  }
+
+  async forgetAdopted(tabId: number): Promise<void> {
+    const key = `${ADOPTED_KEY_PREFIX}${tabId}`;
+    const existing = adoptionRecordSchema.safeParse((await chrome.storage.session.get(key))[key]);
+    if (existing.success && existing.data.state === 'adopted') return;
+    await chrome.storage.session.remove(key);
   }
 
   /**
-   * A pending record counts only while its tab is in this group: that is the
-   * worker having died between grouping and recording. A pending tab elsewhere
-   * is left alone, and even when counted it is only ever ungrouped.
+   * A pending record counts only for the workspace title it was created for:
+   * that is the worker having died between grouping and recording. A pending
+   * tab in another Motion workspace is left alone.
    */
-  async adoptedTabsInGroup(groupId: number): Promise<number[]> {
+  async adoptedTabsInGroup(groupId: number, groupTitle: string): Promise<number[]> {
     const records = await chrome.storage.session.get(null);
     const adopted = new Set(
       Object.entries(records)
-        .filter(
-          ([key, value]) =>
-            key.startsWith(ADOPTED_KEY_PREFIX) && (value === groupId || value === ADOPTION_PENDING),
-        )
-        .map(([key]) => Number(key.slice(ADOPTED_KEY_PREFIX.length)))
-        .filter((id) => Number.isInteger(id)),
+        .flatMap(([key, value]) => {
+          if (!key.startsWith(ADOPTED_KEY_PREFIX)) return [];
+          const id = Number(key.slice(ADOPTED_KEY_PREFIX.length));
+          const parsed = adoptionRecordSchema.safeParse(value);
+          if (!Number.isInteger(id) || !parsed.success) return [];
+          const record = parsed.data;
+          return record.state === 'adopted'
+            ? record.groupId === groupId ? [id] : []
+            : record.title === groupTitle ? [id] : [];
+        }),
     );
     if (adopted.size === 0) return [];
     const live = await chrome.tabs.query({ groupId });

@@ -1,4 +1,10 @@
-import { ADOPTION_PENDING, type LiveTab, type OpenedTab, type TabGroupPlan, type TabsCapability } from '@/platform/tabs';
+import {
+  type AdoptionRecord,
+  type LiveTab,
+  type OpenedTab,
+  type TabGroupPlan,
+  type TabsCapability,
+} from '@/platform/tabs';
 
 /**
  * An in-memory browser for testing tab behaviour without Chrome.
@@ -22,9 +28,14 @@ export class FakeTabs implements TabsCapability {
   currentSession = 'session-1';
   /** Called before each tab is opened, so a test can interleave a student action. */
   beforeOpen: (() => Promise<void>) | null = null;
+  /** Called while an adoption intent is being written. */
+  onRecordAdopted: ((tabId: number, record: AdoptionRecord) => Promise<void> | void) | null = null;
+  /** Called while the toolbar finds its target group. */
+  onFindGroup: ((plan: TabGroupPlan) => Promise<void> | void) | null = null;
   private nextTabId = 10;
   private nextGroupId = 100;
-  readonly adopted = new Map<number, number | typeof ADOPTION_PENDING>();
+  readonly adopted = new Map<number, AdoptionRecord>();
+  readonly groupWindows = new Map<number, number>();
 
   /** A tab the student opened themselves. */
   addStudentTab(url: string, groupId: number | null = null): number {
@@ -55,6 +66,32 @@ export class FakeTabs implements TabsCapability {
     if (groupId === undefined) {
       groupId = this.nextGroupId++;
       this.groups.set(groupId, plan.title);
+      this.groupWindows.set(groupId, plan.windowId ?? 1);
+    }
+    for (const id of tabIds) {
+      const tab = this.tabs.get(id);
+      if (tab) tab.groupId = groupId;
+    }
+    return groupId;
+  }
+
+  async findGroup(plan: TabGroupPlan): Promise<number | null> {
+    const groupId = [...this.groups].find(([id, title]) =>
+      title === plan.title && (plan.windowId === undefined || (this.groupWindows.get(id) ?? 1) === plan.windowId),
+    )?.[0];
+    if (this.onFindGroup) await this.onFindGroup(plan);
+    return groupId ?? null;
+  }
+
+  async groupInto(existingGroupId: number | null, tabIds: number[], plan: TabGroupPlan): Promise<number> {
+    if (tabIds.length === 0) throw new Error('No tabs to group');
+    let groupId = existingGroupId;
+    if (groupId !== null) {
+      if (!this.groups.has(groupId)) throw new Error('Group no longer exists');
+    } else {
+      groupId = this.nextGroupId++;
+      this.groups.set(groupId, plan.title);
+      this.groupWindows.set(groupId, plan.windowId ?? 1);
     }
     for (const id of tabIds) {
       const tab = this.tabs.get(id);
@@ -93,15 +130,24 @@ export class FakeTabs implements TabsCapability {
     return tab ? { url: tab.url, title: tab.title ?? '', groupId: tab.groupId, windowId: 1 } : null;
   }
 
-  async recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void> {
-    this.adopted.set(tabId, groupId);
+  async recordAdopted(tabId: number, record: AdoptionRecord): Promise<void> {
+    if (this.adopted.get(tabId)?.state === 'adopted') return;
+    this.adopted.set(tabId, record);
+    if (this.onRecordAdopted) await this.onRecordAdopted(tabId, record);
   }
 
-  async adoptedTabsInGroup(groupId: number): Promise<number[]> {
+  async forgetAdopted(tabId: number): Promise<void> {
+    if (this.adopted.get(tabId)?.state === 'adopted') return;
+    this.adopted.delete(tabId);
+  }
+
+  async adoptedTabsInGroup(groupId: number, groupTitle: string): Promise<number[]> {
     return [...this.adopted]
       .filter(
         ([tabId, recorded]) =>
-          (recorded === groupId || recorded === ADOPTION_PENDING) && this.tabs.get(tabId)?.groupId === groupId,
+          ((recorded.state === 'adopted' && recorded.groupId === groupId)
+            || (recorded.state === 'pending' && recorded.title === groupTitle))
+          && this.tabs.get(tabId)?.groupId === groupId,
       )
       .map(([tabId]) => tabId);
   }

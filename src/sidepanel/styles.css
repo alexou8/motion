@@ -3,13 +3,12 @@
 @tailwind utilities;
 
 @layer base {
+  /* Remove width floors to preserve reflow at 200% zoom. */
   html {
-    min-width: 360px;
     background: var(--color-paper);
   }
 
   body {
-    min-width: 360px;
     margin: 0;
     overflow-x: hidden;
     background: var(--color-paper);

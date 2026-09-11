@@ -37,7 +37,7 @@ import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
-import { ADOPTION_PENDING, ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
+import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 
 /**
  * Handles an already-authorized message.
@@ -754,7 +754,7 @@ export async function handleCloseWorkspace(
 
   const closing = [...new Set([...kept, ...unrecorded])];
   await tabs.close(closing);
-  const adopted = groupId === null ? [] : await tabs.adoptedTabsInGroup(groupId);
+  const adopted = groupId === null ? [] : await tabs.adoptedTabsInGroup(groupId, workflow.title);
   const ungrouped = adopted.filter((id) => !closing.includes(id));
   await tabs.ungroup(ungrouped);
   return { closed: closing.length, ungrouped: ungrouped.length };
@@ -779,10 +779,10 @@ export function workspaceGroupTitle(courseCode: string | null | undefined, pageT
  * is left alone: a graded attempt gets no tab operation, not even grouping. A
  * tab already in a group stays where the student put it.
  *
- * The click's tab object is a snapshot and decides nothing but which tab was
- * meant. Every check runs on the live tab, inside the lock and immediately
- * before grouping, so a tab that navigated into an attempt or was dragged into
- * a group while this waited is declined rather than moved.
+ * The pending intent is written before the live checks so a worker death after
+ * grouping leaves evidence to ungroup. The checks are synchronous and the
+ * grouping call follows them without an await, so navigation or a drag cannot
+ * slip between authorization and `tabs.group`.
  */
 export async function handleActionClick(
   tab: Pick<chrome.tabs.Tab, 'id' | 'url'>,
@@ -791,24 +791,45 @@ export async function handleActionClick(
   const tabId = tab.id;
   const declined = { grouped: false };
   if (tabId === undefined) return declined;
-  // Looked up first, so no database read sits between the checks and the
-  // grouping below. It only names the group; it decides nothing.
-  const course = await courseForUrl(tab.url);
 
-  // Two quick clicks would otherwise both find no group and create two.
+  const named = await readObservation(tabId);
+  if (connectionFor(named) !== 'supported' || typeof named?.url !== 'string') return declined;
+  const namedUrl = named.url;
+  const course = await courseForUrl(namedUrl);
+  const title = workspaceGroupTitle(course?.code, named.title);
+  const live0 = await tabs.get(tabId);
+  if (!live0) return declined;
+  const plan = {
+    title,
+    color: 'blue' as const,
+    ...(live0.windowId === undefined ? {} : { windowId: live0.windowId }),
+  };
+  await tabs.findGroup(plan);
+
+  // The intent is first under the lock. Refresh the earlier lookup while
+  // holding it: two clicks can otherwise both retain a stale "no group".
   return withLock('motion:workspace-group', async () => {
+    await tabs.recordAdopted(tabId, { state: 'pending', title });
+
+    const existing = await tabs.findGroup(plan);
     const live = await tabs.get(tabId);
     const observation = await readObservation(tabId);
-    if (!live || !mayAdopt(live, observation)) return declined;
+    const liveMayAdopt = live !== null && mayAdopt(live, observation);
+    const samePage = liveMayAdopt && typeof observation?.url === 'string'
+      && workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
+    if (!liveMayAdopt || !samePage) {
+      await tabs.forgetAdopted(tabId);
+      return declined;
+    }
 
-    // Pending first: a worker that dies after grouping still leaves a record
-    // the close path can ungroup by.
-    await tabs.recordAdopted(tabId, ADOPTION_PENDING);
-    const groupId = await tabs.ensureGroup(
-      { title: workspaceGroupTitle(course?.code, observation?.title ?? ''), color: 'blue', ...(live.windowId === undefined ? {} : { windowId: live.windowId }) },
-      [tabId],
-    );
-    await tabs.recordAdopted(tabId, groupId);
+    let groupId: number;
+    try {
+      groupId = await tabs.groupInto(existing, [tabId], plan);
+    } catch (error) {
+      await tabs.forgetAdopted(tabId);
+      throw error;
+    }
+    await tabs.recordAdopted(tabId, { state: 'adopted', groupId });
     return { grouped: true };
   });
 }
