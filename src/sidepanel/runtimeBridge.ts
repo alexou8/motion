@@ -1,7 +1,9 @@
 import { EMPTY_PANEL_STATE, panelStateSchema, type PanelState } from '@/core/view';
 import { originPatternFor } from '@/platform/permissions';
 import { resolveAdapter } from '@/core/adapters';
+import { z } from 'zod';
 import type { MotionBridge, MotionCommand } from './bridge';
+import { parseWorkerResult } from './responses';
 
 /**
  * Connects the panel to the service worker.
@@ -17,15 +19,14 @@ import type { MotionBridge, MotionCommand } from './bridge';
 
 type Listener = () => void;
 
-interface WorkerResponse {
-  ok: boolean;
-  result?: unknown;
-  error?: string;
-}
+const workerResponseSchema = z.union([
+  z.object({ ok: z.literal(true), result: z.unknown().optional() }),
+  z.object({ ok: z.literal(false), error: z.string().optional() }),
+]);
 
-async function ask(message: unknown): Promise<WorkerResponse> {
+async function ask(message: unknown): Promise<unknown> {
   try {
-    const response = (await chrome.runtime.sendMessage(message)) as WorkerResponse | undefined;
+    const response = await chrome.runtime.sendMessage(message);
     return response ?? { ok: false, error: 'The background worker did not respond.' };
   } catch (error) {
     // A rejected sendMessage usually means the worker was asleep and is now
@@ -50,6 +51,10 @@ async function toWorkerMessage(
     case 'prepare-workspace': {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       return tab?.id === undefined ? null : { type: 'prepare-workspace', tabId: tab.id };
+    }
+    case 'ask-about-page': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab?.id === undefined ? null : { type: 'ask-about-page', tabId: tab.id, question: command.question, history: command.history };
     }
     case 'close-workspace': return { type: 'close-workspace', workflowId: command.workflowId };
     case 'build-checklist': {
@@ -93,8 +98,9 @@ export function createRuntimeBridge(): MotionBridge {
 
   const refresh = async (): Promise<void> => {
     const response = await ask({ type: 'get-state' });
-    if (!response.ok) return;
-    const parsed = panelStateSchema.safeParse(response.result);
+    const envelope = workerResponseSchema.safeParse(response);
+    if (!envelope.success || !envelope.data.ok) return;
+    const parsed = panelStateSchema.safeParse(envelope.data.result);
     // The worker is our own code, but it is still a boundary: a shape we do not
     // recognise is dropped rather than rendered.
     if (!parsed.success) return;
@@ -168,10 +174,12 @@ export function createRuntimeBridge(): MotionBridge {
   const request = async <T,>(command: MotionCommand): Promise<T | null> => {
     const payload = await toWorkerMessage(command, state);
     if (!payload) return null;
-    const response = await ask(payload);
-    if (!response.ok) return null;
+    const envelope = workerResponseSchema.safeParse(await ask(payload));
+    if (!envelope.success || !envelope.data.ok) return null;
     await refresh();
-    return (response.result as T) ?? null;
+    // The worker is a boundary too: version skew or a worker defect must not
+    // turn an unexpected result into rendered panel data.
+    return parseWorkerResult(command.type, envelope.data.result) as T | null;
   };
 
   return {
@@ -185,6 +193,9 @@ export function createRuntimeBridge(): MotionBridge {
 
     send: async (command: MotionCommand) => {
       switch (command.type) {
+        case 'open-settings':
+          await chrome.runtime.openOptionsPage();
+          return;
         case 'request-permission': {
           // Must run inside the click that produced it: `chrome.permissions
           // .request` needs a live user gesture and loses it at the first

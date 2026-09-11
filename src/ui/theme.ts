@@ -6,6 +6,7 @@
 export interface Palette {
   paper: string;
   surface: string;
+  sunken: string;
   ink: string;
   inkMuted: string;
   rule: string;
@@ -18,31 +19,33 @@ export interface Palette {
 }
 
 export const lightPalette: Palette = {
-  paper: '#f4f6f8',
+  paper: '#f8f6f1',
   surface: '#ffffff',
-  ink: '#16202a',
-  inkMuted: '#54646f',
-  rule: '#d3dbe2',
-  edge: '#798996',
-  signal: '#24487a',
+  sunken: '#efece4',
+  ink: '#1f1d1a',
+  inkMuted: '#5e5950',
+  rule: '#e4dfd4',
+  edge: '#8a8378',
+  signal: '#a8431f',
   onSignal: '#ffffff',
-  attention: '#8a4b08',
-  danger: '#a4231b',
-  done: '#1f6146',
+  attention: '#7d5200',
+  danger: '#a3261c',
+  done: '#2a6340',
 };
 
 export const darkPalette: Palette = {
-  paper: '#101519',
-  surface: '#182027',
-  ink: '#e6ebef',
-  inkMuted: '#9dacb8',
-  rule: '#2b3640',
-  edge: '#6b7b88',
-  signal: '#9cc0ff',
-  onSignal: '#0b1017',
-  attention: '#f2b25c',
-  danger: '#ff9e96',
-  done: '#7bd3ac',
+  paper: '#1f1e1c',
+  surface: '#2a2926',
+  sunken: '#171614',
+  ink: '#f1eee7',
+  inkMuted: '#b5afa3',
+  rule: '#3a3834',
+  edge: '#858075',
+  signal: '#e58c68',
+  onSignal: '#1f1e1c',
+  attention: '#e8b75c',
+  danger: '#ff9d8e',
+  done: '#86cda2',
 };
 
 export const palettes = { light: lightPalette, dark: darkPalette } as const;

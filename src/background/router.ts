@@ -10,6 +10,8 @@ import {
 } from '@/core/domain';
 import {
   composeDraftPrompt,
+  composeChatPrompt,
+  CHAT_LABEL,
   deriveRequirements,
   GENERATED_LABEL,
   reviewDraft,
@@ -20,6 +22,7 @@ import {
 import {
   ChromeLanguageModelCapability,
   explainAvailability,
+  type LanguageModelCapability,
 } from '@/platform/languageModel';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
@@ -32,8 +35,9 @@ import { resolveAdapter } from '@/core/adapters';
 import type { Course } from '@/core/domain';
 import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
+import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
-import { ChromeTabs, groupTitle, type TabsCapability } from '@/platform/tabs';
+import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 
 /**
  * Handles an already-authorized message.
@@ -92,6 +96,7 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
     case 'prepare-workspace': return handlePrepareWorkspace(message.tabId);
+    case 'ask-about-page': return handleAskAboutPage(message);
     case 'close-workspace': return handleCloseWorkspace(message.workflowId);
   }
 }
@@ -562,6 +567,62 @@ async function askContentScript(tabId: number): Promise<PageContent | null> {
 
 const PREPARE_WORKSPACE = 'prepare-workspace';
 
+export interface AskAboutPageResult {
+  answer: string | null;
+  reason?: string;
+  label?: string;
+}
+
+/**
+ * The chat about the current page, on Chrome's on-device model.
+ *
+ * The order of the checks is the point. A graded attempt is refused before
+ * anything else happens: the content script is not asked, the model is not
+ * asked, and the earlier conversation is not sent anywhere — a restricted page
+ * gives the chat nothing. Unreadable pages and a missing model are refused
+ * before the page is read, and the page must still be the one that was checked
+ * once it has been. Nothing about the conversation is stored, and a model
+ * failure is logged without its message, which could quote the prompt.
+ */
+export async function handleAskAboutPage(
+  message: Extract<Message, { type: 'ask-about-page' }>,
+  model: LanguageModelCapability = new ChromeLanguageModelCapability(),
+): Promise<AskAboutPageResult> {
+  const observation = await readObservation(message.tabId);
+  if (observation?.restricted) {
+    return { answer: null, reason: 'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.' };
+  }
+  if (connectionFor(observation) !== 'supported') {
+    return { answer: null, reason: 'Motion can only answer questions about a course page it can read.' };
+  }
+  const availability = await model.availability();
+  if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  const content = await askContentScript(message.tabId);
+  if (!content) return { answer: null, reason: 'Motion could not read that page.' };
+  if (!sameWorkspacePage(observation, content.url)) {
+    return { answer: null, reason: 'The page changed while Motion was reading it. Ask again once it has loaded.' };
+  }
+  try {
+    const prompt = composeChatPrompt({
+      pageTitle: content.title,
+      pageText: content.text,
+      headings: content.headings,
+      question: message.question,
+      history: message.history,
+    });
+    const answer = await model.generate({ ...prompt, targetWords: 250 });
+    return { answer: answer.trim(), label: CHAT_LABEL };
+  } catch {
+    console.warn('Motion on-device model generation failed.');
+    return { answer: null, reason: 'The on-device model could not answer. Try again.' };
+  }
+}
+
+function sameWorkspacePage(observation: StoredObservation | null | undefined, contentUrl: string): boolean {
+  const observedUrl = observation?.url;
+  return observedUrl ? workspacePageUrl(observedUrl) === workspacePageUrl(contentUrl) : false;
+}
+
 export interface PrepareWorkspaceResult {
   workflowId: string | null;
   /** True when an existing workspace for this page was returned instead. */
@@ -601,8 +662,7 @@ export async function handlePrepareWorkspace(
   // The observation was checked before the read; the page must still be the
   // one that was checked. A tab can navigate in between, and what it navigated
   // to has not been through the restricted-mode check above.
-  const observed = observation?.url ? workspacePageUrl(observation.url) : null;
-  if (!observed || observed !== workspacePageUrl(content.url)) {
+  if (!sameWorkspacePage(observation, content.url)) {
     return {
       workflowId: null,
       reason: 'The page changed while Motion was reading it. Try again once it has loaded.',
@@ -649,7 +709,7 @@ export async function handlePrepareWorkspace(
     const created = await engine.create(
       PREPARE_WORKSPACE,
       { url: page, sources, courseCode: course?.code ?? null, label },
-      { courseId: course?.id ?? null, title: groupTitle([course?.code, label]) },
+      { courseId: course?.id ?? null, title: workspaceGroupTitle(course?.code, label) },
     );
     return { workflowId: created.id };
   });
@@ -670,14 +730,14 @@ export async function handlePrepareWorkspace(
 export async function handleCloseWorkspace(
   workflowId: string,
   tabs: TabsCapability = new ChromeTabs(),
-): Promise<{ closed: number }> {
+): Promise<{ closed: number; ungrouped: number }> {
   const engine = await createEngine(tabs);
   // `cancel` declines a workflow that already finished — the usual case for a
   // workspace — so fall back to reading it as it stands.
   const workflow =
     (await engine.cancel(workflowId)) ??
     (await new IndexedDbWorkflowStore(await openDatabase()).get(workflowId));
-  if (!workflow || workflow.definitionId !== PREPARE_WORKSPACE) return { closed: 0 };
+  if (!workflow || workflow.definitionId !== PREPARE_WORKSPACE) return { closed: 0, ungrouped: 0 };
 
   const sessionKey = await tabs.sessionKey();
   const { groupId, tabIds } = workspaceOwnership(workflow, sessionKey);
@@ -694,7 +754,98 @@ export async function handleCloseWorkspace(
 
   const closing = [...new Set([...kept, ...unrecorded])];
   await tabs.close(closing);
-  return { closed: closing.length };
+  const adopted = groupId === null ? [] : await tabs.adoptedTabsInGroup(groupId, workflow.title);
+  const ungrouped = adopted.filter((id) => !closing.includes(id));
+  await tabs.ungroup(ungrouped);
+  return { closed: closing.length, ungrouped: ungrouped.length };
+}
+
+/**
+ * The one title for a workspace's group. The toolbar icon and Prepare workspace
+ * both use it, so the readings join the group the icon started rather than a
+ * second one. Both page titles come from `document.title`.
+ */
+export function workspaceGroupTitle(courseCode: string | null | undefined, pageTitle: string): string {
+  return groupTitle([courseCode, pageTitle || 'Assignment']);
+}
+
+/**
+ * The toolbar icon: put the tab the student is on into Motion's group.
+ *
+ * The tab is the student's. It is recorded as adopted, never as owned, so
+ * closing the workspace ungroups it and cannot close it (docs/THREAT_MODEL.md
+ * T14). Anything short of a supported, unrestricted page that has already
+ * reported itself — checked on the stored observation *and* on the live URL —
+ * is left alone: a graded attempt gets no tab operation, not even grouping. A
+ * tab already in a group stays where the student put it.
+ *
+ * The pending intent is written before the live checks so a worker death after
+ * grouping leaves evidence to ungroup. The checks are synchronous and the
+ * grouping call follows them without an await, so navigation or a drag cannot
+ * slip between authorization and `tabs.group`.
+ */
+export async function handleActionClick(
+  tab: Pick<chrome.tabs.Tab, 'id' | 'url'>,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<{ grouped: boolean }> {
+  const tabId = tab.id;
+  const declined = { grouped: false };
+  if (tabId === undefined) return declined;
+
+  const named = await readObservation(tabId);
+  if (connectionFor(named) !== 'supported' || typeof named?.url !== 'string') return declined;
+  const namedUrl = named.url;
+  const course = await courseForUrl(namedUrl);
+  const title = workspaceGroupTitle(course?.code, named.title);
+  const live0 = await tabs.get(tabId);
+  if (!live0) return declined;
+  const plan = {
+    title,
+    color: 'blue' as const,
+    ...(live0.windowId === undefined ? {} : { windowId: live0.windowId }),
+  };
+  await tabs.findGroup(plan);
+
+  // The intent is first under the lock. Refresh the earlier lookup while
+  // holding it: two clicks can otherwise both retain a stale "no group".
+  return withLock('motion:workspace-group', async () => {
+    await tabs.recordAdopted(tabId, { state: 'pending', title });
+
+    const existing = await tabs.findGroup(plan);
+    const live = await tabs.get(tabId);
+    const observation = await readObservation(tabId);
+    const liveMayAdopt = live !== null && mayAdopt(live, observation);
+    const samePage = liveMayAdopt && typeof observation?.url === 'string'
+      && workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
+    if (!liveMayAdopt || !samePage) {
+      await tabs.forgetAdopted(tabId);
+      return declined;
+    }
+
+    let groupId: number;
+    try {
+      groupId = await tabs.groupInto(existing, [tabId], plan);
+    } catch (error) {
+      await tabs.forgetAdopted(tabId);
+      throw error;
+    }
+    await tabs.recordAdopted(tabId, { state: 'adopted', groupId });
+    return { grouped: true };
+  });
+}
+
+/** Synchronous on purpose: nothing may change between these checks and the grouping. */
+function mayAdopt(live: LiveTab, observation: StoredObservation | undefined): boolean {
+  if (live.groupId !== null) return false;
+  const adapter = resolveAdapter(live.url);
+  if (!adapter) return false;
+  if (connectionFor(observation) !== 'supported' || !observation?.url) return false;
+  if (workspacePageUrl(observation.url) !== workspacePageUrl(live.url)) return false;
+  return !evaluateAssessmentContext({
+    pageType: adapter.classifyUrl(live.url) ?? 'unsupported',
+    url: live.url,
+    pageTitle: live.title,
+  }).restricted;
 }
 
 /** The stored course a URL belongs to, by its platform id appearing in the URL. */

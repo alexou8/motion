@@ -167,7 +167,13 @@ it('keeps restricted mode read-only and free of automation controls', () => {
   // behaviour the policy exists to prevent, so the button must not be there to
   // click; a button that silently does nothing would teach the student that
   // Motion helps here.
-  expect(screen.queryAllByRole('button')).toHaveLength(0);
+  //
+  // The only controls are the panel's own chrome, named exactly: opening
+  // settings and starting a new chat touch no page. There is no field to type
+  // a question about the attempt into, not even a disabled one.
+  expect(screen.queryAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['New chat', 'Settings']);
+  expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+  expect(screen.getByText(/Chat is off beside a graded attempt/i)).toBeInTheDocument();
   expect(screen.getByText(/will not read this page/i)).toBeInTheDocument();
 });
 
@@ -198,7 +204,10 @@ it('activates the permission action from the keyboard', async () => {
   const user = userEvent.setup();
   const commands: MotionCommand[] = [];
   render(<App bridge={bridgeFor(state({ connection: 'permission-needed' }), commands)} now={NOW} />);
-  await user.tab();
+  // The panel header comes first in tab order; tab past it to the action.
+  const action = screen.getByRole('button', { name: 'Request page permission' });
+  for (let presses = 0; presses < 6 && document.activeElement !== action; presses += 1) await user.tab();
+  expect(action).toHaveFocus();
   await user.keyboard('{Enter}');
   expect(commands).toEqual([{ type: 'request-permission' }]);
 });

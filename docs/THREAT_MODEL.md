@@ -1,7 +1,9 @@
 # Threat model
 
-Scope: the Motion Chrome extension as built — local-first, no backend, no model
-calls. Findings below came from an adversarial architecture review; each names
+Scope: the Motion Chrome extension as built — local-first, no backend. Drafting
+and the chat about the page use Chrome's on-device model only; nothing is sent
+to a hosted model (ADR 0004). Findings below came from an adversarial
+architecture review; each names
 the control and its current status. Nothing is marked mitigated unless the code
 implementing the control exists.
 
@@ -48,6 +50,20 @@ persuasive injection could still influence wording. It cannot cause an
 *action*, because the model's output is text into the student's own workspace —
 there is no path from model output to a browser action, an approval, or a
 submission. That containment, not the fencing, is the real control. — *Mitigated*
+
+The **chat about the page** is a second route from page text to the model, with
+the same controls and one more input: the student's earlier turns. Those turns
+hold model output that may quote the page, so they are fenced as context too;
+only Motion's instruction and the student's current question are instruction
+(`src/core/assist/chat.ts`, tested with a planted `</context>` in both the page
+and the history). The question and history are Zod-bounded (2,000 characters;
+12 turns of 4,000) and only the panel may send them. Beside a graded attempt the
+worker refuses before it asks the page or the model, so an attempt contributes
+nothing and receives nothing; the panel does not even offer a composer there.
+The conversation is held in the panel's memory only and a model failure is
+logged without its message. As with drafting, an answer is text shown to the
+student and labelled as generated; it has no path to an action. —
+*Mitigated (`src/background/router.ts`, `src/background/chat.test.ts`)*
 
 ## T1 — Malicious page content becomes stored XSS
 
@@ -99,7 +115,11 @@ duplicate; recording first and crashing produces a lost action.
 
 Side-effecting steps are modelled as durable intents moving
 `prepared → applied → reconciled`, each with a reconciliation strategy that can
-inspect real browser state after a restart. — *Planned*
+inspect real browser state after a restart. — *Mitigated
+(`src/core/workflows/engine.ts`: a prepared intent is reconciled instead of
+repeating its effect, and the effect runs when reconciliation finds no evidence;
+`src/background/capabilities.ts` reconciles tab opening by session record.
+Unit-tested; not yet exercised across a real service-worker restart)*
 
 ## T5 — Prohibited actions reached through a generic capability
 
@@ -133,7 +153,10 @@ and run it twice. An in-memory guard does not survive a worker restart and is
 therefore not a control.
 
 Steps are claimed via an atomic IndexedDB compare-and-swap carrying a lease and
-attempt generation; completion must match the generation it claimed. — *Planned*
+attempt generation; completion must match the generation it claimed. —
+*Mitigated (`src/core/workflows/engine.ts`: a claim bumps the lease generation,
+a commit from a stale generation is discarded, and a lease left by a killed
+worker is reclaimed; unit-tested, not across real service-worker contexts)*
 
 ## T8 — Resuming at the wrong step after an extension update
 
@@ -141,7 +164,11 @@ A persisted cursor *index* changes meaning when steps are inserted, reordered or
 removed by an update, so an old workflow can resume into the wrong action.
 
 Workflows persist a stable `stepId`, the workflow type and its definition
-version, and define upgrade-or-cancel behaviour per version. — *Planned*
+version, and define upgrade-or-cancel behaviour per version. — *Partially
+mitigated*: the stable step id and the definition version are persisted, and a
+workflow resumes at the right step after an update reorders its plan
+(`engine.test.ts`). Upgrade-or-cancel behaviour per version is *Planned*:
+`src/background/recovery.ts` does not yet compare versions.
 
 ## T9 — Over-broad host permissions
 
@@ -241,6 +268,39 @@ own. — *Accepted*
 Restricted mode is not relaxed inside Motion's own group. A tab Motion opened
 that turns out to be a graded attempt records that it is restricted and nothing
 else, exactly as a tab the student opened would. — *Mitigated (tested)*
+
+Clicking the toolbar icon puts the *current* tab into Motion's group. That tab
+is the student's: Motion groups it because the student asked, but records it
+only as **adopted** — in session storage, under a key separate from the tabs
+Motion opened — never as owned. Closing the workspace ungroups adopted tabs
+still in the group and never closes them; an adopted tab the student moved
+out is left alone. The icon only groups a tab that is not already in a group,
+whose stored observation is a supported, unrestricted page matching the tab's
+current URL, and whose live URL the assessment policy also clears. Anywhere
+else — a graded attempt, a signed-out or unsupported page, a page that has not
+reported itself yet — it opens the panel and does nothing else. The icon and
+**Prepare workspace** share one group title, so the readings join the adopted
+tab's group rather than a second one. — *Mitigated (`src/background/router.ts`,
+`src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
+
+The click's tab object supplies only its id. Motion names the group from the
+stored observation and writes a title-bound pending intent as the workspace
+lock's first operation. It refreshes the matching group lookup while holding
+that lock, then reads the live tab and current observation. The synchronous
+checks confirm the tab is still ungrouped, supported and unrestricted, and that
+the observation still describes the page used for the name; `tabs.group` is the
+very next asynchronous operation. A navigation into an attempt or a drag into
+another group while any earlier operation waits is therefore declined. The
+record is settled with the group id after grouping; if the worker dies between
+those operations, closing only the workspace with the matching title can
+ungroup the pending tab, never close it. — *Mitigated (tested)*
+
+Residual: Chrome's own check-and-group operation is not atomic, so Chrome can
+still change a tab while `tabs.group` is running. A stale pending record only
+matches a group with its own workspace title and can only ungroup, never close,
+that tab. A toolbar click racing **Prepare workspace** can also create two
+same-titled groups because they use different locks; neither race reads page
+content or closes a student tab. — *Accepted*
 
 ---
 

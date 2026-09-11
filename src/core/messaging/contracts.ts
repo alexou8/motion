@@ -54,6 +54,13 @@ export const requestExtractionSchema = z.object({
   tabId: z.number().int().nonnegative(),
 });
 export const prepareWorkspaceSchema = z.object({ type: z.literal('prepare-workspace'), tabId: z.number().int().nonnegative() });
+export const askAboutPageSchema = z.object({
+  type: z.literal('ask-about-page'),
+  tabId: z.number().int().nonnegative(),
+  question: z.string().trim().min(1).max(2_000),
+  /** Earlier turns of this panel session, oldest first. Never stored. */
+  history: z.array(z.object({ role: z.enum(['student', 'motion']), text: z.string().max(4_000) })).max(12).default([]),
+});
 export const closeWorkspaceSchema = z.object({ type: z.literal('close-workspace'), workflowId: z.string().min(1) });
 
 export const getStateSchema = z.object({ type: z.literal('get-state') });
@@ -150,6 +157,7 @@ export const messageSchema = z.discriminatedUnion('type', [
   extractionResultSchema,
   requestExtractionSchema,
   prepareWorkspaceSchema,
+  askAboutPageSchema,
   closeWorkspaceSchema,
   getStateSchema,
   decideApprovalSchema,
@@ -176,6 +184,7 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'extraction-result': ['content-script'],
   'request-extraction': ['extension-ui'],
   'prepare-workspace': ['extension-ui'],
+  'ask-about-page': ['extension-ui'],
   'close-workspace': ['extension-ui'],
   'get-state': ['extension-ui'],
   'decide-approval': ['extension-ui'],

@@ -14,7 +14,13 @@ describe.each(Object.entries(palettes))('%s palette meets WCAG AA', (_name, pale
     ['ink on surface', palette.ink, palette.surface],
     ['muted ink on paper', palette.inkMuted, palette.paper],
     ['muted ink on surface', palette.inkMuted, palette.surface],
+    // The composer, the student's chat turns and selected nav rows sit on the
+    // sunken fill, so text there is held to the same bar.
+    ['ink on sunken', palette.ink, palette.sunken],
+    ['muted ink on sunken', palette.inkMuted, palette.sunken],
     ['signal on paper', palette.signal, palette.paper],
+    ['signal on surface', palette.signal, palette.surface],
+    ['danger on surface', palette.danger, palette.surface],
     ['attention on paper', palette.attention, palette.paper],
     ['danger on paper', palette.danger, palette.paper],
     ['done on paper', palette.done, palette.paper],

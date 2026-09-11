@@ -25,6 +25,7 @@ export default {
       },
       fontFamily: {
         sans: 'var(--font-sans)',
+        serif: 'var(--font-serif)',
         mono: 'var(--font-mono)',
       },
       fontSize: {
@@ -32,6 +33,11 @@ export default {
         sm: ['var(--text-sm)', { lineHeight: 'var(--leading-body)' }],
         md: ['var(--text-md)', { lineHeight: '1.4' }],
         lg: ['var(--text-lg)', { lineHeight: 'var(--leading-tight)' }],
+        xl: ['var(--text-xl)', { lineHeight: 'var(--leading-tight)' }],
+        '2xl': ['var(--text-2xl)', { lineHeight: '1.2' }],
+      },
+      outlineColor: {
+        focus: 'var(--color-focus)',
       },
       borderRadius: {
         sm: 'var(--radius-sm)',

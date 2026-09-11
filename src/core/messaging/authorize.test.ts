@@ -84,6 +84,15 @@ describe('role separation', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('refuses a chat request from a content script', () => {
+    const result = authorizeMessage(
+      { type: 'ask-about-page', tabId: 7, question: 'What is this about?', history: [] },
+      contentScript(),
+      policy,
+    );
+    expect(result.ok).toBe(false);
+  });
+
   it('refuses to let the panel impersonate a page observation', () => {
     // The panel has no tab, so it is typed as extension-ui and rejected.
     const result = authorizeMessage(observation(), panel(), policy);
@@ -121,6 +130,14 @@ describe('role separation', () => {
     for (const type of types) {
       expect(maySend(type, 'content-script') || maySend(type, 'extension-ui')).toBe(true);
     }
+  });
+});
+
+describe('chat message shape', () => {
+  it('rejects over-long questions and history', async () => {
+    const { askAboutPageSchema } = await import('./contracts');
+    expect(askAboutPageSchema.safeParse({ type: 'ask-about-page', tabId: 7, question: 'x'.repeat(2001), history: [] }).success).toBe(false);
+    expect(askAboutPageSchema.safeParse({ type: 'ask-about-page', tabId: 7, question: 'ok', history: Array.from({ length: 13 }, () => ({ role: 'student', text: 'x' })) }).success).toBe(false);
   });
 });
 
