@@ -525,6 +525,18 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     }
   }
 
+  /**
+   * What a URL would be, from its route alone. Used to decide whether a link is
+   * safe to open, so it never guesses: an unrecognised route is null, and a
+   * sign-in wall or an attempt is reported as exactly that.
+   */
+  classifyUrl(url: string): PageType | null {
+    if (!this.matchesHost(url)) return null;
+    const pathname = pathnameOf(url);
+    if (!pathname) return null;
+    return ROUTES.find((candidate) => candidate.pattern.test(pathname))?.pageType ?? null;
+  }
+
   detectPage(input: AdapterInput): PageDetection | null {
     if (!this.matchesHost(input.url)) return null;
     const pathname = pathnameOf(input.url);

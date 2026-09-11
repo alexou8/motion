@@ -53,6 +53,8 @@ export const requestExtractionSchema = z.object({
   type: z.literal('request-extraction'),
   tabId: z.number().int().nonnegative(),
 });
+export const prepareWorkspaceSchema = z.object({ type: z.literal('prepare-workspace'), tabId: z.number().int().nonnegative() });
+export const closeWorkspaceSchema = z.object({ type: z.literal('close-workspace'), workflowId: z.string().min(1) });
 
 export const getStateSchema = z.object({ type: z.literal('get-state') });
 
@@ -147,6 +149,8 @@ export const messageSchema = z.discriminatedUnion('type', [
   pageObservedSchema,
   extractionResultSchema,
   requestExtractionSchema,
+  prepareWorkspaceSchema,
+  closeWorkspaceSchema,
   getStateSchema,
   decideApprovalSchema,
   workflowCommandSchema,
@@ -171,6 +175,8 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'page-observed': ['content-script'],
   'extraction-result': ['content-script'],
   'request-extraction': ['extension-ui'],
+  'prepare-workspace': ['extension-ui'],
+  'close-workspace': ['extension-ui'],
   'get-state': ['extension-ui'],
   'decide-approval': ['extension-ui'],
   'workflow-command': ['extension-ui'],

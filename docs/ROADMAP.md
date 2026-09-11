@@ -18,7 +18,7 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures and against the built extension in a real Chromium (`npm run test:extension`). Dashboard, course home, content module, assignment list, assignment, discussion list, quiz list, grades, calendar and unrecognised routes are now confirmed on a live authenticated MyLearningSpace account — see the run recorded in `docs/MANUAL-TESTING.md`. Announcements, `navigateContent` topics and a live expired session remain unverified |
 | Typed messaging + sender authorization | **Partial** | Implemented and unit-tested, both directions Zod-validated; the worker/content-script/panel path is exercised in a real browser by `npm run test:extension`, including a page script failing to reach the worker |
 | Extension shell (worker, panel, popup) | **Partial** | Worker, side panel and options page load in Chromium 141 and the panel renders state from the worker (`npm run test:extension`); panel views beyond the connection states are unfinished |
-| Basic tab grouping | **Not started** | — |
+| Basic tab grouping | **Partial** | **Prepare workspace** opens the assignment and its readable same-origin links in a named, Motion-owned group (`src/core/workspace`, `src/background/router.ts`). Unit-tested against an in-memory browser: link allowlist, no duplicate workspace, restricted mode inside Motion's own group, and closing only owned tabs still in the group. Not yet exercised in a real browser or on a live LMS |
 
 ## Phase B — Course organization
 
@@ -39,7 +39,7 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Step claiming via compare-and-swap lease | **Not started** |
 | Durable intents (`prepared → applied → reconciled`) | **Not started** |
 | Pause, resume, retry, cancel | **Not started** |
-| Idempotent tab and tab-group operations | **Not started** |
+| Idempotent tab and tab-group operations | **Partial** — opening is idempotent per operation id, and a step interrupted between opening and grouping is finished under its original key rather than repeated (`src/background/capabilities.test.ts`); not yet covered by a real worker restart |
 | Worker suspension and restart tests | **Not started** |
 
 An earlier engine draft was discarded before it shipped: it used an in-memory

@@ -39,6 +39,13 @@ export interface StepContext {
   /** Deterministic per (workflow, step, attempt); a retry produces a new one. */
   intentKey: string;
   now: Date;
+  /**
+   * Whether this execution still holds the workflow. Pausing or cancelling
+   * clears the lease, and a newer claim bumps its generation; a capability with
+   * several effects checks this between them, so a student's "stop" stops the
+   * next tab from opening rather than only the commit that follows.
+   */
+  stillCurrent: () => Promise<boolean>;
 }
 
 /**
@@ -269,6 +276,8 @@ export class WorkflowEngine {
       step: this.currentStep(started) ?? step,
       intentKey,
       now: this.now(),
+      stillCurrent: async () =>
+        (await this.store.get(workflow.id))?.lease?.generation === generation,
     };
 
     let outcome: StepOutcome;

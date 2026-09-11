@@ -5,6 +5,7 @@ import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
 import { approvalRequestSchema, type ApprovalRequest } from '@/core/policy';
 import { buildCapabilities } from './capabilities';
+import type { TabsCapability } from '@/platform/tabs';
 import { WORKFLOW_DEFINITIONS } from './definitions';
 
 export const RETRY_ALARM_PREFIX = 'motion:retry:';
@@ -25,7 +26,7 @@ export function scheduleRetryAlarm(workflowId: string, at: Date): void {
  * worker that holds the cache can be killed between any two events. Opening a
  * database handle per wake is cheap next to a stale-state bug.
  */
-export async function createEngine(): Promise<WorkflowEngine> {
+export async function createEngine(tabs?: TabsCapability): Promise<WorkflowEngine> {
   const db = await openDatabase();
   const store = new IndexedDbWorkflowStore(db);
   const approvalRepo = new Repository(db, STORE.approvals, approvalRequestSchema);
@@ -36,7 +37,7 @@ export async function createEngine(): Promise<WorkflowEngine> {
       save: (approval: ApprovalRequest) => approvalRepo.put(approval),
       get: (id: string) => approvalRepo.get(id),
     },
-    capabilities: buildCapabilities(),
+    capabilities: buildCapabilities(tabs),
     definitions: WORKFLOW_DEFINITIONS,
     // A distinct owner per wake, so a lease held by a dead worker is
     // recognisable as someone else's and expires rather than being reused.

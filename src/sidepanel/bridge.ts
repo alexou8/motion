@@ -33,6 +33,8 @@ export const motionCommandSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('review-draft'), checklistId: z.string().min(1), draft: z.string() }),
   z.object({ type: z.literal('model-status') }),
+  z.object({ type: z.literal('prepare-workspace') }),
+  z.object({ type: z.literal('close-workspace'), workflowId: z.string().min(1) }),
   z.object({ type: z.literal('get-checklist'), checklistId: z.string().min(1) }),
 ]);
 

@@ -28,6 +28,12 @@ import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
 import { createEngine } from './recovery';
+import { resolveAdapter } from '@/core/adapters';
+import type { Course } from '@/core/domain';
+import { isTerminal } from '@/core/workflows';
+import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
+import { withLock } from '@/platform/locks';
+import { ChromeTabs, groupTitle, type TabsCapability } from '@/platform/tabs';
 
 /**
  * Handles an already-authorized message.
@@ -85,6 +91,8 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     }
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
+    case 'prepare-workspace': return handlePrepareWorkspace(message.tabId);
+    case 'close-workspace': return handleCloseWorkspace(message.workflowId);
   }
 }
 
@@ -552,6 +560,156 @@ async function askContentScript(tabId: number): Promise<PageContent | null> {
   }
 }
 
+const PREPARE_WORKSPACE = 'prepare-workspace';
+
+export interface PrepareWorkspaceResult {
+  workflowId: string | null;
+  /** True when an existing workspace for this page was returned instead. */
+  reused?: boolean;
+  /** Plain-language reason Motion declined, for the panel to show. */
+  reason?: string;
+}
+
+/**
+ * "Prepare workspace": the assignment and its readable links, opened in a tab
+ * group Motion owns.
+ *
+ * Refused before anything is read on a page that is restricted, signed out, or
+ * not one Motion understands — a graded attempt never reaches the content
+ * script from here, let alone yields links to open. Pressing it again for the
+ * same page returns the workspace already there rather than a second set of
+ * tabs.
+ */
+export async function handlePrepareWorkspace(
+  tabId: number,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<PrepareWorkspaceResult> {
+  const observation = await readObservation(tabId);
+  if (observation?.restricted) {
+    return { workflowId: null, reason: 'Motion cannot prepare a workspace on a graded attempt.' };
+  }
+  if (connectionFor(observation) !== 'supported') {
+    return {
+      workflowId: null,
+      reason: 'Motion can only prepare a workspace from a course page it can read.',
+    };
+  }
+
+  const content = await askContentScript(tabId);
+  if (!content) return { workflowId: null, reason: 'Motion could not read that page.' };
+
+  // The observation was checked before the read; the page must still be the
+  // one that was checked. A tab can navigate in between, and what it navigated
+  // to has not been through the restricted-mode check above.
+  const observed = observation?.url ? workspacePageUrl(observation.url) : null;
+  if (!observed || observed !== workspacePageUrl(content.url)) {
+    return {
+      workflowId: null,
+      reason: 'The page changed while Motion was reading it. Try again once it has loaded.',
+    };
+  }
+
+  const adapter = resolveAdapter(content.url);
+  const sources = adapter
+    ? selectWorkspaceSources(content, (url) => adapter.classifyUrl(url))
+    : [];
+  const page = sources[0];
+  if (!page) {
+    return {
+      workflowId: null,
+      reason: 'Motion can only prepare a workspace from a course page it can read.',
+    };
+  }
+
+  const sessionKey = await tabs.sessionKey();
+  const course = await courseForUrl(content.url);
+  const label = content.title || 'Assignment';
+  const engine = await createEngine(tabs);
+
+  // Finding an existing workspace and creating a new one must be one step, or
+  // two quick presses both find nothing and both open a set of tabs.
+  const claimed = await withLock(`motion:${PREPARE_WORKSPACE}`, async () => {
+    const db = await openDatabase();
+    const workflows = (await new IndexedDbWorkflowStore(db).list()).filter(
+      (workflow) => workflow.definitionId === PREPARE_WORKSPACE && workflow.params['url'] === page,
+    );
+
+    const inFlight = workflows.find((workflow) => !isTerminal(workflow.status));
+    if (inFlight) return { workflowId: inFlight.id, reused: true };
+
+    // A finished workspace still counts while any tab Motion opened for it is
+    // still in its group; once the student has closed them all, it is gone.
+    for (const workflow of workflows.filter((candidate) => candidate.status === 'completed')) {
+      const { groupId, tabIds } = workspaceOwnership(workflow, sessionKey);
+      if (groupId !== null && (await tabs.ownedTabsInGroup(groupId, tabIds)).length > 0) {
+        return { workflowId: workflow.id, reused: true };
+      }
+    }
+
+    const created = await engine.create(
+      PREPARE_WORKSPACE,
+      { url: page, sources, courseCode: course?.code ?? null, label },
+      { courseId: course?.id ?? null, title: groupTitle([course?.code, label]) },
+    );
+    return { workflowId: created.id };
+  });
+
+  if (!claimed.reused) await engine.advance(claimed.workflowId);
+  return claimed;
+}
+
+/**
+ * Closing a workspace is a full stop.
+ *
+ * The workflow is cancelled first, so a step still queued cannot open another
+ * tab after the student asked for this. Then only tabs that Motion opened *and*
+ * that are still in its group are closed: a tab the student dragged in is
+ * theirs, and a Motion tab they dragged out is where they chose to keep it
+ * (docs/THREAT_MODEL.md T14).
+ */
+export async function handleCloseWorkspace(
+  workflowId: string,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<{ closed: number }> {
+  const engine = await createEngine(tabs);
+  // `cancel` declines a workflow that already finished — the usual case for a
+  // workspace — so fall back to reading it as it stands.
+  const workflow =
+    (await engine.cancel(workflowId)) ??
+    (await new IndexedDbWorkflowStore(await openDatabase()).get(workflowId));
+  if (!workflow || workflow.definitionId !== PREPARE_WORKSPACE) return { closed: 0 };
+
+  const sessionKey = await tabs.sessionKey();
+  const { groupId, tabIds } = workspaceOwnership(workflow, sessionKey);
+  const kept = groupId === null ? [] : await tabs.ownedTabsInGroup(groupId, tabIds);
+
+  // A step stopped mid-way, or a failed attempt, can leave tabs Motion opened
+  // but never recorded as the workspace. They were never handed to the student
+  // as part of it, so they close with it. Recorded tabs are excluded here: if
+  // one is outside the group, the student moved it there.
+  const recorded = new Set(tabIds);
+  const unrecorded = (await tabs.tabsOpenedBy(`${workflow.id}:`)).filter(
+    (id) => !recorded.has(id),
+  );
+
+  const closing = [...new Set([...kept, ...unrecorded])];
+  await tabs.close(closing);
+  return { closed: closing.length };
+}
+
+/** The stored course a URL belongs to, by its platform id appearing in the URL. */
+async function courseForUrl(url: string | null | undefined): Promise<Course | null> {
+  const db = await openDatabase();
+  const courses = await new Repository(db, STORE.courses, courseSchema).all();
+  return (
+    courses.records.find((candidate) =>
+      url ? url.includes(candidate.externalId ?? NO_EXTERNAL_ID) : false,
+    ) ??
+    courses.records[0] ??
+    null
+  );
+}
+
 async function currentCourseId(): Promise<string | null> {
   const db = await openDatabase();
   const courses = new Repository(db, STORE.courses, courseSchema);
@@ -651,4 +809,3 @@ export async function buildPanelState(): Promise<PanelState> {
       allTasks.corrupted.length + allApprovals.corrupted.length + allCourses.corrupted.length,
   };
 }
-

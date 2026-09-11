@@ -47,6 +47,11 @@ async function toWorkerMessage(
   state: PanelState,
 ): Promise<Record<string, unknown> | null> {
   switch (command.type) {
+    case 'prepare-workspace': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab?.id === undefined ? null : { type: 'prepare-workspace', tabId: tab.id };
+    }
+    case 'close-workspace': return { type: 'close-workspace', workflowId: command.workflowId };
     case 'build-checklist': {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id === undefined) return null;
@@ -234,6 +239,19 @@ export function createRuntimeBridge(): MotionBridge {
             workflowId: command.workflowId,
             command: command.command,
           });
+          await refresh();
+          return;
+        }
+
+        case 'close-workspace': {
+          await ask({ type: 'close-workspace', workflowId: command.workflowId });
+          await refresh();
+          return;
+        }
+
+        case 'prepare-workspace': {
+          const payload = await toWorkerMessage(command, state);
+          if (payload) await ask(payload);
           await refresh();
           return;
         }

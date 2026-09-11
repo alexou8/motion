@@ -10,6 +10,7 @@ import {
   SignedOutView,
   UnsupportedView,
   WorkingPanel,
+  WorkspaceView,
 } from './views';
 
 export interface AppProps {
@@ -52,7 +53,7 @@ function ConnectionContent({ state, bridge, now }: { state: PanelState; bridge: 
               that actually carries an assignment or a discussion prompt. On a
               grades or calendar page it would be noise. */}
           {CARRIES_COURSEWORK.has(state.page.pageType ?? '') ? (
-            <CourseworkView bridge={bridge} title={state.page.title || 'Coursework'} />
+            <><WorkspaceView bridge={bridge} /><CourseworkView bridge={bridge} title={state.page.title || 'Coursework'} /></>
           ) : null}
         </>
       );
