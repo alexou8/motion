@@ -36,6 +36,34 @@ const ATTEMPT_URL_HINTS = [
 const ATTEMPT_TEXT_HINTS =
   /\b(time remaining|attempt in progress|question \d+ of \d+|submit quiz|proctor|lockdown browser)\b/i;
 
+/**
+ * Page types that a route table identified and that cannot themselves be an
+ * attempt: a listing, a dashboard, a grade report, a calendar.
+ *
+ * The text hints above are a safety net for a page whose route Motion did not
+ * recognise. On a page whose route *is* recognised as one of these, the route
+ * is the stronger fact, and the hints only misfire: a quiz list naming a quiz
+ * "Test 1 - Requires Respondus LockDown Browser" put the entire list into
+ * restricted mode, so the student could not read any of their own quiz dates.
+ *
+ * Pages that display arbitrary instructor-authored content — an assignment, a
+ * discussion topic, a content topic — are deliberately absent: an attempt can
+ * be embedded in one, so those keep the safety net. `unsupported` is absent for
+ * the same reason, since that is exactly the unrecognised case the hints exist
+ * for.
+ */
+const LISTING_PAGE_TYPES: readonly PageType[] = [
+  'dashboard',
+  'course-home',
+  'assignment-list',
+  'discussion-list',
+  'quiz-list',
+  'content-module',
+  'announcements',
+  'grades',
+  'calendar',
+];
+
 export function evaluateAssessmentContext(input: {
   pageType: PageType;
   url: string;
@@ -61,7 +89,7 @@ export function evaluateAssessmentContext(input: {
   }
 
   const haystack = `${input.pageTitle ?? ''} ${input.visibleText ?? ''}`;
-  if (ATTEMPT_TEXT_HINTS.test(haystack)) {
+  if (!LISTING_PAGE_TYPES.includes(input.pageType) && ATTEMPT_TEXT_HINTS.test(haystack)) {
     return {
       restricted: true,
       reason:

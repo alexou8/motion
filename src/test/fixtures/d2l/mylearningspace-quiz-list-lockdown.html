@@ -1,0 +1,32 @@
+<!--
+  Synthetic fixture modelled on a MyLearningSpace quiz list.
+  Contains no real student or course data: every quiz name, id, score and date
+  below is invented.
+
+  The shape that matters here: a quiz *named* after the proctoring tool it needs.
+  The list page is metadata about quizzes, not an attempt, but the phrase in the
+  name matched the "is this a graded attempt?" text heuristic and put the whole
+  page into restricted mode — so a student could not see any of their quiz dates.
+-->
+<!doctype html>
+<html>
+  <head><title>Quiz List - CS-101-A - Example Course - Example University</title></head>
+  <body>
+    <h1>Quiz List</h1>
+    <table class="d2l-table">
+      <thead><tr><th>Quiz</th><th>Due Date</th><th>Score</th></tr></thead>
+      <tbody>
+        <tr class="d2l-datalist-item">
+          <td><a class="d2l-link" href="/d2l/lms/quizzing/user/quiz_summary.d2l?qi=801&amp;ou=999999">Example Test One - Requires Respondus LockDown Browser</a></td>
+          <td><span class="d2l-dates-text">Due on Oct 20, 2026 2:30 PM</span></td>
+          <td>0 / 1</td>
+        </tr>
+        <tr class="d2l-datalist-item">
+          <td><a class="d2l-link" href="/d2l/lms/quizzing/user/quiz_summary.d2l?qi=802&amp;ou=999999">Example Practice Quiz</a></td>
+          <td><span class="d2l-dates-text">Due on Dec 1, 2026 9:00 PM</span></td>
+          <td>-</td>
+        </tr>
+      </tbody>
+    </table>
+  </body>
+</html>
