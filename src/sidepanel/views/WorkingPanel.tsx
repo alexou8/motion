@@ -252,6 +252,7 @@ function WorkflowControls({ workflow, send }: { workflow: Workflow; send: (comma
       {workflow.status === 'failed' ? <Button variant="secondary" onClick={() => command('retry')}>Retry workflow</Button> : null}
       {workflow.status !== 'paused' && workflow.status !== 'failed' && !terminal ? <Button variant="secondary" onClick={() => command('pause')}>Pause workflow</Button> : null}
       {!terminal ? <Button variant="danger" onClick={() => command('cancel')}>Cancel workflow</Button> : null}
+      {workflow.definitionId === 'prepare-workspace' && workflow.status !== 'cancelled' ? <Button variant="secondary" onClick={() => send({ type: 'close-workspace', workflowId: workflow.id })}>Close workspace</Button> : null}
     </div>
   );
 }

@@ -179,6 +179,69 @@ Provenance records the platform, canonical URL, page type, capture time and
 extraction version today; institution/tenant and account identity plus an
 evidence excerpt are *Planned* before any sync exists. — *Partially mitigated*
 
+## T13 — Opening a page's links is a request, not a read
+
+**Prepare workspace** opens the assignment's linked pages in Motion's tab group.
+Those links come from a page Motion does not control, and opening a tab is a
+GET navigation made with the student's session. A GET can do more than show a
+page: it can sign the student out, start a quiz attempt, or mark something read.
+Opening "every link on the assignment" would let an instructor-authored or
+student-posted link make Motion act.
+
+Only links the adapter recognises *by route* as a readable page — an
+assignment, a content topic or module, a discussion topic, announcements — on
+the same origin as the assignment are opened, capped at a handful. A route the
+adapter does not know is refused rather than guessed at, and the assessment
+policy's URL checks run on every candidate, so a link to a graded attempt is
+never opened. The page itself passes the same test, and must still be the page
+that was observed when it is read: a tab that navigated to an attempt or a
+sign-out in between contributes nothing. — *Mitigated
+(`src/core/workspace/sources.ts`, `src/background/router.ts`, unit-tested; not
+yet exercised in a real browser)*
+
+Tabs Motion opens carry a `motion_op` query parameter so they can be recognised
+after a worker restart. That parameter is sent to the LMS with the request. It
+is an opaque operation id and carries no student data. — *Accepted*
+
+## T14 — Acting on tabs Motion does not own
+
+A tab group is a container the student can also use: they can drag their own
+tab into Motion's group, or drag one of Motion's tabs out. Treating "in the
+group" as "Motion's" would let Motion close a student's own work.
+
+Ownership is the set of tab ids Motion recorded when it opened them, stored with
+the workflow — never inferred from group membership — and bound to the browser
+session that issued them. Tab ids are reused after a browser restart, so a
+record from an earlier session owns nothing.
+
+Closing a workspace cancels the workflow first. A step already opening tabs
+checks before each tab that it still holds the workflow, so it stops rather
+than finishing the list. Then Motion closes tabs that are owned *and* still in
+the group — a tab the student moved in is not Motion's, and a Motion tab they
+moved out is where they chose to put it — plus any tab this session recorded
+opening for the workflow but never handed over as part of it. Two quick
+presses of **Prepare workspace** are serialised by a browser-held Web Lock, so
+they produce one workspace. — *Mitigated (`src/background/router.ts`,
+`src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
+
+Recovery after a worker restart recognises a tab only if *this* browser
+session started the operation that opened it: the operation is recorded in
+session storage before the tab is created. Chrome restores tabs with their
+URLs after a browser restart, `motion_op` marker included, but clears session
+storage — so a restored tab is never adopted, grouped, or later closed as
+Motion's. — *Mitigated (`src/platform/tabs.ts`, unit-tested)*
+
+Residual: a tab whose creation is already in flight when the student closes
+the workspace can outlive the close, ungrouped. And if the worker dies between
+Chrome creating a tab and Motion recording its id, *and* the LMS redirect drops
+the `motion_op` marker, recovery cannot recognise that tab and may open the
+page again. Both leave an extra tab open; neither closes a tab Motion does not
+own. — *Accepted*
+
+Restricted mode is not relaxed inside Motion's own group. A tab Motion opened
+that turns out to be a graded attempt records that it is restricted and nothing
+else, exactly as a tab the student opened would. — *Mitigated (tested)*
+
 ---
 
 ## Accepted risks

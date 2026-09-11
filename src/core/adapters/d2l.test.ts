@@ -47,6 +47,17 @@ describe('D2L route detection', () => {
     expect(detection?.warnings[0]).toContain('Unsupported D2L route');
   });
 
+  it.each([
+    [`${WLU_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, 'assignment'],
+    [`${STOCK_ORIGIN}/d2l/le/content/363/viewContent/12/View`, 'content-topic'],
+    [`${STOCK_ORIGIN}/d2l/lms/quizzing/user/attempt/201`, 'quiz-attempt'],
+    [`${STOCK_ORIGIN}/d2l/logout`, null],
+    ['https://example.com/d2l/le/content/363/viewContent/12/View', null],
+    ['not a url', null],
+  ])('classifies %s by its route alone as %s', (url, pageType) => {
+    expect(d2lAdapter.classifyUrl(url)).toBe(pageType);
+  });
+
   it('degrades on renamed or partially loaded markup with warnings and no fabricated tasks', () => {
     const page = input(`${STOCK_ORIGIN}/d2l/unknown`, fixture('broken'));
     expect(d2lAdapter.extractPageContent(page).warnings.length).toBeGreaterThan(0);

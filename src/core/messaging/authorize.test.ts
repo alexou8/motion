@@ -91,6 +91,17 @@ describe('role separation', () => {
     if (!result.ok) expect(result.reason).toMatch(/may not send/i);
   });
 
+  it.each([
+    { type: 'prepare-workspace', tabId: 7 },
+    { type: 'close-workspace', workflowId: 'w1' },
+  ])('refuses to let a content script manage tabs with $type', (message) => {
+    // A page may report what it is; it may never make Motion open or close tabs.
+    const result = authorizeMessage(message, contentScript(), policy);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/may not send/i);
+    expect(authorizeMessage(message, panel(), policy).ok).toBe(true);
+  });
+
   it('lets the panel send UI commands', () => {
     const result = authorizeMessage({ type: 'get-state' }, panel(), policy);
     expect(result.ok).toBe(true);

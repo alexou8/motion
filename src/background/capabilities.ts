@@ -32,63 +32,76 @@ function requireUrls(input: Record<string, unknown>, key: string): string[] {
   return urls;
 }
 
+function optionalString(input: Record<string, unknown>, key: string): string | null {
+  const value = input[key];
+  return typeof value === 'string' ? value : null;
+}
+
 /** Opens a set of course resources in a Motion-owned tab group. */
 export function openSourcesCapability(tabs: TabsCapability): StepCapability {
+  /**
+   * Safe to run more than once under the same intent key: `tabs.open` finds a
+   * tab already carrying its operation id instead of opening another, and
+   * `ensureGroup` only adds what is missing. That is what lets a restart finish
+   * a half-done step rather than either repeating it or abandoning it.
+   */
+  const openAndGroup = async (context: StepContext): Promise<StepOutcome> => {
+    const urls = requireUrls(context.step.input, 'urls');
+    if (urls.length === 0) return { kind: 'skipped', reason: 'No sources to open.' };
+
+    // Checked before every effect, not only at commit: a student who closes
+    // the workspace mid-way means "stop opening tabs", and a rejected commit
+    // alone would let the rest of the list open anyway. The result of a stopped
+    // run is discarded by the engine, since its lease is gone.
+    const stopped: StepOutcome = { kind: 'skipped', reason: 'Stopped before finishing.' };
+
+    const opened: number[] = [];
+    for (const [index, url] of urls.entries()) {
+      if (!(await context.stillCurrent())) return stopped;
+      const tab = await tabs.open(url, `${context.intentKey}:${index}`);
+      opened.push(tab.tabId);
+    }
+    if (!(await context.stillCurrent())) return stopped;
+
+    const title = groupTitle([
+      optionalString(context.step.input, 'courseCode'),
+      optionalString(context.step.input, 'label'),
+    ]);
+    const groupId = await tabs.ensureGroup({ title, color: 'blue' }, opened);
+
+    return {
+      kind: 'done',
+      result: `Opened ${opened.length} page${opened.length === 1 ? '' : 's'} in "${title}".`,
+      sourcesVisited: urls,
+      // The record of which tabs Motion owns, and in which browser session
+      // those ids mean anything (src/core/workspace/ownership.ts).
+      evidence: { groupId, tabIds: opened, sessionKey: await tabs.sessionKey() },
+    };
+  };
+
   return {
     action: 'open-tab',
 
-    async execute(context: StepContext): Promise<StepOutcome> {
-      const urls = requireUrls(context.step.input, 'urls');
-      if (urls.length === 0) return { kind: 'skipped', reason: 'No sources to open.' };
-
-      const opened: number[] = [];
-      const visited: string[] = [];
-      for (const [index, url] of urls.entries()) {
-        const operationId = `${context.intentKey}:${index}`;
-        const tab = await tabs.open(url, operationId);
-        opened.push(tab.tabId);
-        visited.push(url);
-      }
-
-      const title = groupTitle([
-        typeof context.step.input['courseCode'] === 'string'
-          ? context.step.input['courseCode']
-          : null,
-        typeof context.step.input['label'] === 'string' ? context.step.input['label'] : null,
-      ]);
-      const groupId = await tabs.ensureGroup({ title, color: 'blue' }, opened);
-
-      return {
-        kind: 'done',
-        result: `Opened ${opened.length} page${opened.length === 1 ? '' : 's'} in "${title}".`,
-        sourcesVisited: visited,
-        evidence: { groupId, tabIds: opened },
-      };
-    },
+    execute: openAndGroup,
 
     /**
      * After a restart, find out whether the tabs were actually opened before
      * doing it again. Tabs Motion opened carry their operation id in the URL,
      * which survives the worker dying; a stored tab id would not.
+     *
+     * Finding some is not the same as finishing: the worker may have died
+     * between opening the tabs and grouping them, or halfway through the list.
+     * So the step is completed under the *original* key — found tabs are
+     * reused, missing ones opened, and all of them grouped.
      */
     async reconcile(context: StepContext): Promise<StepOutcome | null> {
       const urls = requireUrls(context.step.input, 'urls');
-      const found: number[] = [];
-      const visited: string[] = [];
-      for (const [index, url] of urls.entries()) {
-        const existing = await tabs.findByOperation(`${context.intentKey}:${index}`);
-        if (existing) {
-          found.push(existing.tabId);
-          visited.push(url);
+      for (const index of urls.keys()) {
+        if (await tabs.findByOperation(`${context.intentKey}:${index}`)) {
+          return openAndGroup(context);
         }
       }
-      if (found.length === 0) return null; // it never happened; safe to run
-      return {
-        kind: 'done',
-        result: `Recovered ${found.length} page${found.length === 1 ? '' : 's'} opened earlier.`,
-        sourcesVisited: visited,
-        evidence: { tabIds: found },
-      };
+      return null; // it never happened; safe to run
     },
   };
 }

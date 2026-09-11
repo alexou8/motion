@@ -17,6 +17,7 @@ interface FakeTab {
 function fakeChrome() {
   const tabs: FakeTab[] = [];
   const groups = new Map<number, { id: number; title?: string; color?: string; windowId: number }>();
+  const session: Record<string, unknown> = {};
   let nextTabId = 1;
   let nextGroupId = 100;
 
@@ -40,6 +41,17 @@ function fakeChrome() {
         return groupId;
       }),
       sendMessage: vi.fn(async () => undefined),
+      get: vi.fn(async (id: number) => {
+        const tab = tabs.find((t) => t.id === id);
+        if (!tab) throw new Error('No tab with id');
+        return tab;
+      }),
+      remove: vi.fn(async (ids: number[]) => {
+        for (const id of ids) {
+          const index = tabs.findIndex((t) => t.id === id);
+          if (index >= 0) tabs.splice(index, 1);
+        }
+      }),
     },
     tabGroups: {
       query: vi.fn(async (info: { title?: string }) =>
@@ -56,7 +68,18 @@ function fakeChrome() {
         return group;
       }),
     },
-    _state: { tabs, groups },
+    // Session storage: survives a worker restart, cleared by a browser restart.
+    storage: {
+      session: {
+        get: vi.fn(async (key: string | null) =>
+          key === null ? { ...session } : { [key]: session[key] },
+        ),
+        set: vi.fn(async (values: Record<string, unknown>) => {
+          Object.assign(session, values);
+        }),
+      },
+    },
+    _state: { tabs, groups, session },
   };
   return api;
 }
@@ -194,6 +217,81 @@ describe('tab groups', () => {
   it('reports a group the student closed as gone', async () => {
     const tabs = new ChromeTabs();
     expect(await tabs.groupExists(9999)).toBe(false);
+  });
+});
+
+describe('tabs Motion owns', () => {
+  it('are the recorded tabs still in the group, not everything in it', async () => {
+    const tabs = new ChromeTabs();
+    const a = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const b = await tabs.open('https://x.brightspace.com/b', 'op-b');
+    const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [a.tabId, b.tabId]);
+
+    // The student drags their own tab in, and one of Motion's out.
+    api._state.tabs.push({ id: 99, url: 'https://x.brightspace.com/mine', groupId });
+    api._state.tabs.find((t) => t.id === b.tabId)!.groupId = undefined;
+
+    expect(await tabs.ownedTabsInGroup(groupId, [a.tabId, b.tabId])).toEqual([a.tabId]);
+  });
+
+  it('still finds a tab whose URL lost its marker to a redirect', async () => {
+    const tabs = new ChromeTabs();
+    const first = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    api._state.tabs.find((t) => t.id === first.tabId)!.url = 'https://x.brightspace.com/a/canonical';
+
+    await tabs.open('https://x.brightspace.com/a', 'op-a');
+
+    expect(api.tabs.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers a tab created just before the worker died, before it was recorded', async () => {
+    const tabs = new ChromeTabs();
+    // The worker marked the operation pending, Chrome created the tab, then
+    // the worker died before recording the tab id.
+    api._state.session['motion:op:op-a'] = 'pending';
+    api._state.tabs.push({ id: 5, url: 'https://x.brightspace.com/a?motion_op=op-a' });
+
+    const found = await tabs.open('https://x.brightspace.com/a', 'op-a');
+
+    expect(found.tabId).toBe(5);
+    expect(api.tabs.create).not.toHaveBeenCalled();
+  });
+
+  it('never adopts a tab the browser restored from an earlier session', async () => {
+    const tabs = new ChromeTabs();
+    // Session storage was cleared by the restart; the restored tab kept its URL.
+    api._state.tabs.push({ id: 5, url: 'https://x.brightspace.com/a?motion_op=op-a' });
+
+    expect(await tabs.findByOperation('op-a')).toBeNull();
+    const opened = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    expect(opened.tabId).not.toBe(5);
+  });
+
+  it('lists live tabs recorded under an operation prefix, from session records only', async () => {
+    const tabs = new ChromeTabs();
+    const a = await tabs.open('https://x.brightspace.com/a', 'wf-1:open-sources:1:0');
+    await tabs.open('https://x.brightspace.com/b', 'wf-2:open-sources:1:0');
+    // A tab restored after a browser restart still carries a marker in its
+    // URL, but this session never recorded opening it.
+    api._state.tabs.push({ id: 77, url: 'https://x.brightspace.com/c?motion_op=wf-1:open-sources:1:1' });
+
+    expect(await tabs.tabsOpenedBy('wf-1:')).toEqual([a.tabId]);
+  });
+
+  it('keeps one session key for the whole browser session', async () => {
+    const tabs = new ChromeTabs();
+    const first = await tabs.sessionKey();
+    expect(await new ChromeTabs().sessionKey()).toBe(first);
+  });
+
+  it('closes exactly the tabs it is given, and nothing when given none', async () => {
+    const tabs = new ChromeTabs();
+    await tabs.close([]);
+    expect(api.tabs.remove).not.toHaveBeenCalled();
+
+    const a = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    await tabs.close([a.tabId]);
+    expect(api.tabs.remove).toHaveBeenCalledWith([a.tabId]);
   });
 });
 

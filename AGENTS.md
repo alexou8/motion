@@ -48,6 +48,13 @@ change and why it was made, and stop there.
 - Never commit real course content, student names, identifiers, grades, cookies
   or tokens. Test fixtures are synthetic and must say so.
 
+## Reviewing changes
+
+Every review of code, an implementation, or a fix follows
+[`docs/REVIEW.md`](docs/REVIEW.md) — including an agent reviewing its own or
+another agent's output before reporting it done. A generated diff is not
+finished until someone has reviewed it against that guide.
+
 ## Validation before claiming a change is done
 
 ```bash
