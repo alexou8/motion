@@ -201,6 +201,34 @@ describe('tab groups', () => {
     expect(await tabs.tabsOpenedBy('op')).toEqual([adopted.tabId, moved.tabId]);
   });
 
+  it('counts a pending adoption only while its tab is in the group', async () => {
+    const tabs = new ChromeTabs();
+    const anchor = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [anchor.tabId]);
+    // The worker died between grouping this tab and recording the group id.
+    const cutShort = { id: 98, url: 'https://x.brightspace.com/cut-short', groupId };
+    // A pending record whose grouping never happened.
+    const neverGrouped = { id: 97, url: 'https://x.brightspace.com/never', groupId: -1 };
+    api._state.tabs.push(cutShort, neverGrouped);
+    await tabs.recordAdopted(cutShort.id, 'pending');
+    await tabs.recordAdopted(neverGrouped.id, 'pending');
+
+    expect(await tabs.adoptedTabsInGroup(groupId)).toEqual([cutShort.id]);
+  });
+
+  it('reads a live tab with Chrome’s no-group value as ungrouped, and a closed one as gone', async () => {
+    const tabs = new ChromeTabs();
+    const opened = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [opened.tabId]);
+    expect((await tabs.get(opened.tabId))?.groupId).toBe(groupId);
+
+    await tabs.ungroup([opened.tabId]);
+    expect(await tabs.get(opened.tabId)).toMatchObject({ groupId: null });
+
+    await tabs.close([opened.tabId]);
+    expect(await tabs.get(opened.tabId)).toBeNull();
+  });
+
   it('creates a titled group the first time', async () => {
     const tabs = new ChromeTabs();
     const a = await tabs.open('https://x.brightspace.com/a', 'op-a');

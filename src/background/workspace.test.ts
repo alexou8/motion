@@ -278,7 +278,7 @@ describe('the toolbar icon', () => {
 
   it('adopts the current tab into the same group as Prepare workspace', async () => {
     const { tabs, tabId } = await currentTab();
-    expect(await handleActionClick({ id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: -1, windowId: 1 }, tabs)).toEqual({ grouped: true });
+    expect(await handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs)).toEqual({ grouped: true });
     await handlePrepareWorkspace(tabId, tabs);
     expect([...tabs.groups.values()]).toEqual(['Motion · Synthetic Assignment 2']);
     expect([...tabs.tabs.values()].filter((tab) => tab.groupId !== null)).toHaveLength(3);
@@ -287,7 +287,7 @@ describe('the toolbar icon', () => {
 
   it('ungroups an adopted tab while closing Motion tabs', async () => {
     const { tabs, tabId } = await currentTab();
-    await handleActionClick({ id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: -1, windowId: 1 }, tabs);
+    await handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs);
     const { workflowId } = await handlePrepareWorkspace(tabId, tabs);
     const result = await handleCloseWorkspace(workflowId!, tabs);
     expect(result.ungrouped).toBe(1);
@@ -297,7 +297,7 @@ describe('the toolbar icon', () => {
 
   it('leaves an adopted tab the student dragged out of the group where they put it', async () => {
     const { tabs, tabId } = await currentTab();
-    await handleActionClick({ id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: -1, windowId: 1 }, tabs);
+    await handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs);
     const { workflowId } = await handlePrepareWorkspace(tabId, tabs);
     const studentGroup = 900;
     tabs.groups.set(studentGroup, 'My reading list');
@@ -323,7 +323,7 @@ describe('the toolbar icon', () => {
     const tabs = new FakeTabs();
     const tabId = tabs.addStudentTab(ATTEMPT);
     await observe(tabId, true, ATTEMPT);
-    await expectDeclined(tabs, { id: tabId, url: ATTEMPT, title: 'Quiz', groupId: -1, windowId: 1 });
+    await expectDeclined(tabs, { id: tabId, url: ATTEMPT });
   });
 
   it('does not group a live URL the policy restricts, even beside a supported observation', async () => {
@@ -332,25 +332,61 @@ describe('the toolbar icon', () => {
     // A stored observation that wrongly claims the attempt is readable: the
     // live-URL check must still hold on its own.
     await observe(tabId, false, ATTEMPT);
-    await expectDeclined(tabs, { id: tabId, url: ATTEMPT, title: 'Quiz', groupId: -1, windowId: 1 });
+    await expectDeclined(tabs, { id: tabId, url: ATTEMPT });
   });
 
   it('does not group a tab that has navigated since it was observed', async () => {
     const { tabs, tabId } = await currentTab();
-    await expectDeclined(tabs, { id: tabId, url: READING, title: 'Week 6 reading', groupId: -1, windowId: 1 });
+    tabs.tabs.get(tabId)!.url = READING;
+    await expectDeclined(tabs, { id: tabId, url: READING });
+  });
+
+  it('decides on the live tab, not the snapshot the click carried', async () => {
+    // The click saw an ungrouped assignment; by the time the lock is held the
+    // tab has gone into a graded attempt. The stored observation is stale.
+    const { tabs, tabId } = await currentTab();
+    tabs.tabs.get(tabId)!.url = ATTEMPT;
+    await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT });
+
+    // Or the student dragged it into their own group in the meantime.
+    const other = await currentTab(new FakeTabs());
+    other.tabs.groups.set(900, 'My reading list');
+    other.tabs.tabs.get(other.tabId)!.groupId = 900;
+    await expectDeclined(other.tabs, { id: other.tabId, url: ASSIGNMENT });
+  });
+
+  it('still ungroups, never closes, a tab whose adoption was cut short by a worker restart', async () => {
+    const { tabs, tabId } = await currentTab();
+    // The worker dies after grouping the tab and before recording the group id.
+    const record = tabs.recordAdopted.bind(tabs);
+    tabs.recordAdopted = async (id, groupId) => {
+      if (groupId !== 'pending') throw new Error('worker stopped');
+      await record(id, groupId);
+    };
+    await expect(
+      handleActionClick({ id: tabId, url: ASSIGNMENT }, tabs),
+    ).rejects.toThrow('worker stopped');
+    tabs.recordAdopted = record;
+    const { workflowId } = await handlePrepareWorkspace(tabId, tabs);
+
+    const result = await handleCloseWorkspace(workflowId!, tabs);
+
+    expect(result.ungrouped).toBe(1);
+    expect(tabs.tabs.has(tabId)).toBe(true);
+    expect(tabs.tabs.get(tabId)?.groupId).toBeNull();
   });
 
   it('does not group a page that has not reported itself yet', async () => {
     const tabs = new FakeTabs();
     const tabId = tabs.addStudentTab(ASSIGNMENT);
-    await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: -1, windowId: 1 });
+    await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT });
   });
 
   it('does not group a site no adapter supports', async () => {
     const tabs = new FakeTabs();
     const url = 'https://example.com/notes';
     const tabId = tabs.addStudentTab(url);
-    await expectDeclined(tabs, { id: tabId, url, title: 'Notes', groupId: -1, windowId: 1 });
+    await expectDeclined(tabs, { id: tabId, url });
   });
 
   it('leaves a tab that is already in the student’s own group', async () => {
@@ -359,12 +395,12 @@ describe('the toolbar icon', () => {
     tabs.groups.set(studentGroup, 'My reading list');
     const tabId = tabs.addStudentTab(ASSIGNMENT, studentGroup);
     await observe(tabId);
-    await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: studentGroup, windowId: 1 });
+    await expectDeclined(tabs, { id: tabId, url: ASSIGNMENT });
   });
 
   it('serializes two clicks into one group', async () => {
     const { tabs, tabId } = await currentTab();
-    const tab = { id: tabId, url: ASSIGNMENT, title: 'Synthetic Assignment 2', groupId: -1, windowId: 1 } as const;
+    const tab = { id: tabId, url: ASSIGNMENT } as const;
     await Promise.all([handleActionClick(tab, tabs), handleActionClick(tab, tabs)]);
     expect(tabs.groups.size).toBe(1);
     expect(tabs.adopted.get(tabId)).toBe(100);

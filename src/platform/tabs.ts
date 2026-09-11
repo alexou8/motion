@@ -19,6 +19,20 @@ const BROWSER_SESSION_KEY = 'motion:browser-session';
 const OPERATION_KEY_PREFIX = 'motion:op:';
 const ADOPTED_KEY_PREFIX = 'motion:adopted:';
 
+/** An adoption recorded before its grouping, settled with the group id after. */
+export const ADOPTION_PENDING = 'pending';
+
+/** `chrome.tabGroups.TAB_GROUP_ID_NONE`, spelled out so tests need no tabGroups stub. */
+const TAB_GROUP_ID_NONE = -1;
+
+/** What Motion needs to know about a tab right now. `groupId` is null when ungrouped. */
+export interface LiveTab {
+  url: string;
+  title: string;
+  groupId: number | null;
+  windowId?: number;
+}
+
 const operationKey = (operationId: string): string => `${OPERATION_KEY_PREFIX}${operationId}`;
 
 /** Session record for an operation whose tab is being created right now. */
@@ -79,7 +93,15 @@ export interface TabsCapability {
   tabsOpenedBy(operationPrefix: string): Promise<number[]>;
   close(tabIds: number[]): Promise<void>;
   ungroup(tabIds: number[]): Promise<void>;
-  recordAdopted(tabId: number, groupId: number): Promise<void>;
+  /** The tab as it is now, or null when it no longer exists. */
+  get(tabId: number): Promise<LiveTab | null>;
+  /**
+   * Records a student's tab that Motion grouped because the student asked.
+   * Written as `ADOPTION_PENDING` before grouping and with the group id after,
+   * so a worker that dies in between still leaves evidence to ungroup by.
+   */
+  recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void>;
+  /** Adopted tabs — settled in `groupId`, or still pending — that are in it now. */
   adoptedTabsInGroup(groupId: number): Promise<number[]>;
   /**
    * Identifies the current browser session. A tab id recorded under a
@@ -216,20 +238,39 @@ export class ChromeTabs implements TabsCapability {
     if (tabIds.length > 0) await chrome.tabs.ungroup(tabIds);
   }
 
+  async get(tabId: number): Promise<LiveTab | null> {
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    if (!tab?.url) return null;
+    return {
+      url: tab.url,
+      title: tab.title ?? '',
+      groupId: tab.groupId === undefined || tab.groupId === TAB_GROUP_ID_NONE ? null : tab.groupId,
+      ...(tab.windowId === undefined ? {} : { windowId: tab.windowId }),
+    };
+  }
+
   /**
    * Session storage matches tab-id lifetime, and adopted tabs are the
    * student's tabs: recording them separately from operation ownership keeps
    * workspace closing from ever treating adoption as permission to close.
    */
-  async recordAdopted(tabId: number, groupId: number): Promise<void> {
+  async recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void> {
     await chrome.storage.session.set({ [`${ADOPTED_KEY_PREFIX}${tabId}`]: groupId });
   }
 
+  /**
+   * A pending record counts only while its tab is in this group: that is the
+   * worker having died between grouping and recording. A pending tab elsewhere
+   * is left alone, and even when counted it is only ever ungrouped.
+   */
   async adoptedTabsInGroup(groupId: number): Promise<number[]> {
     const records = await chrome.storage.session.get(null);
     const adopted = new Set(
       Object.entries(records)
-        .filter(([key, value]) => key.startsWith(ADOPTED_KEY_PREFIX) && value === groupId)
+        .filter(
+          ([key, value]) =>
+            key.startsWith(ADOPTED_KEY_PREFIX) && (value === groupId || value === ADOPTION_PENDING),
+        )
         .map(([key]) => Number(key.slice(ADOPTED_KEY_PREFIX.length)))
         .filter((id) => Number.isInteger(id)),
     );

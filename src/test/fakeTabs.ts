@@ -1,4 +1,4 @@
-import type { OpenedTab, TabGroupPlan, TabsCapability } from '@/platform/tabs';
+import { ADOPTION_PENDING, type LiveTab, type OpenedTab, type TabGroupPlan, type TabsCapability } from '@/platform/tabs';
 
 /**
  * An in-memory browser for testing tab behaviour without Chrome.
@@ -9,6 +9,7 @@ import type { OpenedTab, TabGroupPlan, TabsCapability } from '@/platform/tabs';
  */
 export interface FakeTab {
   url: string;
+  title?: string;
   groupId: number | null;
   operationId: string | null;
 }
@@ -23,7 +24,7 @@ export class FakeTabs implements TabsCapability {
   beforeOpen: (() => Promise<void>) | null = null;
   private nextTabId = 10;
   private nextGroupId = 100;
-  readonly adopted = new Map<number, number>();
+  readonly adopted = new Map<number, number | typeof ADOPTION_PENDING>();
 
   /** A tab the student opened themselves. */
   addStudentTab(url: string, groupId: number | null = null): number {
@@ -87,13 +88,21 @@ export class FakeTabs implements TabsCapability {
     }
   }
 
-  async recordAdopted(tabId: number, groupId: number): Promise<void> {
+  async get(tabId: number): Promise<LiveTab | null> {
+    const tab = this.tabs.get(tabId);
+    return tab ? { url: tab.url, title: tab.title ?? '', groupId: tab.groupId, windowId: 1 } : null;
+  }
+
+  async recordAdopted(tabId: number, groupId: number | typeof ADOPTION_PENDING): Promise<void> {
     this.adopted.set(tabId, groupId);
   }
 
   async adoptedTabsInGroup(groupId: number): Promise<number[]> {
     return [...this.adopted]
-      .filter(([tabId, recordedGroupId]) => recordedGroupId === groupId && this.tabs.get(tabId)?.groupId === groupId)
+      .filter(
+        ([tabId, recorded]) =>
+          (recorded === groupId || recorded === ADOPTION_PENDING) && this.tabs.get(tabId)?.groupId === groupId,
+      )
       .map(([tabId]) => tabId);
   }
 

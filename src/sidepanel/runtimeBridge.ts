@@ -51,6 +51,10 @@ async function toWorkerMessage(
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       return tab?.id === undefined ? null : { type: 'prepare-workspace', tabId: tab.id };
     }
+    case 'ask-about-page': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab?.id === undefined ? null : { type: 'ask-about-page', tabId: tab.id, question: command.question, history: command.history };
+    }
     case 'close-workspace': return { type: 'close-workspace', workflowId: command.workflowId };
     case 'build-checklist': {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -185,6 +189,9 @@ export function createRuntimeBridge(): MotionBridge {
 
     send: async (command: MotionCommand) => {
       switch (command.type) {
+        case 'open-settings':
+          await chrome.runtime.openOptionsPage();
+          return;
         case 'request-permission': {
           // Must run inside the click that produced it: `chrome.permissions
           // .request` needs a live user gesture and loses it at the first

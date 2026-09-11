@@ -5,3 +5,4 @@ export * from './ReviewBeforeSubmit';
 export * from './WorkingPanel';
 export * from './CourseworkView';
 export * from './WorkspaceView';
+export * from './ChatView';

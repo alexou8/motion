@@ -5,40 +5,47 @@
 
 /* ---------- Layer 1: primitives ---------- */
 :root {
-  /* Slate ramp. Cool and low-chroma on purpose: Motion sits beside LMS chrome
-     that is already loud, so the panel recedes and the content carries. */
-  --slate-25: #f4f6f8;
-  --slate-0: #ffffff;
-  --slate-100: #e7ecf0;
-  --slate-200: #d3dbe2;
-  --slate-400: #798996;
-  --slate-500: #54646f;
-  --slate-900: #16202a;
+  /* Warm neutrals: paper-and-ink rather than slate. The panel reads like a
+     document beside the LMS, and the warmth keeps hours of reading easy on the
+     eye. Both ramps follow the system setting (see docs/DESIGN.md). */
+  --stone-50: #f8f6f1;
+  --stone-0: #ffffff;
+  --stone-100: #efece4;
+  --stone-200: #e4dfd4;
+  --stone-500: #8a8378;
+  --stone-600: #5e5950;
+  --stone-900: #1f1d1a;
 
-  --slate-d-bg: #101519;
-  --slate-d-surface: #182027;
-  --slate-d-rule: #2b3640;
-  --slate-d-edge: #6b7b88;
-  --slate-d-muted: #9dacb8;
-  --slate-d-ink: #e6ebef;
+  --stone-d-bg: #1f1e1c;
+  --stone-d-surface: #2a2926;
+  --stone-d-sunken: #171614;
+  --stone-d-rule: #3a3834;
+  --stone-d-edge: #858075;
+  --stone-d-muted: #b5afa3;
+  --stone-d-ink: #f1eee7;
 
-  /* One signal hue for structure and focus. */
-  --indigo-700: #24487a;
-  --indigo-300: #9cc0ff;
-  /* Amber means exactly one thing in this product: Motion needs the student. */
-  --amber-800: #8a4b08;
-  --amber-400: #f2b25c;
-  --red-800: #a4231b;
-  --red-300: #ff9e96;
-  --green-800: #1f6146;
-  --green-300: #7bd3ac;
+  /* Terracotta: the one accent, for primary actions and focus. */
+  --terracotta-700: #a8431f;
+  --terracotta-300: #e58c68;
+  /* Amber means exactly one thing in this product: Motion needs the student.
+     Pushed toward ochre so it stays distinct from the terracotta accent; the
+     square "blocked" marker carries the meaning without colour. */
+  --ochre-800: #7d5200;
+  --ochre-300: #e8b75c;
+  --red-800: #a3261c;
+  --red-300: #ff9d8e;
+  --green-800: #2a6340;
+  --green-300: #86cda2;
 
-  /* Type scale. 1.200 minor third from a 13px base — the panel is ~400px wide,
-     so the scale stays tight and the hierarchy comes from weight and spacing. */
+  /* Type scale from a 13px base. The panel is ~400px wide, so body sizes stay
+     tight; the serif headings carry hierarchy, with two larger steps for the
+     full-page settings screen. */
   --text-xs: 0.6875rem;  /* 11px — metadata, timestamps */
   --text-sm: 0.8125rem;  /* 13px — body default */
   --text-md: 0.9375rem;  /* 15px — item titles */
   --text-lg: 1.125rem;   /* 18px — panel heading */
+  --text-xl: 1.375rem;   /* 22px — empty-state heading */
+  --text-2xl: 1.75rem;   /* 28px — settings page title */
   --leading-tight: 1.3;
   --leading-body: 1.55;
 
@@ -50,8 +57,8 @@
   --space-5: 1.5rem;
   --space-6: 2rem;
 
-  --radius-sm: 3px;
-  --radius-md: 5px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
 
   /* Fixed z-scale — no arbitrary z-index anywhere in the codebase. */
   --z-base: 0;
@@ -62,25 +69,27 @@
 
 /* ---------- Layer 2: semantic ---------- */
 :root {
-  --color-paper: var(--slate-25);
-  --color-surface: var(--slate-0);
-  --color-surface-sunken: var(--slate-100);
-  --color-ink: var(--slate-900);
-  --color-ink-muted: var(--slate-500);
+  --color-paper: var(--stone-50);
+  --color-surface: var(--stone-0);
+  --color-surface-sunken: var(--stone-100);
+  --color-ink: var(--stone-900);
+  --color-ink-muted: var(--stone-600);
   /* `rule` is a decorative hairline and is exempt from WCAG 1.4.11.
      `edge` marks meaningful boundaries — input borders, the progress track,
      state markers — and is held to the 3:1 non-text contrast minimum. */
-  --color-rule: var(--slate-200);
-  --color-edge: var(--slate-400);
+  --color-rule: var(--stone-200);
+  --color-edge: var(--stone-500);
 
-  --color-signal: var(--indigo-700);
+  --color-signal: var(--terracotta-700);
   --color-on-signal: #ffffff;
-  --color-attention: var(--amber-800);
+  --color-attention: var(--ochre-800);
   --color-danger: var(--red-800);
   --color-done: var(--green-800);
 
-  --color-focus: var(--indigo-700);
+  --color-focus: var(--terracotta-700);
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
+  /* Headings only. A bundled open-licence serif; see src/assets/fonts.css. */
+  --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
   /* Mono is restricted to figures that must align in a column — due dates,
      weights, counts. It is never used for labels or prose. */
   --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
@@ -88,34 +97,34 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
-    --color-paper: var(--slate-d-bg);
-    --color-surface: var(--slate-d-surface);
-    --color-surface-sunken: #0b1015;
-    --color-ink: var(--slate-d-ink);
-    --color-ink-muted: var(--slate-d-muted);
-    --color-rule: var(--slate-d-rule);
-    --color-edge: var(--slate-d-edge);
-    --color-signal: var(--indigo-300);
-    --color-on-signal: #0b1017;
-    --color-attention: var(--amber-400);
+    --color-paper: var(--stone-d-bg);
+    --color-surface: var(--stone-d-surface);
+    --color-surface-sunken: var(--stone-d-sunken);
+    --color-ink: var(--stone-d-ink);
+    --color-ink-muted: var(--stone-d-muted);
+    --color-rule: var(--stone-d-rule);
+    --color-edge: var(--stone-d-edge);
+    --color-signal: var(--terracotta-300);
+    --color-on-signal: #1f1e1c;
+    --color-attention: var(--ochre-300);
     --color-danger: var(--red-300);
     --color-done: var(--green-300);
-    --color-focus: var(--indigo-300);
+    --color-focus: var(--terracotta-300);
   }
 }
 
 :root[data-theme='dark'] {
-  --color-paper: var(--slate-d-bg);
-  --color-surface: var(--slate-d-surface);
-  --color-surface-sunken: #0b1015;
-  --color-ink: var(--slate-d-ink);
-  --color-ink-muted: var(--slate-d-muted);
-  --color-rule: var(--slate-d-rule);
-  --color-edge: var(--slate-d-edge);
-  --color-signal: var(--indigo-300);
-  --color-on-signal: #0b1017;
-  --color-attention: var(--amber-400);
+  --color-paper: var(--stone-d-bg);
+  --color-surface: var(--stone-d-surface);
+  --color-surface-sunken: var(--stone-d-sunken);
+  --color-ink: var(--stone-d-ink);
+  --color-ink-muted: var(--stone-d-muted);
+  --color-rule: var(--stone-d-rule);
+  --color-edge: var(--stone-d-edge);
+  --color-signal: var(--terracotta-300);
+  --color-on-signal: #1f1e1c;
+  --color-attention: var(--ochre-300);
   --color-danger: var(--red-300);
   --color-done: var(--green-300);
-  --color-focus: var(--indigo-300);
+  --color-focus: var(--terracotta-300);
 }

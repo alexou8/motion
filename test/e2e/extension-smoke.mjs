@@ -52,6 +52,7 @@ const ROUTES = [
   { path: '/d2l/le/999999/discussions/List?ou=999999', fixture: 'discussion-list', expect: 'discussion-list' },
   { path: '/d2l/lms/grades/my_grades/main.d2l?ou=999999', fixture: 'course-home-navbar', expect: 'grades' },
   { path: '/d2l/lms/quizzing/user/attempt/201?ou=999999', fixture: 'quiz-attempt', expect: 'quiz-attempt', restricted: true },
+  { path: '/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101', fixture: 'assignment', expect: 'assignment' },
   { path: '/d2l/lp/whatever/unknown', fixture: 'broken', expect: 'unsupported' },
   // The document a signed-out D2L serves for any route.
   { path: '/d2l/home/424242?ou=424242', fixture: 'signed-out-redirect', expect: 'signed-out' },
@@ -61,7 +62,17 @@ const userDataDir = await mkdtemp(join(tmpdir(), 'motion-e2e-'));
 const context = await chromium.launchPersistentContext(userDataDir, {
   executablePath,
   headless: true,
-  args: [`--disable-extensions-except=${distPath}`, `--load-extension=${distPath}`],
+  args: [
+    `--disable-extensions-except=${distPath}`,
+    `--load-extension=${distPath}`,
+    // Every hostname resolves to nothing. Routed requests are answered by
+    // Playwright before DNS, so the synthetic LMS still works; anything it does
+    // not intercept fails here instead of reaching a real host. That includes a
+    // tab Motion opens itself, whose first navigation can start before
+    // Playwright attaches its router — which once let this test reach the real
+    // institution's sign-in page.
+    '--host-resolver-rules=MAP * ~NOTFOUND',
+  ],
 });
 
 try {
@@ -330,6 +341,87 @@ try {
       );
     }
   }
+
+  // --- The redesign, the settings page and Prepare workspace, in a real browser. ---
+  //
+  // Every request from here on is recorded. The only host Motion may reach is
+  // the synthetic LMS served above; fonts in particular are bundled, and a
+  // font CDN request would tell a third party a student is using Motion.
+  const offMachine = [];
+  const recordRequest = (request) => {
+    const url = request.url();
+    if (!/^(?:chrome-extension|data|blob|about):/.test(url) && !url.startsWith(ORIGIN)) offMachine.push(url);
+  };
+  context.on('request', recordRequest);
+
+  const settings = await context.newPage();
+  await settings.goto(`chrome-extension://${extensionId}/src/options/index.html#privacy`, { waitUntil: 'load' });
+  check(
+    'the settings page opens on the section named in its address',
+    await settings.getByRole('heading', { name: 'Privacy & data' }).isVisible(),
+  );
+  const sectionNames = await settings.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').allInnerTexts();
+  check('the settings page lists its four sections', sectionNames.join('|') === 'Permissions|Privacy & data|Capabilities|About', sectionNames.join('|'));
+  const serif = await settings.evaluate(async () => {
+    const faces = await document.fonts.load('600 28px "Source Serif 4"');
+    return {
+      loaded: faces.length > 0 && faces.every((face) => face.status === 'loaded'),
+      title: getComputedStyle(document.querySelector('h1')).fontFamily,
+    };
+  });
+  check('the bundled serif loads and titles the settings page', serif.loaded && serif.title.includes('Source Serif 4'), JSON.stringify(serif));
+  await settings.close();
+
+  await page.bringToFront();
+  await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(1_200);
+  check('the composer is offered on a readable course page', (await panel.locator('textarea').count()) === 1);
+  await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await panel.waitForTimeout(1_200);
+  check(
+    'there is no composer beside a graded attempt',
+    (await panel.locator('textarea').count()) === 0 && /Chat is off beside a graded attempt/i.test(await panel.innerText('body')),
+  );
+
+  // Prepare workspace has so far only been unit-tested. Here Chrome creates the
+  // group, and closing it must close Motion's tab and leave the student's.
+  await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, { waitUntil: 'load' });
+  await panel.waitForTimeout(1_200);
+  const prepared = await panel.evaluate(async (origin) => {
+    const [tab] = await chrome.tabs.query({ url: `${origin}/d2l/lms/dropbox/*` });
+    const reply = await chrome.runtime.sendMessage({ type: 'prepare-workspace', tabId: tab.id });
+    await new Promise((done) => setTimeout(done, 1_500));
+    const group = (await chrome.tabGroups.query({})).find((candidate) => candidate.title?.startsWith('Motion'));
+    const members = group ? await chrome.tabs.query({ groupId: group.id }) : [];
+    return { reply, studentTabId: tab.id, title: group?.title ?? null, members: members.map((member) => ({ id: member.id, url: member.url })) };
+  }, ORIGIN);
+  check(
+    'Prepare workspace creates a titled Motion tab group in a real browser',
+    typeof prepared.reply?.result?.workflowId === 'string' && /^Motion · /.test(prepared.title ?? '') && prepared.members.length > 0,
+    `${prepared.title} with ${prepared.members.length} tab(s); ${JSON.stringify(prepared.reply).slice(0, 160)}`,
+  );
+  // Asserted by tab id, not by the `motion_op` marker in the URL: a redirect can
+  // drop the marker (docs/THREAT_MODEL.md T14), and ownership is recorded by id.
+  check(
+    'the group holds only tabs Motion opened, never the student’s tab',
+    prepared.members.length > 0 && prepared.members.every((member) => member.id !== prepared.studentTabId),
+    prepared.members.map((member) => `${member.id} ${member.url}`).join(', '),
+  );
+
+  const closed = await panel.evaluate(async ({ workflowId, studentTabId }) => {
+    const reply = await chrome.runtime.sendMessage({ type: 'close-workspace', workflowId });
+    const student = await chrome.tabs.get(studentTabId).catch(() => null);
+    const groups = await chrome.tabGroups.query({});
+    return { reply, studentStillOpen: Boolean(student), motionGroups: groups.filter((group) => group.title?.startsWith('Motion')).length };
+  }, { workflowId: prepared.reply?.result?.workflowId, studentTabId: prepared.studentTabId });
+  check(
+    'closing the workspace closes Motion’s tabs and leaves the student’s tab open',
+    closed.reply?.result?.closed === prepared.members.length && closed.studentStillOpen && closed.motionGroups === 0,
+    JSON.stringify(closed),
+  );
+
+  context.off('request', recordRequest);
+  check('no request left the machine except to the synthetic LMS', offMachine.length === 0, offMachine.slice(0, 3).join(', '));
 
   check('side panel raised no uncaught error', panelErrors.length === 0, panelErrors.join('; ').slice(0, 300));
   check('service worker logged no error', workerErrors.length === 0, workerErrors.join('; ').slice(0, 300));

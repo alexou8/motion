@@ -10,6 +10,8 @@ import {
 } from '@/core/domain';
 import {
   composeDraftPrompt,
+  composeChatPrompt,
+  CHAT_LABEL,
   deriveRequirements,
   GENERATED_LABEL,
   reviewDraft,
@@ -20,6 +22,7 @@ import {
 import {
   ChromeLanguageModelCapability,
   explainAvailability,
+  type LanguageModelCapability,
 } from '@/platform/languageModel';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
@@ -34,7 +37,7 @@ import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
-import { ChromeTabs, groupTitle, type TabsCapability } from '@/platform/tabs';
+import { ADOPTION_PENDING, ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 
 /**
  * Handles an already-authorized message.
@@ -93,6 +96,7 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
     case 'prepare-workspace': return handlePrepareWorkspace(message.tabId);
+    case 'ask-about-page': return handleAskAboutPage(message);
     case 'close-workspace': return handleCloseWorkspace(message.workflowId);
   }
 }
@@ -563,6 +567,62 @@ async function askContentScript(tabId: number): Promise<PageContent | null> {
 
 const PREPARE_WORKSPACE = 'prepare-workspace';
 
+export interface AskAboutPageResult {
+  answer: string | null;
+  reason?: string;
+  label?: string;
+}
+
+/**
+ * The chat about the current page, on Chrome's on-device model.
+ *
+ * The order of the checks is the point. A graded attempt is refused before
+ * anything else happens: the content script is not asked, the model is not
+ * asked, and the earlier conversation is not sent anywhere — a restricted page
+ * gives the chat nothing. Unreadable pages and a missing model are refused
+ * before the page is read, and the page must still be the one that was checked
+ * once it has been. Nothing about the conversation is stored, and a model
+ * failure is logged without its message, which could quote the prompt.
+ */
+export async function handleAskAboutPage(
+  message: Extract<Message, { type: 'ask-about-page' }>,
+  model: LanguageModelCapability = new ChromeLanguageModelCapability(),
+): Promise<AskAboutPageResult> {
+  const observation = await readObservation(message.tabId);
+  if (observation?.restricted) {
+    return { answer: null, reason: 'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.' };
+  }
+  if (connectionFor(observation) !== 'supported') {
+    return { answer: null, reason: 'Motion can only answer questions about a course page it can read.' };
+  }
+  const availability = await model.availability();
+  if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  const content = await askContentScript(message.tabId);
+  if (!content) return { answer: null, reason: 'Motion could not read that page.' };
+  if (!sameWorkspacePage(observation, content.url)) {
+    return { answer: null, reason: 'The page changed while Motion was reading it. Ask again once it has loaded.' };
+  }
+  try {
+    const prompt = composeChatPrompt({
+      pageTitle: content.title,
+      pageText: content.text,
+      headings: content.headings,
+      question: message.question,
+      history: message.history,
+    });
+    const answer = await model.generate({ ...prompt, targetWords: 250 });
+    return { answer: answer.trim(), label: CHAT_LABEL };
+  } catch {
+    console.warn('Motion on-device model generation failed.');
+    return { answer: null, reason: 'The on-device model could not answer. Try again.' };
+  }
+}
+
+function sameWorkspacePage(observation: StoredObservation | null | undefined, contentUrl: string): boolean {
+  const observedUrl = observation?.url;
+  return observedUrl ? workspacePageUrl(observedUrl) === workspacePageUrl(contentUrl) : false;
+}
+
 export interface PrepareWorkspaceResult {
   workflowId: string | null;
   /** True when an existing workspace for this page was returned instead. */
@@ -602,8 +662,7 @@ export async function handlePrepareWorkspace(
   // The observation was checked before the read; the page must still be the
   // one that was checked. A tab can navigate in between, and what it navigated
   // to has not been through the restricted-mode check above.
-  const observed = observation?.url ? workspacePageUrl(observation.url) : null;
-  if (!observed || observed !== workspacePageUrl(content.url)) {
+  if (!sameWorkspacePage(observation, content.url)) {
     return {
       workflowId: null,
       reason: 'The page changed while Motion was reading it. Try again once it has loaded.',
@@ -710,9 +769,6 @@ export function workspaceGroupTitle(courseCode: string | null | undefined, pageT
   return groupTitle([courseCode, pageTitle || 'Assignment']);
 }
 
-/** `chrome.tabGroups.TAB_GROUP_ID_NONE`, spelled out so tests need no tabGroups stub. */
-const NO_GROUP = -1;
-
 /**
  * The toolbar icon: put the tab the student is on into Motion's group.
  *
@@ -722,38 +778,53 @@ const NO_GROUP = -1;
  * reported itself — checked on the stored observation *and* on the live URL —
  * is left alone: a graded attempt gets no tab operation, not even grouping. A
  * tab already in a group stays where the student put it.
+ *
+ * The click's tab object is a snapshot and decides nothing but which tab was
+ * meant. Every check runs on the live tab, inside the lock and immediately
+ * before grouping, so a tab that navigated into an attempt or was dragged into
+ * a group while this waited is declined rather than moved.
  */
 export async function handleActionClick(
-  tab: Pick<chrome.tabs.Tab, 'id' | 'url' | 'title' | 'groupId' | 'windowId'>,
+  tab: Pick<chrome.tabs.Tab, 'id' | 'url'>,
   tabs: TabsCapability = new ChromeTabs(),
 ): Promise<{ grouped: boolean }> {
-  const { id: tabId, url } = tab;
+  const tabId = tab.id;
   const declined = { grouped: false };
-  if (tabId === undefined || !url) return declined;
-  if (tab.groupId !== undefined && tab.groupId !== NO_GROUP) return declined;
-
-  const adapter = resolveAdapter(url);
-  if (!adapter) return declined;
-  const observation = await readObservation(tabId);
-  if (connectionFor(observation) !== 'supported' || !observation?.url) return declined;
-  if (workspacePageUrl(observation.url) !== workspacePageUrl(url)) return declined;
-  const assessment = evaluateAssessmentContext({
-    pageType: adapter.classifyUrl(url) ?? 'unsupported',
-    url,
-    pageTitle: tab.title,
-  });
-  if (assessment.restricted) return declined;
+  if (tabId === undefined) return declined;
+  // Looked up first, so no database read sits between the checks and the
+  // grouping below. It only names the group; it decides nothing.
+  const course = await courseForUrl(tab.url);
 
   // Two quick clicks would otherwise both find no group and create two.
   return withLock('motion:workspace-group', async () => {
-    const course = await courseForUrl(url);
+    const live = await tabs.get(tabId);
+    const observation = await readObservation(tabId);
+    if (!live || !mayAdopt(live, observation)) return declined;
+
+    // Pending first: a worker that dies after grouping still leaves a record
+    // the close path can ungroup by.
+    await tabs.recordAdopted(tabId, ADOPTION_PENDING);
     const groupId = await tabs.ensureGroup(
-      { title: workspaceGroupTitle(course?.code, observation.title), color: 'blue', windowId: tab.windowId },
+      { title: workspaceGroupTitle(course?.code, observation?.title ?? ''), color: 'blue', ...(live.windowId === undefined ? {} : { windowId: live.windowId }) },
       [tabId],
     );
     await tabs.recordAdopted(tabId, groupId);
     return { grouped: true };
   });
+}
+
+/** Synchronous on purpose: nothing may change between these checks and the grouping. */
+function mayAdopt(live: LiveTab, observation: StoredObservation | undefined): boolean {
+  if (live.groupId !== null) return false;
+  const adapter = resolveAdapter(live.url);
+  if (!adapter) return false;
+  if (connectionFor(observation) !== 'supported' || !observation?.url) return false;
+  if (workspacePageUrl(observation.url) !== workspacePageUrl(live.url)) return false;
+  return !evaluateAssessmentContext({
+    pageType: adapter.classifyUrl(live.url) ?? 'unsupported',
+    url: live.url,
+    pageTitle: live.title,
+  }).restricted;
 }
 
 /** The stored course a URL belongs to, by its platform id appearing in the URL. */

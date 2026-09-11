@@ -2,6 +2,8 @@ import { z } from 'zod';
 import type { PanelState } from '../core/view/state';
 
 export const motionCommandSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('ask-about-page'), question: z.string().trim().min(1).max(2_000), history: z.array(z.object({ role: z.enum(['student', 'motion']), text: z.string().max(4_000) })).max(12) }),
+  z.object({ type: z.literal('open-settings') }),
   z.object({ type: z.literal('request-permission') }),
   z.object({ type: z.literal('read-page'), url: z.string().url().nullable() }),
   z.object({ type: z.literal('create-note'), pageUrl: z.string().url().nullable() }),

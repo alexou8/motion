@@ -49,6 +49,20 @@ persuasive injection could still influence wording. It cannot cause an
 there is no path from model output to a browser action, an approval, or a
 submission. That containment, not the fencing, is the real control. — *Mitigated*
 
+The **chat about the page** is a second route from page text to the model, with
+the same controls and one more input: the student's earlier turns. Those turns
+hold model output that may quote the page, so they are fenced as context too;
+only Motion's instruction and the student's current question are instruction
+(`src/core/assist/chat.ts`, tested with a planted `</context>` in both the page
+and the history). The question and history are Zod-bounded (2,000 characters;
+12 turns of 4,000) and only the panel may send them. Beside a graded attempt the
+worker refuses before it asks the page or the model, so an attempt contributes
+nothing and receives nothing; the panel does not even offer a composer there.
+The conversation is held in the panel's memory only and a model failure is
+logged without its message. As with drafting, an answer is text shown to the
+student and labelled as generated; it has no path to an action. —
+*Mitigated (`src/background/router.ts`, `src/background/chat.test.ts`)*
+
 ## T1 — Malicious page content becomes stored XSS
 
 An attacker who can post to a discussion board controls text Motion extracts,
@@ -99,7 +113,11 @@ duplicate; recording first and crashing produces a lost action.
 
 Side-effecting steps are modelled as durable intents moving
 `prepared → applied → reconciled`, each with a reconciliation strategy that can
-inspect real browser state after a restart. — *Planned*
+inspect real browser state after a restart. — *Mitigated
+(`src/core/workflows/engine.ts`: a prepared intent is reconciled instead of
+repeating its effect, and the effect runs when reconciliation finds no evidence;
+`src/background/capabilities.ts` reconciles tab opening by session record.
+Unit-tested; not yet exercised across a real service-worker restart)*
 
 ## T5 — Prohibited actions reached through a generic capability
 
@@ -133,7 +151,10 @@ and run it twice. An in-memory guard does not survive a worker restart and is
 therefore not a control.
 
 Steps are claimed via an atomic IndexedDB compare-and-swap carrying a lease and
-attempt generation; completion must match the generation it claimed. — *Planned*
+attempt generation; completion must match the generation it claimed. —
+*Mitigated (`src/core/workflows/engine.ts`: a claim bumps the lease generation,
+a commit from a stale generation is discarded, and a lease left by a killed
+worker is reclaimed; unit-tested, not across real service-worker contexts)*
 
 ## T8 — Resuming at the wrong step after an extension update
 
@@ -141,7 +162,11 @@ A persisted cursor *index* changes meaning when steps are inserted, reordered or
 removed by an update, so an old workflow can resume into the wrong action.
 
 Workflows persist a stable `stepId`, the workflow type and its definition
-version, and define upgrade-or-cancel behaviour per version. — *Planned*
+version, and define upgrade-or-cancel behaviour per version. — *Partially
+mitigated*: the stable step id and the definition version are persisted, and a
+workflow resumes at the right step after an update reorders its plan
+(`engine.test.ts`). Upgrade-or-cancel behaviour per version is *Planned*:
+`src/background/recovery.ts` does not yet compare versions.
 
 ## T9 — Over-broad host permissions
 
@@ -256,9 +281,20 @@ reported itself yet — it opens the panel and does nothing else. The icon and
 tab's group rather than a second one. — *Mitigated (`src/background/router.ts`,
 `src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
 
-Residual: the tab can navigate between the icon's checks and the grouping call.
-Grouping is a container change, not a read, and the new page is observed and
-restricted in the usual way when it reports. And a click racing a **Prepare
+The click's tab object is a snapshot and decides nothing: every check runs on
+the live tab and the current observation inside the lock, synchronously, just
+before grouping, so a tab that navigated into an attempt or was dragged into a
+group while the click waited is declined. The adoption is recorded as pending
+before the tab is grouped and settled with the group id after, so a worker that
+dies in between still leaves a record: closing the workspace ungroups a pending
+tab it finds in the group, and never closes it. — *Mitigated (tested)*
+
+Residual: Chrome offers no atomic check-and-group, so a navigation landing in
+the milliseconds between the final check and the `tabs.group` call is not
+caught; the new page is then observed and restricted in the usual way, and
+nothing on it is read. A pending record whose grouping never happened stays in
+session storage; it can only ever cause that tab to be ungrouped, and only if
+it is later found in a Motion workspace's group. And a click racing a **Prepare
 workspace** press can create two groups of the same title, because the two take
 different locks; nothing is closed or read as a result. — *Accepted*
 
