@@ -90,12 +90,14 @@ describe('D2L route-based extraction', () => {
     const assignment = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, fixture('assignment')));
     const quiz = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=363`, fixture('quiz-list')));
     const discussion = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/le/363/discussions/List?ou=363`, fixture('discussion-list')));
-    const content = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/363/viewContent/12?ou=363`, fixture('course-home')));
+    // A dated content topic: reading material only becomes a task when the page
+    // states a date for it. See the undated case in the regression tests below.
+    const content = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home?ou=999999`, fixture('course-home-navbar')));
     expect(assignment[0]).toMatchObject({ kind: 'assignment', title: 'Relational Algebra Worksheet', weight: 15 });
     expect(quiz.map((task) => task.kind)).toEqual(['quiz', 'quiz']);
     expect(quiz[1]?.status).toBe('graded');
     expect(discussion.map((task) => task.kind)).toEqual(['discussion', 'discussion']);
-    expect(content[0]).toMatchObject({ kind: 'content', title: 'Database foundations' });
+    expect(content[0]).toMatchObject({ kind: 'content', title: 'Week 1 reading' });
     expect(new Set([assignment[0]?.provenance.strategy, quiz[0]?.provenance.strategy, discussion[0]?.provenance.strategy, content[0]?.provenance.strategy])).toEqual(new Set(['route:assignment', 'route:quiz', 'route:discussion', 'route:content']));
   });
 
@@ -277,5 +279,101 @@ describe('a login wall rendered at a course URL', () => {
     expect(
       d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar'))),
     ).toMatchObject({ pageType: 'course-home' });
+  });
+});
+
+/**
+ * Regressions found by running Motion against a live MyLearningSpace account.
+ *
+ * Each fixture below is synthetic and hand-built, modelled on the structure the
+ * deployment actually serves. The bugs they pin were not visible in the earlier
+ * fixtures, which used simpler markup than the real pages.
+ */
+describe('MyLearningSpace list markup', () => {
+  it('names an assignment after its own name, not the submission-count link beside it', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-dropbox-list')),
+    );
+
+    // A closed assignment has no submit link left, so the only anchor on its row
+    // is the submission history. Reading that as the title produced three tasks
+    // all called "1 Submission, 1 File".
+    expect(tasks.map((task) => task.title)).toEqual(['Example Assignment One', 'Example Assignment Two']);
+    expect(tasks.map((task) => task.due.iso)).toEqual([
+      '2025-10-11T03:30:00.000Z',
+      '2025-11-18T04:30:00.000Z',
+    ]);
+  });
+
+  it('never titles a task after a submission-history or feedback link', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-dropbox-list')),
+    );
+    expect(tasks.some((task) => /submission|file|view/i.test(task.title))).toBe(false);
+  });
+
+  it('makes one task per discussion topic, not one per link to it', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/le/999999/discussions/List?ou=999999`, fixture('mylearningspace-discussion-grid')),
+    );
+
+    // Each row links to its topic twice: the heading, and an unread counter that
+    // differs only by `filters=unread`. Both became tasks, so every topic showed
+    // up a second time titled "Unread for topic ...: (12)".
+    expect(tasks.map((task) => task.title)).toEqual(['Example Topic One', 'Example Topic Two']);
+    expect(tasks.some((task) => task.title.startsWith('Unread for topic'))).toBe(false);
+  });
+
+  it('keeps a quiz whose name mentions its proctoring tool', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, fixture('mylearningspace-quiz-list-lockdown')),
+    );
+    expect(tasks.map((task) => task.title)).toEqual([
+      'Example Test One - Requires Respondus LockDown Browser',
+      'Example Practice Quiz',
+    ]);
+  });
+});
+
+describe('reading material is not a deadline', () => {
+  it('leaves undated content topics out, and keeps the one that states a date', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/le/content/999999/home?ou=999999`, fixture('mylearningspace-content-module')),
+    );
+
+    // A module lists its slide decks and handouts as content routes with no date
+    // anywhere. Counting the route alone as evidence put every lecture file in
+    // "upcoming deadlines" as undated work needing review.
+    expect(tasks.map((task) => task.title)).toEqual(['Example Graded Reading Response']);
+    expect(tasks[0]?.due.iso).toBe('2026-11-04T04:59:00.000Z');
+  });
+});
+
+describe('course identity', () => {
+  it('does not take the course name from the page it happens to be on', () => {
+    // Every page title is "<page> - <code> - <course>", and the page's own h1
+    // used to win. Each visit renamed the stored course "Dropbox Folders",
+    // "Grades", or whatever page had just been read.
+    const dropbox = d2lAdapter.extractCourse(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-dropbox-list')),
+    );
+    expect(dropbox).toMatchObject({ name: 'Example Course', code: 'CS-101-A', externalId: '999999' });
+    expect(dropbox?.name).not.toBe('Dropbox Folders');
+  });
+
+  it('gives every page of one course the same course record', () => {
+    const names = (
+      ['mylearningspace-dropbox-list', 'mylearningspace-discussion-grid', 'mylearningspace-quiz-list-lockdown'] as const
+    ).map(
+      (name) =>
+        d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture(name)))?.name,
+    );
+    expect(new Set(names)).toEqual(new Set(['Example Course']));
+  });
+
+  it('still prefers a course name the skin states outright', () => {
+    expect(
+      d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, fixture('course-home-navbar'))),
+    ).toMatchObject({ name: 'CS101 Example Course - Fall 2099' });
   });
 });

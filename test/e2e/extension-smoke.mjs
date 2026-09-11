@@ -301,15 +301,34 @@ try {
   await courseTab.close();
 
   // The panel must name the state it is in, not fall back to the workspace.
-  for (const [path, connection] of [
-    ['/d2l/lp/whatever/unknown', 'unsupported'],
-    ['/d2l/home/424242?ou=424242', 'signed-out'],
-    ['/d2l/home/999999?ou=999999', 'supported'],
+  //
+  // Both halves matter, and only asserting the first is what let a real defect
+  // through: the worker reported `unsupported` and `signed-out` correctly while
+  // the panel rendered the coursework workspace over both, because the bridge
+  // recomputed the connection from whether a URL was present. A student on an
+  // expired session was never told to sign in again.
+  for (const [path, connection, rendered] of [
+    ['/d2l/lp/whatever/unknown', 'unsupported', /Unsupported page/i],
+    ['/d2l/home/424242?ou=424242', 'signed-out', /Your D2L session has ended/i],
+    ['/d2l/home/999999?ou=999999', 'supported', /Coursework workspace/i],
   ]) {
     await page.goto(`${ORIGIN}${path}`, { waitUntil: 'load' });
     await panel.waitForTimeout(900);
     const current = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
     check(`${path} — panel connection state is ${connection}`, current?.result?.connection === connection, `got ${current?.result?.connection}`);
+
+    const body = await panel.innerText('body');
+    check(
+      `${path} — the rendered panel says it is ${connection}`,
+      rendered.test(body),
+      body.replace(/\s+/g, ' ').slice(0, 120),
+    );
+    if (connection !== 'supported') {
+      check(
+        `${path} — the rendered panel does not offer the coursework workspace`,
+        !/Coursework workspace/i.test(body),
+      );
+    }
   }
 
   check('side panel raised no uncaught error', panelErrors.length === 0, panelErrors.join('; ').slice(0, 300));

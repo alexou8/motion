@@ -27,8 +27,30 @@ reproduces D2L's web components, its client-side navigation, or an institution
 skin. This procedure is the check that does, and it must be run by a person with
 their own account.
 
-**Nothing in the signed-in matrix below is currently recorded as passing.** Fill
-it in when you run it, and say which build you ran it against.
+### Last run
+
+Run against a live Wilfrid Laurier MyLearningSpace account on 2026-09-11, using
+Chrome for Testing 153 and a `dist/` built from the commit that introduced the
+fixes below. Route shapes only are recorded; no course names, org unit ids or
+page content from that account appear in this repository.
+
+| Route shape | Result |
+| --- | --- |
+| `/d2l/home` | Pass — `dashboard`, no course claimed, no tasks |
+| `/d2l/home/{ou}` | Pass — `course-home`, correct course |
+| `/d2l/le/content/{ou}/Home` | Pass — `content-module`; undated reading material is not listed as a deadline |
+| `/d2l/lms/dropbox/user/folders_list.d2l?ou={ou}` | Pass — one task per assignment, correct names, correct due dates including the EST/EDT boundary |
+| `/d2l/lms/dropbox/user/folder_submit_files.d2l?...` | Pass — `assignment`, instruction blocks read, no submission offered |
+| `/d2l/le/{ou}/discussions/List` | Pass — one task per topic; two topics sharing a name stay two tasks |
+| `/d2l/lms/quizzing/user/quizzes_list.d2l?ou={ou}` | Pass — readable, metadata and due dates extracted |
+| `/d2l/lms/grades/my_grades/main.d2l?ou={ou}` | Pass — detected; no grade row became a task |
+| Unrecognised `/d2l/...` route | Pass — panel says "Unsupported page" |
+| Empty assignment / discussion list | Pass — no tasks invented; the page's own empty state is left to speak |
+
+Not covered by this run, and still **not verified**: the calendar route, the
+announcements route, `navigateContent` topics, a live expired session, and the
+graded-attempt route — which was deliberately not opened on a real account and
+is covered only by `npm run test:extension` against a synthetic attempt page.
 
 ## Setup
 

@@ -1,0 +1,28 @@
+<!--
+  Synthetic fixture modelled on a MyLearningSpace content module listing.
+  Contains no real student or course data: every topic name and id is invented.
+
+  The shape that matters here: a module lists reading material — slide decks and
+  handouts — as `viewContent` links with no date anywhere on the row. Treating a
+  content route as sufficient evidence on its own turned every lecture file into
+  an undated "upcoming deadline" the student had to review.
+-->
+<!doctype html>
+<html>
+  <head><title>Example Module - CS-101-A - Example Course - Example University</title></head>
+  <body>
+    <h1>Example Module</h1>
+    <main>
+      <ul class="d2l-datalist">
+        <li class="d2l-datalist-item"><a href="/d2l/le/content/999999/viewContent/701/View">Example Slides One</a></li>
+        <li class="d2l-datalist-item"><a href="/d2l/le/content/999999/viewContent/702/View">Example Slides Two</a></li>
+        <li class="d2l-datalist-item"><a href="/d2l/le/content/999999/viewContent/703/View">Example Handout</a></li>
+        <!-- A content topic that genuinely carries a date stays a task. -->
+        <li class="d2l-datalist-item">
+          <a href="/d2l/le/content/999999/viewContent/704/View">Example Graded Reading Response</a>
+          <span class="d2l-dates-text">Due on Nov 3, 2026 11:59 PM</span>
+        </li>
+      </ul>
+    </main>
+  </body>
+</html>

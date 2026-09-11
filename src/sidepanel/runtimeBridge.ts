@@ -103,6 +103,18 @@ export function createRuntimeBridge(): MotionBridge {
    * The worker knows what was last observed; the panel knows which tab is in
    * front of the student right now. Combining them is what makes the panel
    * show "you are on an unsupported page" instead of stale course data.
+   *
+   * Only the facts the panel alone holds are applied here — that there is no
+   * active tab, that the tab is on a host no adapter claims, that the host
+   * permission has not been granted. The worker's own verdict is otherwise
+   * returned untouched.
+   *
+   * It used to end by recomputing the connection as `page.url ? 'supported' :
+   * 'idle'`, which threw away exactly the states the worker had worked out from
+   * the page type: an unrecognised D2L route and an expired session both still
+   * carry a URL, so both rendered the coursework workspace — the panel offering
+   * a workspace for a page it had already decided it could not read, and never
+   * telling a signed-out student to sign in again.
    */
   const withActiveTabContext = async (base: PanelState): Promise<PanelState> => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -125,7 +137,7 @@ export function createRuntimeBridge(): MotionBridge {
       if (!granted) return { ...base, connection: 'permission-needed' };
     }
 
-    return { ...base, connection: base.page.url ? 'supported' : 'idle' };
+    return base;
   };
 
   // The worker cannot push to a panel that may be closed, so the panel asks.
