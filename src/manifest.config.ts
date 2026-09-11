@@ -10,7 +10,7 @@ const manifest: ManifestV3Export = {
   manifest_version: 3,
   name: 'Motion — From Coursework to Completion',
   short_name: 'Motion',
-  version: '0.1.0',
+  version: '0.1.1',
   description:
     'Organizes your LMS coursework: deadlines with sources, notes linked to the page they came from, and background work you can watch and control.',
   // chrome.sidePanel requires 114+; opening it from an action requires 116.
