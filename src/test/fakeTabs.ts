@@ -23,6 +23,7 @@ export class FakeTabs implements TabsCapability {
   beforeOpen: (() => Promise<void>) | null = null;
   private nextTabId = 10;
   private nextGroupId = 100;
+  readonly adopted = new Map<number, number>();
 
   /** A tab the student opened themselves. */
   addStudentTab(url: string, groupId: number | null = null): number {
@@ -77,6 +78,23 @@ export class FakeTabs implements TabsCapability {
 
   async close(tabIds: number[]): Promise<void> {
     for (const id of tabIds) this.tabs.delete(id);
+  }
+
+  async ungroup(tabIds: number[]): Promise<void> {
+    for (const id of tabIds) {
+      const tab = this.tabs.get(id);
+      if (tab) tab.groupId = null;
+    }
+  }
+
+  async recordAdopted(tabId: number, groupId: number): Promise<void> {
+    this.adopted.set(tabId, groupId);
+  }
+
+  async adoptedTabsInGroup(groupId: number): Promise<number[]> {
+    return [...this.adopted]
+      .filter(([tabId, recordedGroupId]) => recordedGroupId === groupId && this.tabs.get(tabId)?.groupId === groupId)
+      .map(([tabId]) => tabId);
   }
 
   async sessionKey(): Promise<string> {

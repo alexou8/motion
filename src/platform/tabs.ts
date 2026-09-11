@@ -17,6 +17,7 @@ const MOTION_MARKER = 'motion_op';
  */
 const BROWSER_SESSION_KEY = 'motion:browser-session';
 const OPERATION_KEY_PREFIX = 'motion:op:';
+const ADOPTED_KEY_PREFIX = 'motion:adopted:';
 
 const operationKey = (operationId: string): string => `${OPERATION_KEY_PREFIX}${operationId}`;
 
@@ -77,6 +78,9 @@ export interface TabsCapability {
   /** Live tabs this browser session recorded opening under an operation id with this prefix. */
   tabsOpenedBy(operationPrefix: string): Promise<number[]>;
   close(tabIds: number[]): Promise<void>;
+  ungroup(tabIds: number[]): Promise<void>;
+  recordAdopted(tabId: number, groupId: number): Promise<void>;
+  adoptedTabsInGroup(groupId: number): Promise<number[]>;
   /**
    * Identifies the current browser session. A tab id recorded under a
    * different key belongs to a session that has ended, and Chrome may already
@@ -206,6 +210,32 @@ export class ChromeTabs implements TabsCapability {
 
   async close(tabIds: number[]): Promise<void> {
     if (tabIds.length > 0) await chrome.tabs.remove(tabIds);
+  }
+
+  async ungroup(tabIds: number[]): Promise<void> {
+    if (tabIds.length > 0) await chrome.tabs.ungroup(tabIds);
+  }
+
+  /**
+   * Session storage matches tab-id lifetime, and adopted tabs are the
+   * student's tabs: recording them separately from operation ownership keeps
+   * workspace closing from ever treating adoption as permission to close.
+   */
+  async recordAdopted(tabId: number, groupId: number): Promise<void> {
+    await chrome.storage.session.set({ [`${ADOPTED_KEY_PREFIX}${tabId}`]: groupId });
+  }
+
+  async adoptedTabsInGroup(groupId: number): Promise<number[]> {
+    const records = await chrome.storage.session.get(null);
+    const adopted = new Set(
+      Object.entries(records)
+        .filter(([key, value]) => key.startsWith(ADOPTED_KEY_PREFIX) && value === groupId)
+        .map(([key]) => Number(key.slice(ADOPTED_KEY_PREFIX.length)))
+        .filter((id) => Number.isInteger(id)),
+    );
+    if (adopted.size === 0) return [];
+    const live = await chrome.tabs.query({ groupId });
+    return live.flatMap((tab) => (tab.id !== undefined && adopted.has(tab.id) ? [tab.id] : []));
   }
 
   /**

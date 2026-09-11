@@ -242,6 +242,26 @@ Restricted mode is not relaxed inside Motion's own group. A tab Motion opened
 that turns out to be a graded attempt records that it is restricted and nothing
 else, exactly as a tab the student opened would. — *Mitigated (tested)*
 
+Clicking the toolbar icon puts the *current* tab into Motion's group. That tab
+is the student's: Motion groups it because the student asked, but records it
+only as **adopted** — in session storage, under a key separate from the tabs
+Motion opened — never as owned. Closing the workspace ungroups adopted tabs
+still in the group and never closes them; an adopted tab the student moved
+out is left alone. The icon only groups a tab that is not already in a group,
+whose stored observation is a supported, unrestricted page matching the tab's
+current URL, and whose live URL the assessment policy also clears. Anywhere
+else — a graded attempt, a signed-out or unsupported page, a page that has not
+reported itself yet — it opens the panel and does nothing else. The icon and
+**Prepare workspace** share one group title, so the readings join the adopted
+tab's group rather than a second one. — *Mitigated (`src/background/router.ts`,
+`src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
+
+Residual: the tab can navigate between the icon's checks and the grouping call.
+Grouping is a container change, not a read, and the new page is observed and
+restricted in the usual way when it reports. And a click racing a **Prepare
+workspace** press can create two groups of the same title, because the two take
+different locks; nothing is closed or read as a result. — *Accepted*
+
 ---
 
 ## Accepted risks

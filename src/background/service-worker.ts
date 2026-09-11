@@ -16,7 +16,7 @@ import { resolveAdapter, supportedHosts } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
-import { handleMessage, forgetTab } from './router';
+import { handleMessage, forgetTab, handleActionClick } from './router';
 import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './recovery';
 
 // --- Registered synchronously. Do not move these into an async function. ---
@@ -32,16 +32,17 @@ chrome.runtime.onInstalled.addListener((details) => {
 // Register the action directly instead of relying on setPanelBehavior state
 // written during installation. Development reloads can replace the worker
 // without replaying onInstalled, while this listener exists on every start.
-chrome.action.onClicked.addListener(async (tab) => {
-  if (tab.windowId === undefined) return;
-  try {
-    await chrome.sidePanel.open({ windowId: tab.windowId });
-  } catch (error) {
-    console.warn(
-      'Motion: could not open the side panel —',
-      error instanceof Error ? error.message : error,
-    );
+chrome.action.onClicked.addListener((tab) => {
+  // This must stay synchronous: Chrome only accepts the user gesture before
+  // the first await, so open the panel before starting tab grouping.
+  if (tab.windowId !== undefined) {
+    void chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
+      console.warn('Motion: could not open the side panel —', error instanceof Error ? error.message : error);
+    });
   }
+  void handleActionClick(tab).catch((error) => {
+    console.warn('Motion: toolbar grouping failed —', error instanceof Error ? error.message : error);
+  });
 });
 
 chrome.runtime.onStartup.addListener(() => {

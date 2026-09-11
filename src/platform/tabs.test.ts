@@ -52,6 +52,12 @@ function fakeChrome() {
           if (index >= 0) tabs.splice(index, 1);
         }
       }),
+      ungroup: vi.fn(async (ids: number[]) => {
+        for (const id of ids) {
+          const tab = tabs.find((candidate) => candidate.id === id);
+          if (tab) tab.groupId = -1;
+        }
+      }),
     },
     tabGroups: {
       query: vi.fn(async (info: { title?: string }) =>
@@ -169,6 +175,32 @@ describe('opening tabs is idempotent across a restart', () => {
 });
 
 describe('tab groups', () => {
+  it('ungroups tabs without closing them', async () => {
+    const tabs = new ChromeTabs();
+    const tab = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [tab.tabId]);
+    await tabs.ungroup([tab.tabId]);
+    expect(api._state.tabs.find((candidate) => candidate.id === tab.tabId)?.groupId).toBe(-1);
+    expect(await tabs.groupExists(groupId)).toBe(true);
+  });
+
+  it('tracks adopted tabs separately from owned tabs and only while they remain live in the group', async () => {
+    const tabs = new ChromeTabs();
+    const adopted = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const moved = await tabs.open('https://x.brightspace.com/b', 'op-b');
+    const closed = await tabs.open('https://x.brightspace.com/c', 'op-c');
+    const groupId = await tabs.ensureGroup({ title: 'Motion · A', color: 'blue' }, [adopted.tabId, moved.tabId, closed.tabId]);
+    const studentTab = { id: 99, url: 'https://x.brightspace.com/student', groupId: groupId };
+    api._state.tabs.push(studentTab);
+    await tabs.recordAdopted(studentTab.id, groupId);
+    await tabs.recordAdopted(moved.tabId, groupId);
+    await tabs.recordAdopted(closed.tabId, groupId);
+    await tabs.ungroup([moved.tabId]);
+    await tabs.close([closed.tabId]);
+    expect(await tabs.adoptedTabsInGroup(groupId)).toEqual([studentTab.id]);
+    expect(await tabs.tabsOpenedBy('op')).toEqual([adopted.tabId, moved.tabId]);
+  });
+
   it('creates a titled group the first time', async () => {
     const tabs = new ChromeTabs();
     const a = await tabs.open('https://x.brightspace.com/a', 'op-a');

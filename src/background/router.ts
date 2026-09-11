@@ -32,6 +32,7 @@ import { resolveAdapter } from '@/core/adapters';
 import type { Course } from '@/core/domain';
 import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
+import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type TabsCapability } from '@/platform/tabs';
 
@@ -649,7 +650,7 @@ export async function handlePrepareWorkspace(
     const created = await engine.create(
       PREPARE_WORKSPACE,
       { url: page, sources, courseCode: course?.code ?? null, label },
-      { courseId: course?.id ?? null, title: groupTitle([course?.code, label]) },
+      { courseId: course?.id ?? null, title: workspaceGroupTitle(course?.code, label) },
     );
     return { workflowId: created.id };
   });
@@ -670,14 +671,14 @@ export async function handlePrepareWorkspace(
 export async function handleCloseWorkspace(
   workflowId: string,
   tabs: TabsCapability = new ChromeTabs(),
-): Promise<{ closed: number }> {
+): Promise<{ closed: number; ungrouped: number }> {
   const engine = await createEngine(tabs);
   // `cancel` declines a workflow that already finished — the usual case for a
   // workspace — so fall back to reading it as it stands.
   const workflow =
     (await engine.cancel(workflowId)) ??
     (await new IndexedDbWorkflowStore(await openDatabase()).get(workflowId));
-  if (!workflow || workflow.definitionId !== PREPARE_WORKSPACE) return { closed: 0 };
+  if (!workflow || workflow.definitionId !== PREPARE_WORKSPACE) return { closed: 0, ungrouped: 0 };
 
   const sessionKey = await tabs.sessionKey();
   const { groupId, tabIds } = workspaceOwnership(workflow, sessionKey);
@@ -694,7 +695,65 @@ export async function handleCloseWorkspace(
 
   const closing = [...new Set([...kept, ...unrecorded])];
   await tabs.close(closing);
-  return { closed: closing.length };
+  const adopted = groupId === null ? [] : await tabs.adoptedTabsInGroup(groupId);
+  const ungrouped = adopted.filter((id) => !closing.includes(id));
+  await tabs.ungroup(ungrouped);
+  return { closed: closing.length, ungrouped: ungrouped.length };
+}
+
+/**
+ * The one title for a workspace's group. The toolbar icon and Prepare workspace
+ * both use it, so the readings join the group the icon started rather than a
+ * second one. Both page titles come from `document.title`.
+ */
+export function workspaceGroupTitle(courseCode: string | null | undefined, pageTitle: string): string {
+  return groupTitle([courseCode, pageTitle || 'Assignment']);
+}
+
+/** `chrome.tabGroups.TAB_GROUP_ID_NONE`, spelled out so tests need no tabGroups stub. */
+const NO_GROUP = -1;
+
+/**
+ * The toolbar icon: put the tab the student is on into Motion's group.
+ *
+ * The tab is the student's. It is recorded as adopted, never as owned, so
+ * closing the workspace ungroups it and cannot close it (docs/THREAT_MODEL.md
+ * T14). Anything short of a supported, unrestricted page that has already
+ * reported itself — checked on the stored observation *and* on the live URL —
+ * is left alone: a graded attempt gets no tab operation, not even grouping. A
+ * tab already in a group stays where the student put it.
+ */
+export async function handleActionClick(
+  tab: Pick<chrome.tabs.Tab, 'id' | 'url' | 'title' | 'groupId' | 'windowId'>,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<{ grouped: boolean }> {
+  const { id: tabId, url } = tab;
+  const declined = { grouped: false };
+  if (tabId === undefined || !url) return declined;
+  if (tab.groupId !== undefined && tab.groupId !== NO_GROUP) return declined;
+
+  const adapter = resolveAdapter(url);
+  if (!adapter) return declined;
+  const observation = await readObservation(tabId);
+  if (connectionFor(observation) !== 'supported' || !observation?.url) return declined;
+  if (workspacePageUrl(observation.url) !== workspacePageUrl(url)) return declined;
+  const assessment = evaluateAssessmentContext({
+    pageType: adapter.classifyUrl(url) ?? 'unsupported',
+    url,
+    pageTitle: tab.title,
+  });
+  if (assessment.restricted) return declined;
+
+  // Two quick clicks would otherwise both find no group and create two.
+  return withLock('motion:workspace-group', async () => {
+    const course = await courseForUrl(url);
+    const groupId = await tabs.ensureGroup(
+      { title: workspaceGroupTitle(course?.code, observation.title), color: 'blue', windowId: tab.windowId },
+      [tabId],
+    );
+    await tabs.recordAdopted(tabId, groupId);
+    return { grouped: true };
+  });
 }
 
 /** The stored course a URL belongs to, by its platform id appearing in the URL. */
