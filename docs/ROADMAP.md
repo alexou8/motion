@@ -15,7 +15,7 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 | Design-system foundation | **Done** | `src/ui/tokens.css`; WCAG AA enforced by `tokens.contrast.test.ts` |
 | Local persistence + migrations | **Done** | `src/core/storage`; migration replay, corrupted-row recovery tested |
 | Risk, approval and assessment policy | **Done** | `src/core/policy`; 21 tests incl. forged-approval and replay cases. A graded attempt records that the tab is restricted and nothing else — no URL, title, warnings or content — and the panel shows restricted mode for that tab, including when a course page is open in another tab (`npm run test:extension`) |
-| Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures and against the built extension in a real Chromium (`npm run test:extension`); **not verified against a live authenticated deployment** |
+| Page detection | **Partial** | Route table covers the D2L routes listed in `docs/MANUAL-TESTING.md`, tested against synthetic fixtures and against the built extension in a real Chromium (`npm run test:extension`). Dashboard, course home, content module, assignment list, assignment, discussion list, quiz list, grades, calendar and unrecognised routes are now confirmed on a live authenticated MyLearningSpace account — see the run recorded in `docs/MANUAL-TESTING.md`. Announcements, `navigateContent` topics and a live expired session remain unverified |
 | Typed messaging + sender authorization | **Partial** | Implemented and unit-tested, both directions Zod-validated; the worker/content-script/panel path is exercised in a real browser by `npm run test:extension`, including a page script failing to reach the worker |
 | Extension shell (worker, panel, popup) | **Partial** | Worker, side panel and options page load in Chromium 141 and the panel renders state from the worker (`npm run test:extension`); panel views beyond the connection states are unfinished |
 | Basic tab grouping | **Not started** | — |
@@ -24,8 +24,8 @@ Last reconciled against the tree: see `git log` for the most recent commit.
 
 | Item | Status |
 | --- | --- |
-| D2L adapter and synthetic fixtures | **Partial** — being rewritten onto route-based selectors after the first pass was found to depend on invented `data-*` attributes |
-| MyLearningSpace (institution deployment) support | **Partial** — host matching, a skin fixture and a stock/skin equivalence test pass; the live signed-in matrix in `docs/MANUAL-TESTING.md` has not been run |
+| D2L adapter and synthetic fixtures | **Partial** — route-based selectors, with fixtures rebuilt from the structure the live deployment actually serves. A list row, not a link, is now the unit of extraction: D2L puts several links to the same work on one row |
+| MyLearningSpace (institution deployment) support | **Partial** — the live signed-in matrix has now been run once and is recorded in `docs/MANUAL-TESTING.md`. It found five defects that synthetic fixtures had missed: assignments named after their submission-count link, a duplicate task per discussion topic, a quiz list locked into restricted mode by a quiz's own name, a course renamed by every page visited, and a panel that rendered the workspace over unsupported and signed-out pages. All five are fixed and pinned by fixtures modelled on the real markup |
 | Deadline extraction with provenance and confidence | **Partial** — domain model and parser exist; not yet wired to storage |
 | Course dashboard | **Not started** |
 | Task correction and archive | **Not started** — model supports it (`corrections`, `studentEdited`) |
