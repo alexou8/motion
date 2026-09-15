@@ -1,0 +1,27 @@
+<!-- Synthetic D2L fixture: contains no real student data, identifiers, grades, cookies, or tokens. -->
+<!doctype html>
+<html>
+  <head>
+    <title>Assignments - CS101 Example Course</title>
+    <script>
+      setTimeout(() => {
+        const main = document.createElement('main');
+        main.className = 'd2l-page-main';
+        main.innerHTML = `
+          <h1>Assignments</h1>
+          <div class="d2l-datalist-item">
+            <a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&amp;db=101"><span>Example Assignment</span></a>
+            <span class="d2l-dates-text">Due January 20, 2099 11:59 PM</span>
+          </div>
+          <div class="d2l-datalist-item">
+            <a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&amp;db=102"><span>Example Assignment</span></a>
+            <span class="d2l-dates-text">Due February 20, 2099 11:59 PM</span>
+          </div>`;
+        document.body.replaceChildren(main);
+      }, 1500);
+    </script>
+  </head>
+  <body>
+    <div id="loading-skeleton">Loading assignments…</div>
+  </body>
+</html>

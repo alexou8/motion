@@ -7,6 +7,7 @@ import {
   pageContentSchema,
   EXTRACTION_VERSION,
   type PageContent,
+  type CourseTask,
 } from '@/core/domain';
 import {
   composeDraftPrompt,
@@ -31,7 +32,7 @@ import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
 import { createEngine } from './recovery';
-import { resolveAdapter } from '@/core/adapters';
+import { adapterById, resolveAdapter } from '@/core/adapters';
 import type { Course } from '@/core/domain';
 import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
@@ -201,11 +202,61 @@ async function handleExtraction(
   for (const task of message.tasks) {
     const existing = await tasks.get(task.id);
     if (existing?.studentEdited) continue;
+
+    const legacy = existing ? null : await findLegacyTask(tasks, task);
+    if (legacy) {
+      await tasks.put({
+        ...task,
+        ...(legacy.studentEdited
+          ? {
+              title: legacy.title,
+              due: legacy.due,
+              weight: legacy.weight,
+              status: legacy.status,
+            }
+          : {}),
+        corrections: legacy.corrections,
+        studentEdited: legacy.studentEdited,
+        createdAt: legacy.createdAt,
+      });
+      await tasks.put({ ...legacy, archived: true, updatedAt: task.updatedAt });
+      written += 1;
+      continue;
+    }
+
     await tasks.put({ ...task, createdAt: existing?.createdAt ?? task.createdAt });
     written += 1;
   }
 
   return { courses: message.course ? 1 : 0, tasks: written };
+}
+
+function normalizedTaskTitle(title: string): string {
+  return title.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function legacyTitleMatches(legacy: CourseTask, incoming: CourseTask): boolean {
+  const incomingTitle = normalizedTaskTitle(incoming.title);
+  if (normalizedTaskTitle(legacy.title) === incomingTitle) return true;
+  return legacy.corrections.some(
+    (correction) => correction.field === 'title'
+      && typeof correction.originalValue === 'string'
+      && normalizedTaskTitle(correction.originalValue) === incomingTitle,
+  );
+}
+
+async function findLegacyTask(
+  tasks: Repository<typeof courseTaskSchema>,
+  incoming: CourseTask,
+): Promise<CourseTask | null> {
+  const candidates = (await tasks.byIndex('byCourse', incoming.courseId)).records.filter(
+    (candidate) => !candidate.archived
+      && candidate.kind === incoming.kind
+      && (adapterById(candidate.provenance.platformId) ?? resolveAdapter(incoming.provenance.sourceUrl))
+        ?.isLegacyTaskId(candidate.id, incoming.courseId) === true
+      && legacyTitleMatches(candidate, incoming),
+  );
+  return candidates.length === 1 ? candidates[0] ?? null : null;
 }
 
 /**
@@ -355,7 +406,7 @@ async function handleBuildChecklist(
 
   await checklists.put({
     id: checklistId,
-    courseId: (await currentCourseId()) ?? 'unassigned',
+    courseId: (await courseForUrl(content.url))?.id ?? 'unassigned',
     taskId: message.taskId,
     title: content.title || 'Assignment requirements',
     items: toRequirements(
@@ -848,24 +899,21 @@ function mayAdopt(live: LiveTab, observation: StoredObservation | undefined): bo
   }).restricted;
 }
 
-/** The stored course a URL belongs to, by its platform id appearing in the URL. */
 async function courseForUrl(url: string | null | undefined): Promise<Course | null> {
   const db = await openDatabase();
   const courses = await new Repository(db, STORE.courses, courseSchema).all();
-  return (
-    courses.records.find((candidate) =>
-      url ? url.includes(candidate.externalId ?? NO_EXTERNAL_ID) : false,
-    ) ??
-    courses.records[0] ??
-    null
-  );
+  // No id on the page means no course: a dashboard must never match a stored
+  // course that happens to lack an id of its own.
+  const externalId = url ? resolveAdapter(url)?.courseIdForUrl(url) : null;
+  if (!externalId) return null;
+  return courses.records.find((candidate) => candidate.externalId === externalId) ?? null;
 }
 
-async function currentCourseId(): Promise<string | null> {
-  const db = await openDatabase();
-  const courses = new Repository(db, STORE.courses, courseSchema);
-  const all = await courses.all();
-  return all.records[0]?.id ?? null;
+async function currentCourseId(tabId?: number): Promise<string | null> {
+  const activeTabId = tabId ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+  if (activeTabId === undefined) return null;
+  const observation = await readObservation(activeTabId);
+  return (await courseForUrl(observation?.url))?.id ?? null;
 }
 
 async function requestExtraction(tabId: number | undefined): Promise<{ requested: boolean }> {
@@ -881,13 +929,6 @@ async function requestExtraction(tabId: number | undefined): Promise<{ requested
     return { requested: false };
   }
 }
-
-/**
- * Stands in for a course with no external id. It cannot appear in a URL, so a
- * course missing its id never matches the observed page by accident. (This was
- * a literal NUL byte, which made the file read as binary to ordinary tools.)
- */
-const NO_EXTERNAL_ID = '\u0000';
 
 /**
  * What the panel should show, from what was actually observed.
@@ -941,12 +982,7 @@ export async function buildPanelState(): Promise<PanelState> {
       return a.title.localeCompare(b.title);
     });
 
-  const course =
-    allCourses.records.find((candidate) =>
-      observation?.url ? observation.url.includes(candidate.externalId ?? NO_EXTERNAL_ID) : false,
-    ) ??
-    allCourses.records[0] ??
-    null;
+  const course = await courseForUrl(observation?.url);
 
   return {
     ...EMPTY_PANEL_STATE,

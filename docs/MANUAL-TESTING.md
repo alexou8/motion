@@ -47,10 +47,54 @@ page content from that account appear in this repository.
 | Unrecognised `/d2l/...` route | Pass — panel says "Unsupported page" |
 | Empty assignment / discussion list | Pass — no tasks invented; the page's own empty state is left to speak |
 
-Not covered by this run, and still **not verified**: the calendar route, the
-announcements route, `navigateContent` topics, a live expired session, and the
-graded-attempt route — which was deliberately not opened on a real account and
-is covered only by `npm run test:extension` against a synthetic attempt page.
+Not covered by the 2026-09-11 run: the calendar route, the announcements route,
+`navigateContent` topics, a live expired session, and the graded-attempt route.
+
+### Reliability pass — 2026-09-15
+
+Run against a live account with a Playwright-launched Chromium, `dist/` loaded
+unpacked, across six active courses (27 route visits per two courses, plus
+row-level list checks on all six). Evidence was recorded as route shapes,
+counts and booleans only. Before/after the fixes in the same change:
+
+| Route shape / flow | Before | After |
+| --- | --- | --- |
+| `/d2l/home` after visiting a course | Panel kept the previous course | No course |
+| `/d2l/error/{n}` (unknown or unavailable tool) | `unsupported`, previous course shown | `unsupported`, no course |
+| `/d2l/lms/news/main.d2l?ou={ou}` (announcements) | `unsupported` | `announcements`, no tasks |
+| `/d2l/le/news/{ou}` | Redirects to `/d2l/error/{n}` on this deployment | Same; reported honestly as unsupported |
+| `/d2l/le/calendar/{ou}` | `calendar`, no tasks | Same, and the course resolves |
+| `/d2l/lms/quizzing/user/quizzes_list.d2l?ou={ou}` | One task per course, whatever the quiz count | One task per quiz row |
+| `/d2l/lms/dropbox/user/folders_list.d2l?ou={ou}` read with and without `isprv` | Duplicate tasks | Identical task set |
+| Assignment rows stating only an availability window | Stored as due dates | Kept as low confidence ("Needs review"); an availability start is never a date |
+| Course home titled `<page> - <course name>` without a course code | Course named after the page | Course named correctly |
+
+Also verified on this run, unchanged: dashboard, `/d2l/home/{ou}` (the legacy
+`/d2l/lp/ouHome/home.d2l?ou={ou}` redirects there), content home,
+`viewContent` topics, assignment detail, discussion list and topic, grades (no
+task from any grade row), switching between tabs of two courses, closing and
+reopening the panel, and stopping the service worker. First observation lands
+0.2–3 s after navigation on a signed-in page, with no transient signed-out
+state. Every visit on this deployment was a full document load; no
+same-document navigation was observed, so SPA handling is covered by
+`npm run test:extension` only.
+
+Deployment findings worth knowing when a fixture is needed:
+
+- Quiz names are `<a href="javascript://" onclick="GoToQuiz(<id>, …)">`, so a
+  quiz row has no navigable link of its own.
+- Dropbox rows name the folder in a row header cell and state dates in
+  `.d2l-folderdates-wrapper` rows ("Available on", "Available until",
+  "Availability ends"); many folders have no due date at all.
+- Course home and dashboard content (course cards, navigation) renders inside
+  shadow roots; list tools (dropbox, quizzes, discussions, grades) are
+  server-rendered tables in the light DOM with no iframes.
+
+Still **not verified** live: `navigateContent` topics, a live expired session,
+same-document navigation, and the graded-attempt route — which was deliberately
+not opened on a real account and is covered only by `npm run test:extension`
+against a synthetic attempt page. Extraction still runs only when the student
+asks the panel to read the page.
 
 ## Setup
 
@@ -79,6 +123,7 @@ console error from the page, the content script, the worker and the panel.
 | Quiz attempt | `/d2l/lms/quizzing/user/attempt/...` | restricted mode; read-only. **Do not open a real graded attempt to test this.** |
 | Grades | `/d2l/lms/grades/my_grades/main.d2l?ou={ou}` | `grades`; grade rows must not become tasks |
 | Calendar | `/d2l/le/calendar/{ou}` | `calendar`; no tasks |
+| Announcements | `/d2l/lms/news/main.d2l?ou={ou}` (optional `.d2l` and trailing slash) | `announcements`; no tasks |
 | Unsupported | any other `/d2l/...` route | `unsupported` with an honest warning |
 
 Also exercise: refreshing, navigating between course pages without a reload,

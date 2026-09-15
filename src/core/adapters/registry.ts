@@ -19,6 +19,10 @@ export function resolveAdapter(url: string): LearningPlatformAdapter | null {
   return adapters.find((adapter) => adapter.matchesHost(url)) ?? null;
 }
 
+export function adapterById(id: string): LearningPlatformAdapter | null {
+  return adapters.find((adapter) => adapter.id === id) ?? null;
+}
+
 export function getSupportedHosts(): readonly string[] {
   return supportedHosts;
 }

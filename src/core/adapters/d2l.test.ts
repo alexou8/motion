@@ -18,12 +18,24 @@ function input(url: string, document: Document): AdapterInput {
 }
 
 describe('D2L route detection', () => {
+  it.each([
+    ['d2l:title:relational algebra', true],
+    ['d2l:javascript://legacy-quiz', true],
+    ['d2l:363:title:relational algebra', false],
+    ['d2l:363:quiz:101', false],
+    [`d2l:${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, true],
+    [`d2l:${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=101&ou=363`, false],
+  ])('classifies task id %s as legacy=%s', (id, legacy) => {
+    expect(d2lAdapter.isLegacyTaskId(id, 'd2l:363')).toBe(legacy);
+  });
+
   const routes: [string, string][] = [
     ['/d2l/home', 'dashboard'],
     ['/d2l/home/363', 'course-home'],
     ['/d2l/le/content/363/home', 'content-module'],
     ['/d2l/le/content/363/viewContent/12', 'content-topic'],
     ['/d2l/le/news/123', 'announcements'],
+    ['/d2l/lms/news/main.d2l?ou=363', 'announcements'],
     ['/d2l/lms/dropbox/user/folders_list.d2l', 'assignment-list'],
     ['/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101', 'assignment'],
     ['/d2l/le/363/discussions/List', 'discussion-list'],
@@ -56,6 +68,29 @@ describe('D2L route detection', () => {
     ['not a url', null],
   ])('classifies %s by its route alone as %s', (url, pageType) => {
     expect(d2lAdapter.classifyUrl(url)).toBe(pageType);
+  });
+
+  it.each([
+    [`${WLU_ORIGIN}/d2l/home/999999`, '999999'],
+    [`${WLU_ORIGIN}/d2l/le/calendar/999999`, '999999'],
+    [`${WLU_ORIGIN}/d2l/le/999999/discussions/List`, '999999'],
+    [`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, '999999'],
+    [`${WLU_ORIGIN}/d2l/home`, null],
+    [`${WLU_ORIGIN}/d2l/lms/quizzing/user/attempt/1`, null],
+  ] as const)('resolves the course id for %s as %s', (url, externalId) => {
+    expect(d2lAdapter.courseIdForUrl(url)).toBe(externalId);
+  });
+
+  it('classifies the live announcements route consistently and extracts no tasks', () => {
+    const page = input(`${WLU_ORIGIN}/d2l/lms/news/main.d2l?ou=363`, fixture('course-home'));
+
+    expect(d2lAdapter.classifyUrl(page.url)).toBe('announcements');
+    expect(d2lAdapter.detectPage(page)).toMatchObject({
+      pageType: 'announcements',
+      confidence: 'high',
+      warnings: [],
+    });
+    expect(d2lAdapter.extractTasks(page)).toEqual([]);
   });
 
   it('degrades on renamed or partially loaded markup with warnings and no fabricated tasks', () => {
@@ -118,6 +153,16 @@ describe('D2L route-based extraction', () => {
     expect(assignment[0]?.due.raw).toBe('Available until Friday, October 14, 2025');
     expect(discussion[0]?.due.raw).toBe('Ends November 4, 2025');
     expect(discussion[1]?.due.raw).toBe('Closes November 11, 2025');
+  });
+
+  it('does not treat an available-on time as a deadline', () => {
+    const page = new DOMParser().parseFromString(
+      '<main><div class="d2l-datalist-item"><a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&amp;db=101">Starts Later</a><span>Available on <time datetime="2025-10-14T12:00:00-04:00">October 14, 2025</time></span></div></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=363`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.due.iso).toBeNull();
   });
 
   it('deduplicates by resolved href before falling back to normalized title', () => {
@@ -229,6 +274,26 @@ describe('a session that has ended', () => {
     expect(d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page))).toMatchObject({
       pageType: 'course-home',
     });
+  });
+
+  it('reports signed-out when the redirect script is the only body child', () => {
+    const page = new DOMParser().parseFromString(
+      "<html><body><script>window.location.replace('/d2l/login?sessionExpired=1');</script></body></html>",
+      'text/html',
+    );
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page)),
+    ).toMatchObject({ pageType: 'signed-out', confidence: 'high' });
+  });
+
+  it('does not report signed-out when a loading element accompanies the redirect script', () => {
+    const page = new DOMParser().parseFromString(
+      "<html><body><script>window.location.replace('/d2l/login?sessionExpired=1');</script><div class='spinner' aria-label='Loading'></div></body></html>",
+      'text/html',
+    );
+    expect(
+      d2lAdapter.detectPage(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page)),
+    ).toMatchObject({ pageType: 'course-home' });
   });
 });
 
@@ -344,6 +409,83 @@ describe('MyLearningSpace list markup', () => {
       'Example Practice Quiz',
     ]);
   });
+
+  it('keeps inline-handler quizzes distinct and uses their explicit due dates', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, fixture('mylearningspace-quiz-list')),
+    );
+
+    expect(tasks).toHaveLength(4);
+    expect(tasks.map((task) => task.kind)).toEqual(['quiz', 'quiz', 'quiz', 'quiz']);
+    expect(new Set(tasks.map((task) => task.id)).size).toBe(4);
+    expect(tasks.every((task) => !task.id.includes('javascript://'))).toBe(true);
+    expect(tasks.map((task) => task.due.raw)).toEqual([
+      'Due on Oct 14, 2025 11:59 PM',
+      'Due on Nov 4, 2025 11:59 PM',
+      'Due on Dec 2, 2025 11:59 PM',
+      'Due on Dec 9, 2025 11:59 PM',
+    ]);
+    expect(tasks[0]?.id).toBe('d2l:999999:quiz:12345');
+  });
+
+  it('uses a course-scoped title identity when a row has no safe href or quiz id', () => {
+    const page = new DOMParser().parseFromString(
+      '<main><table><tbody><tr><td><a href="#details">Example Quiz</a></td><td>Due on Oct 14, 2025</td></tr></tbody></table></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.id).toBe('d2l:999999:title:example quiz');
+    expect(tasks[0]?.id).not.toContain('#details');
+  });
+
+  it('canonicalizes identity-bearing task URL parameters and retains same ids across page URL variants', () => {
+    const first = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&isprv=0`, fixture('mylearningspace-identity-list')),
+    );
+    const second = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-identity-list')),
+    );
+    expect(first.map((task) => task.id)).toEqual(second.map((task) => task.id));
+    expect(first.map((task) => task.id)).toEqual([
+      'd2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?db=321&ou=999999',
+      'd2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?db=322&ou=999999',
+    ]);
+    expect(first.every((task) => !/isprv|bp|d2l_state|d2l_view/.test(task.id))).toBe(true);
+  });
+
+  it('keeps same-title linkless tasks distinct between courses', () => {
+    const page = new DOMParser().parseFromString(
+      '<main><table><tbody><tr><th class="d_ich"><label>Example Quiz</label></th><td>Due on Oct 14, 2025</td></tr></tbody></table></main>',
+      'text/html',
+    );
+    const first = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, page));
+    const second = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=888888`, page));
+    expect(first[0]?.id).not.toBe(second[0]?.id);
+    expect(first[0]?.courseId).toBe('d2l:999999');
+    expect(second[0]?.courseId).toBe('d2l:888888');
+  });
+
+  it('prefers explicit due wording and marks availability-only endings low confidence', () => {
+    const tasks = d2lAdapter.extractTasks(
+      input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-availability-list')),
+    );
+    expect(tasks.map((task) => task.title)).toEqual(['Example Due Assignment', 'Example Availability Assignment']);
+    expect(tasks[0]?.due).toMatchObject({ raw: 'Due on Oct 14, 2025 11:59 PM', confidence: 'high' });
+    expect(tasks[0]?.due.iso).toBe('2025-10-15T03:59:00.000Z');
+    expect(tasks[1]?.due).toMatchObject({ raw: 'Available until Nov 20, 2025', confidence: 'low' });
+    expect(tasks[1]?.due.iso).toBe('2025-11-20T05:00:00.000Z');
+  });
+
+  it('keeps two topics with the same name as separate linked tasks', () => {
+    const page = new DOMParser().parseFromString(
+      '<main><table><tbody><tr><td><a href="/d2l/le/999999/discussions/topics/701/View">Same Topic</a></td><td>Available until Oct 14, 2025</td></tr><tr><td><a href="/d2l/le/999999/discussions/topics/702/View">Same Topic</a></td><td>Available until Oct 15, 2025</td></tr></tbody></table></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/999999/discussions/List?ou=999999`, page));
+    expect(tasks.map((task) => task.title)).toEqual(['Same Topic', 'Same Topic']);
+    expect(new Set(tasks.map((task) => task.id)).size).toBe(2);
+  });
 });
 
 describe('reading material is not a deadline', () => {
@@ -361,6 +503,26 @@ describe('reading material is not a deadline', () => {
 });
 
 describe('course identity', () => {
+  it('does not use the page segment as the course name when the heading is the course name', () => {
+    const page = new DOMParser().parseFromString(
+      '<html><head><title>Homepage - Faculty Example Course</title></head><body><h1>Faculty Example Course</h1></body></html>',
+      'text/html',
+    );
+    const course = d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page));
+    expect(course).toMatchObject({ name: 'Faculty Example Course' });
+    expect(course).not.toHaveProperty('code');
+  });
+
+  it('keeps the course segment when the heading is a page name', () => {
+    const page = new DOMParser().parseFromString(
+      '<html><head><title>Example Course - Brightspace</title></head><body><h1>Content</h1></body></html>',
+      'text/html',
+    );
+    expect(d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/home/999999?ou=999999`, page))).toMatchObject({
+      name: 'Example Course',
+    });
+  });
+
   it('does not take the course name from the page it happens to be on', () => {
     // Every page title is "<page> - <code> - <course>", and the page's own h1
     // used to win. Each visit renamed the stored course "Dropbox Folders",
