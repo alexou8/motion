@@ -58,6 +58,17 @@ const ROUTES = [
   { path: '/d2l/home/424242?ou=424242', fixture: 'signed-out-redirect', expect: 'signed-out' },
 ];
 
+const REGRESSION_ROUTES = [
+  { path: '/d2l/home/888888?ou=888888', fixture: 'e2e-course-cs202' },
+  { path: '/d2l/home/1234?ou=1234', fixture: 'e2e-prefix-course' },
+  { path: '/d2l/home/12345?ou=12345', fixture: 'e2e-prefix-course' },
+  { path: '/d2l/lp/ouHome/home?ou=999999', fixture: 'e2e-course-heading-title' },
+  { path: '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1', fixture: 'e2e-delayed-assignment-list' },
+  { path: '/d2l/lp/ouHome/home?ou=999999&slow=1', fixture: 'e2e-slow-course-home' },
+];
+
+const ALL_ROUTES = [...ROUTES, ...REGRESSION_ROUTES];
+
 const userDataDir = await mkdtemp(join(tmpdir(), 'motion-e2e-'));
 const context = await chromium.launchPersistentContext(userDataDir, {
   executablePath,
@@ -125,8 +136,12 @@ try {
 
   // Serve synthetic markup for the matched host. Nothing leaves the machine.
   await context.route(`${ORIGIN}/**`, (route) => {
-    const path = new URL(route.request().url()).pathname;
-    const match = ROUTES.find((candidate) => new URL(candidate.path, ORIGIN).pathname === path);
+    const requestUrl = new URL(route.request().url());
+    const match = ALL_ROUTES.find((candidate) => {
+      const candidateUrl = new URL(candidate.path, ORIGIN);
+      return candidateUrl.pathname === requestUrl.pathname &&
+        (!candidateUrl.search || candidateUrl.search === requestUrl.search);
+    });
     return route.fulfill({
       status: match ? 200 : 404,
       contentType: 'text/html',
@@ -153,6 +168,32 @@ try {
       }
       return { error: lastError };
     }, ORIGIN);
+
+  const requestExtractionForTab = (tabId) =>
+    panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'request-extraction', tabId: id }), tabId);
+
+  const activeTabId = () =>
+    panel.evaluate(async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id ?? null);
+
+  const getState = () => panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+
+  const getObservation = (tabId) =>
+    panel.evaluate(async (id) => (await chrome.storage.session.get(`observation:${id}`))[`observation:${id}`] ?? null, tabId);
+
+  const storedCourseExternalIds = () =>
+    panel.evaluate(() => new Promise((resolve) => {
+      const request = indexedDB.open('motion');
+      request.onerror = () => resolve([]);
+      request.onsuccess = () => {
+        const db = request.result;
+        const read = db.transaction('courses', 'readonly').objectStore('courses').getAll();
+        read.onerror = () => { db.close(); resolve([]); };
+        read.onsuccess = () => {
+          db.close();
+          resolve(read.result.map((course) => course.externalId).filter((id) => typeof id === 'string'));
+        };
+      };
+    }));
 
   for (const route of ROUTES) {
     await page.goto(`${ORIGIN}${route.path}`, { waitUntil: 'load' });
@@ -419,6 +460,183 @@ try {
     closed.reply?.result?.closed === prepared.members.length && closed.studentStillOpen && closed.motionGroups === 0,
     JSON.stringify(closed),
   );
+
+  // --- Lifecycle, timing and state regressions. ---
+  // These use separate tab ids and explicit observations so a passing check
+  // cannot be explained by whichever page happened to report most recently.
+
+  await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await page.bringToFront();
+  const spaMarkup = fixture('e2e-assignment-list');
+  await page.evaluate((markup) => {
+    const parsed = new DOMParser().parseFromString(markup, 'text/html');
+    history.pushState({}, '', '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&spa=1');
+    document.body.replaceChildren(...Array.from(parsed.body.childNodes));
+  }, spaMarkup);
+  const spaTabId = await activeTabId();
+  await panel.waitForTimeout(1_600);
+  const spaObservation = spaTabId === null ? null : await getObservation(spaTabId);
+  const spaState = await getState();
+  check(
+    'SPA navigation updates the stored observation and panel page type',
+    spaObservation?.pageType === 'assignment-list' && spaState?.result?.page?.pageType === 'assignment-list',
+    `stored ${spaObservation?.pageType}, panel ${spaState?.result?.page?.pageType}`,
+  );
+
+  const delayedPage = await context.newPage();
+  await delayedPage.goto(`${ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1`, { waitUntil: 'load' });
+  await delayedPage.bringToFront();
+  await delayedPage.waitForTimeout(2_300);
+  const delayedTabId = await activeTabId();
+  const delayedRequest = delayedTabId === null ? null : await requestExtractionForTab(delayedTabId);
+  await panel.waitForTimeout(900);
+  const delayedState = await getState();
+  const delayedTasks = (delayedState?.result?.tasks ?? []).filter(
+    // sourceUrl is canonical (query stripped), so the rows are told apart by the
+    // due dates only this fixture uses.
+    (task) => task.courseId === 'd2l:999999' && task.title === 'Example Assignment' && /^2099-0[12]-2/.test(task.due?.iso ?? ''),
+  );
+  check(
+    'delayed rendering yields one extracted task per rendered row',
+    delayedRequest?.result?.requested === true && delayedTasks.length === 2,
+    `request ${delayedRequest?.result?.requested}, tasks ${delayedTasks.length}`,
+  );
+
+  const courseTab1 = await context.newPage();
+  await courseTab1.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await courseTab1.bringToFront();
+  const courseTab1Id = await activeTabId();
+  const courseTab1Request = courseTab1Id === null ? null : await requestExtractionForTab(courseTab1Id);
+  const courseTab2 = await context.newPage();
+  await courseTab2.goto(`${ORIGIN}/d2l/home/888888?ou=888888`, { waitUntil: 'load' });
+  await courseTab2.bringToFront();
+  const courseTab2Id = await activeTabId();
+  const courseTab2Request = courseTab2Id === null ? null : await requestExtractionForTab(courseTab2Id);
+  await panel.waitForTimeout(900);
+  await courseTab1.bringToFront();
+  await panel.waitForTimeout(450);
+  const courseTab1State = await getState();
+  await courseTab2.bringToFront();
+  await panel.waitForTimeout(450);
+  const courseTab2State = await getState();
+  check(
+    'active tabs retain their own extracted course context',
+    courseTab1Request?.result?.requested === true && courseTab2Request?.result?.requested === true &&
+      courseTab1State?.result?.course?.externalId === '999999' && courseTab1State?.result?.course?.code === 'CS101' &&
+      courseTab2State?.result?.course?.externalId === '888888' && courseTab2State?.result?.course?.code === 'CS202',
+    `tab 1 ${courseTab1State?.result?.course?.externalId ?? 'none'}, tab 2 ${courseTab2State?.result?.course?.externalId ?? 'none'}`,
+  );
+
+  await courseTab1.goto(`${ORIGIN}/d2l/home`, { waitUntil: 'load' });
+  await courseTab1.bringToFront();
+  await panel.waitForTimeout(900);
+  const dashboardState = await getState();
+  check(
+    'dashboard navigation clears the active course context',
+    dashboardState?.result?.course === null,
+    `course ${dashboardState?.result?.course?.externalId ?? dashboardState?.result?.course?.name ?? 'null'}`,
+  );
+
+  const prefixPage = await context.newPage();
+  await prefixPage.goto(`${ORIGIN}/d2l/home/1234?ou=1234`, { waitUntil: 'load' });
+  await prefixPage.bringToFront();
+  const prefixShortId = await activeTabId();
+  if (prefixShortId !== null) await requestExtractionForTab(prefixShortId);
+  await panel.waitForTimeout(500);
+  await prefixPage.goto(`${ORIGIN}/d2l/home/12345?ou=12345`, { waitUntil: 'load' });
+  await prefixPage.bringToFront();
+  const prefixLongId = await activeTabId();
+  if (prefixLongId !== null) await requestExtractionForTab(prefixLongId);
+  await panel.waitForTimeout(700);
+  await prefixPage.bringToFront();
+  const prefixState = await getState();
+  const prefixCourseIds = await storedCourseExternalIds();
+  check(
+    'course IDs that are prefixes resolve to the exact stored course',
+    prefixCourseIds.includes('1234') && prefixCourseIds.includes('12345') && prefixState?.result?.course?.externalId === '12345',
+    `stored ${prefixCourseIds.join(',')}, panel ${prefixState?.result?.course?.externalId ?? 'none'}`,
+  );
+
+  const headingPage = await context.newPage();
+  await headingPage.goto(`${ORIGIN}/d2l/lp/ouHome/home?ou=999999`, { waitUntil: 'load' });
+  await headingPage.bringToFront();
+  const headingTabId = await activeTabId();
+  const headingRequest = headingTabId === null ? null : await requestExtractionForTab(headingTabId);
+  await headingPage.bringToFront();
+  await panel.waitForTimeout(700);
+  const headingState = await getState();
+  check(
+    'course home heading and title produce the course name',
+    headingRequest?.result?.requested === true && headingState?.result?.course?.name === 'CS101 Example Course' &&
+      headingState?.result?.course?.name !== 'Homepage',
+    `course ${headingState?.result?.course?.name ?? 'none'}`,
+  );
+
+  const stopServiceWorker = async () => {
+    const cdp = await context.newCDPSession(page);
+    const targets = await cdp.send('Target.getTargets');
+    const target = targets.targetInfos.find(
+      (candidate) => candidate.type === 'service_worker' && candidate.url.startsWith(`chrome-extension://${extensionId}/`),
+    );
+    if (!target) throw new Error('extension service-worker target not found');
+    await cdp.send('Target.closeTarget', { targetId: target.targetId });
+    return target.url;
+  };
+  let stoppedWorker = '';
+  try {
+    stoppedWorker = await stopServiceWorker();
+  } catch (error) {
+    stoppedWorker = error instanceof Error ? error.message : String(error);
+  }
+  await panel.waitForTimeout(300);
+  const restartedState = await getState();
+  check(
+    'service-worker restart preserves active page type and course',
+    stoppedWorker.startsWith('chrome-extension://') && restartedState?.result?.page?.pageType === 'course-home' &&
+      restartedState?.result?.course?.externalId === '999999',
+    `${stoppedWorker || 'not stopped'}; page ${restartedState?.result?.page?.pageType}, course ${restartedState?.result?.course?.externalId ?? 'none'}`,
+  );
+
+  const slowPage = await context.newPage();
+  await slowPage.goto(`${ORIGIN}/d2l/lp/ouHome/home?ou=999999&slow=1`, { waitUntil: 'load' });
+  await slowPage.bringToFront();
+  const slowTabId = await activeTabId();
+  const slowObservationTypes = [];
+  for (let sample = 0; sample < 14; sample += 1) {
+    if (slowTabId !== null) slowObservationTypes.push((await getObservation(slowTabId))?.pageType ?? null);
+    await panel.waitForTimeout(250);
+  }
+  const slowState = await getState();
+  check(
+    'a slow course page with a login redirect script is not signed out',
+    slowObservationTypes.includes('course-home') && !slowObservationTypes.includes('signed-out') &&
+      slowState?.result?.connection !== 'signed-out',
+    `observed ${slowObservationTypes.join(',')}; connection ${slowState?.result?.connection}`,
+  );
+
+  await slowPage.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+  await slowPage.bringToFront();
+  await panel.waitForTimeout(700);
+  await slowPage.evaluate(() => {
+    history.pushState({}, '', '/d2l/home/999999?ou=999999&sessionExpired=1');
+    document.body.innerHTML = '<script>window.location.replace(\'/d2l/login?sessionExpired=0\')</script>';
+  });
+  const expiryTabId = await activeTabId();
+  await panel.waitForTimeout(1_100);
+  const expiryObservation = expiryTabId === null ? null : await getObservation(expiryTabId);
+  const expiryState = await getState();
+  check(
+    'SPA session expiry surfaces signed-out state',
+    expiryObservation?.pageType === 'signed-out' && expiryState?.result?.connection === 'signed-out',
+    `stored ${expiryObservation?.pageType}, connection ${expiryState?.result?.connection}`,
+  );
+
+  await delayedPage.close();
+  await courseTab1.close();
+  await courseTab2.close();
+  await prefixPage.close();
+  await headingPage.close();
+  await slowPage.close();
 
   context.off('request', recordRequest);
   check('no request left the machine except to the synthetic LMS', offMachine.length === 0, offMachine.slice(0, 3).join(', '));

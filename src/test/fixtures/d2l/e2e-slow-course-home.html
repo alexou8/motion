@@ -1,0 +1,20 @@
+<!-- Synthetic D2L fixture: contains no real student data, identifiers, grades, cookies, or tokens. -->
+<!doctype html>
+<html>
+  <head>
+    <title>Homepage - CS101 Example Course</title>
+    <script>
+      const loginRedirect = '/d2l/login?sessionExpired=0';
+      if (false) window.location.replace(loginRedirect);
+      setTimeout(() => {
+        const main = document.createElement('main');
+        main.className = 'd2l-page-main';
+        main.innerHTML = '<h1>CS101 Example Course</h1><p>This synthetic course page finished rendering.</p>';
+        document.body.replaceChildren(main);
+      }, 2000);
+    </script>
+  </head>
+  <body>
+    <div id="loading-spinner" role="status">Loading…</div>
+  </body>
+</html>

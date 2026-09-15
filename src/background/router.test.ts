@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const ACTIVE_TAB = 3;
 import {
   checklistSchema,
+  courseSchema,
   courseTaskSchema,
   noteSchema,
   EXTRACTION_VERSION,
@@ -13,7 +14,7 @@ import {
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
-import { forgetTab, handleMessage } from './router';
+import { buildPanelState, forgetTab, handleMessage } from './router';
 
 /**
  * Exercises the worker's data handling through the same entry point the real
@@ -96,6 +97,18 @@ async function tasksRepo() {
 }
 
 describe('storing an extraction', () => {
+  async function extract(tasks: CourseTask[], course: null | undefined = null) {
+    return handleMessage({
+      type: 'extraction-result',
+      requestId: '00000000-0000-4000-8000-000000000000',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folders_list.d2l?ou=363',
+      course: course ?? null,
+      tasks,
+      content: null,
+      warnings: [],
+    });
+  }
+
   it('writes extracted tasks', async () => {
     const result = (await handleMessage({
       type: 'extraction-result',
@@ -146,6 +159,92 @@ describe('storing an extraction', () => {
 
     const stored = await repo.get('d2l:363:relational-algebra');
     expect(stored?.createdAt).toBe('2025-09-01T00:00:00.000Z');
+  });
+
+  it('reconciles one legacy row into the new id without leaving an active duplicate', async () => {
+    const repo = await tasksRepo();
+    await repo.put(task({
+      id: 'd2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101&isprv=0',
+      title: 'Relational   Algebra Worksheet',
+    }));
+
+    await extract([task({ id: 'd2l:363:title:relational algebra worksheet' })]);
+
+    expect(await repo.get('d2l:363:title:relational algebra worksheet')).toMatchObject({ archived: false });
+    expect(await repo.get('d2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101&isprv=0')).toMatchObject({ archived: true });
+    expect((await repo.all()).records.filter((record) => !record.archived)).toHaveLength(1);
+  });
+
+  it('carries corrections and creation time from a matched legacy row', async () => {
+    const repo = await tasksRepo();
+    const corrected = task({
+      id: 'd2l:javascript://legacy-quiz',
+      title: 'Student title',
+      due: { ...task().due, iso: '2025-12-20T03:59:00.000Z', confidence: 'confirmed' },
+      weight: 25,
+      status: 'graded',
+      corrections: [{
+        field: 'title',
+        originalValue: 'Relational Algebra Worksheet',
+        correctedValue: 'Student title',
+        correctedAt: '2025-09-01T00:00:00.000Z',
+      }],
+      studentEdited: true,
+      createdAt: '2025-09-01T00:00:00.000Z',
+    });
+    await repo.put(corrected);
+
+    await extract([task({
+      id: 'd2l:363:title:relational algebra worksheet',
+      title: 'Relational Algebra Worksheet',
+      due: { ...task().due, iso: '2025-10-15T03:59:00.000Z' },
+      weight: 15,
+      status: 'todo',
+    })]);
+
+    const migrated = await repo.get('d2l:363:title:relational algebra worksheet');
+    expect(migrated).toMatchObject({
+      title: 'Student title',
+      due: { iso: '2025-12-20T03:59:00.000Z', confidence: 'confirmed' },
+      weight: 25,
+      status: 'graded',
+      studentEdited: true,
+      createdAt: '2025-09-01T00:00:00.000Z',
+    });
+    expect(migrated?.corrections).toEqual(corrected.corrections);
+    expect(await repo.get('d2l:javascript://legacy-quiz')).toMatchObject({ archived: true });
+  });
+
+  it('does not guess when two legacy rows could match', async () => {
+    const repo = await tasksRepo();
+    await repo.putMany([
+      task({ id: 'd2l:title:relational algebra worksheet' }),
+      task({ id: 'd2l:javascript://another-legacy-row' }),
+    ]);
+
+    await extract([task({ id: 'd2l:363:title:relational algebra worksheet' })]);
+
+    expect(await repo.get('d2l:title:relational algebra worksheet')).toMatchObject({ archived: false });
+    expect(await repo.get('d2l:javascript://another-legacy-row')).toMatchObject({ archived: false });
+    expect(await repo.get('d2l:363:title:relational algebra worksheet')).toMatchObject({ archived: false });
+  });
+
+  it('leaves legacy rows alone for an empty restricted or no-course extraction', async () => {
+    const repo = await tasksRepo();
+    await repo.put(task({ id: 'd2l:title:relational algebra worksheet' }));
+
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=363',
+      pageType: 'quiz-attempt',
+      title: 'Quiz',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: true,
+    }, ACTIVE_TAB);
+    await extract([]);
+
+    expect(await repo.get('d2l:title:relational algebra worksheet')).toMatchObject({ archived: false });
   });
 });
 
@@ -261,6 +360,112 @@ describe('restricted pages', () => {
 });
 
 describe('panel state', () => {
+  it('returns no course for a dashboard when a stored course has no external id', async () => {
+    const db = await openDatabase();
+    const courses = new Repository(db, STORE.courses, courseSchema);
+    await courses.putMany([
+      courseSchema.parse({
+        id: 'd2l:missing-id',
+        platformId: 'd2l',
+        name: 'Course without external id',
+        lastVerifiedAt: NOW,
+        archived: false,
+      }),
+      courseSchema.parse({
+        id: 'd2l:1234',
+        platformId: 'd2l',
+        name: 'Course 1234',
+        externalId: '1234',
+        lastVerifiedAt: NOW,
+        archived: false,
+      }),
+    ]);
+
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home',
+      pageType: 'dashboard',
+      title: 'Dashboard',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    }, ACTIVE_TAB);
+
+    const state = (await handleMessage({ type: 'get-state' })) as { course: unknown };
+    expect(state.course).toBeNull();
+  });
+
+  it('does not claim a stored course on a dashboard or another course URL', async () => {
+    const db = await openDatabase();
+    const courses = new Repository(db, STORE.courses, courseSchema);
+    const course = (id: string) => courseSchema.parse({
+      id: `d2l:${id}`,
+      platformId: 'd2l',
+      name: `Course ${id}`,
+      externalId: id,
+      lastVerifiedAt: NOW,
+      archived: false,
+    });
+    await courses.putMany([course('1234'), course('5678')]);
+
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home',
+      pageType: 'dashboard',
+      title: 'Dashboard',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    }, ACTIVE_TAB);
+    expect((await buildPanelState()).course).toBeNull();
+
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home/12345',
+      pageType: 'course-home',
+      title: 'Other course',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    }, ACTIVE_TAB);
+    expect((await buildPanelState()).course).toBeNull();
+
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/1?ou=1234',
+      pageType: 'quiz-attempt',
+      title: 'Quiz attempt',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: true,
+    }, ACTIVE_TAB);
+    expect((await buildPanelState()).course).toBeNull();
+  });
+
+  it('matches the course id as a whole URL token', async () => {
+    const db = await openDatabase();
+    const courses = new Repository(db, STORE.courses, courseSchema);
+    await courses.put(courseSchema.parse({
+      id: 'd2l:1234',
+      platformId: 'd2l',
+      name: 'Course 1234',
+      externalId: '1234',
+      lastVerifiedAt: NOW,
+      archived: false,
+    }));
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/home/1234?ou=1234',
+      pageType: 'course-home',
+      title: 'Course 1234',
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    }, ACTIVE_TAB);
+
+    expect((await buildPanelState()).course?.id).toBe('d2l:1234');
+  });
+
   it('sorts dated work first and undated work last', async () => {
     const repo = await tasksRepo();
     await repo.putMany([
@@ -364,6 +569,29 @@ describe('building a checklist from assignment instructions', () => {
   function stubContentScript(response: unknown) {
     (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => response);
   }
+
+  it('uses the content URL when the observation belongs to a different course', async () => {
+    const db = await openDatabase();
+    const courses = new Repository(db, STORE.courses, courseSchema);
+    await courses.putMany([
+      courseSchema.parse({ id: 'd2l:9999', platformId: 'd2l', name: 'Course 9999', externalId: '9999', lastVerifiedAt: NOW, archived: false }),
+      courseSchema.parse({ id: 'd2l:363', platformId: 'd2l', name: 'Course 363', externalId: '363', lastVerifiedAt: NOW, archived: false }),
+    ]);
+    await handleMessage({
+      type: 'page-observed',
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=9999&db=101',
+      pageType: 'assignment',
+      title: CONTENT.title,
+      detectionConfidence: 'high',
+      warnings: [],
+      restricted: false,
+    }, 7);
+    stubContentScript({ content: CONTENT });
+
+    const result = (await handleMessage({ type: 'build-checklist', tabId: 7, taskId: null })) as { checklistId: string };
+    const checklists = new Repository(db, STORE.checklists, checklistSchema);
+    expect((await checklists.get(result.checklistId))?.courseId).toBe('d2l:363');
+  });
 
   it('creates a checklist whose every item traces back to the instructions', async () => {
     stubContentScript({ content: CONTENT });

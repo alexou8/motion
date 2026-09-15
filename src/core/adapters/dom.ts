@@ -56,7 +56,7 @@ export function absoluteUrl(href: string, baseUrl: string): string | null {
 export function courseIdFromUrl(url: string): string | null {
   try {
     const path = new URL(url).pathname;
-    const match = path.match(/\/d2l\/(?:home|le\/content|le)\/(\d+)/i);
+    const match = path.match(/\/d2l\/(?:home|le\/content|le\/calendar|le)\/(\d+)(?:\/|$)/i);
     return match?.[1] ?? null;
   } catch {
     return null;

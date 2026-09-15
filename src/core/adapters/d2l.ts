@@ -37,6 +37,7 @@ const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
   { pattern: /^\/d2l\/le\/content\/[^/]+\/viewContent\//i, pageType: 'content-topic' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/navigateContent\//i, pageType: 'content-topic' },
   { pattern: /^\/d2l\/le\/news(?:\/|$)/i, pageType: 'announcements' },
+  { pattern: /^\/d2l\/lms\/news\/main(?:\.d2l)?\/?$/i, pageType: 'announcements' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?\/?$/i, pageType: 'assignment-list' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_submit_files(?:\/|\.|$)/i, pageType: 'assignment' },
   // Opening a submitted assignment for feedback lands here, not on the submit page.
@@ -71,12 +72,14 @@ function looksSignedOut(document: Document): boolean {
   // never a page to read coursework from, whatever its URL claims.
   if (body.querySelector('input[type="password" i]')) return true;
 
-  if (normalizedText(body)) return false;
+  const visibleBody = body.cloneNode(true) as Element;
+  for (const element of visibleBody.querySelectorAll('script, noscript, template, style')) element.remove();
+  if (normalizedText(visibleBody)) return false;
   // A page that has rendered nothing *yet* still has its elements: D2L ships
   // session-expiry redirect scripts on ordinary pages, so the script alone
   // proves nothing. The stub has no body content at all.
   const hasContentElements = Array.from(body.children).some(
-    (child) => !['SCRIPT', 'NOSCRIPT', 'TEMPLATE'].includes(child.tagName),
+    (child) => !['SCRIPT', 'NOSCRIPT', 'TEMPLATE', 'STYLE'].includes(child.tagName),
   );
   if (hasContentElements) return false;
   const scripts = Array.from(document.querySelectorAll('head script, body script'))
@@ -161,6 +164,7 @@ function isSecondaryHref(href: string | null): boolean {
  */
 const TASK_NAME_SELECTORS = [
   '.d2l-foldername-medium-font',
+  '.d_ich',
   '.d2l-linkheading-link',
   '.d2l-le-listitem-name',
 ] as const;
@@ -214,6 +218,19 @@ type TaskCandidate = {
   readonly strategy: string;
 };
 
+const TASK_ID_QUERY_ALIASES = new Map<string, string>([
+  ['ou', 'ou'],
+  ['orgunitid', 'ou'],
+  ['db', 'db'],
+  ['qi', 'qi'],
+  ['tid', 'topicId'],
+  ['topic', 'topicId'],
+  ['topicid', 'topicId'],
+  ['fid', 'forumId'],
+  ['forum', 'forumId'],
+  ['forumid', 'forumId'],
+]);
+
 const TASK_ROUTE_PATTERNS: readonly { pattern: RegExp; route: RouteTask }[] = [
   {
     pattern: /\/d2l\/lms\/dropbox\/user\/(?:folder_submit_files|folder_user_view_src)(?:\.d2l)?(?:[/?]|$)/i,
@@ -239,6 +256,50 @@ function pathnameOf(url: string): string | null {
   } catch {
     return null;
   }
+}
+
+function safeTaskHref(rawHref: string, baseUrl: string): string | null {
+  const href = rawHref.trim();
+  if (!href || href.startsWith('#')) return null;
+  const absolute = absoluteUrl(href, baseUrl);
+  if (!absolute) return null;
+  try {
+    const parsed = new URL(absolute);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function canonicalTaskIdentity(href: string, courseId: string): string | null {
+  try {
+    const parsed = new URL(href);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    const params = Array.from(parsed.searchParams.entries())
+      .flatMap(([key, value]) => {
+        const canonicalKey = TASK_ID_QUERY_ALIASES.get(key.toLowerCase());
+        return canonicalKey && value.trim() ? [[canonicalKey, value.trim()] as const] : [];
+      })
+      .sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue));
+    if (!params.some(([key]) => key === 'ou')) params.push(['ou', courseId]);
+    params.sort(([leftKey, leftValue], [rightKey, rightValue]) => leftKey.localeCompare(rightKey) || leftValue.localeCompare(rightValue));
+    const search = params.length > 0
+      ? `?${params.map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&')}`
+      : '';
+    return `${parsed.origin}${parsed.pathname}${search}`;
+  } catch {
+    return null;
+  }
+}
+
+function quizIdFromAnchor(anchor: HTMLAnchorElement): string | null {
+  const handler = anchor.getAttribute('onclick') ?? '';
+  return handler.match(/\bGoToQuiz\s*\(\s*(\d+)\b/i)?.[1] ?? null;
+}
+
+function quizRouteForAnchor(anchor: HTMLAnchorElement, input: AdapterInput, pageType: PageType): RouteTask | null {
+  if (pageType !== 'quiz-list' || safeTaskHref(anchor.getAttribute('href') ?? '', input.url)) return null;
+  return quizIdFromAnchor(anchor) ? { kind: 'quiz', strategy: 'quiz-list GoToQuiz id' } : null;
 }
 
 function queryValue(url: string, names: readonly string[]): string | null {
@@ -267,20 +328,23 @@ function pageTitle(document: Document): string {
 const COURSE_CODE_PATTERN = /\b[A-Za-z]{2,}[A-Za-z0-9-]*\d[A-Za-z0-9-]*\b/;
 
 /**
- * The document title's segments, with the page's own heading removed.
+ * The document title's segments, with the page's own segment removed.
  *
  * D2L titles a page "<what this page is> - <course code> - <course name>", so
- * the first segment names the page, not the course. Dropping the segment that
- * repeats the visible heading is what stops a course being renamed "Grades" or
- * "Dropbox Folders" by whichever page the student happened to open.
+ * the first segment names the page, not the course. Some course-home pages use
+ * the course name as their heading, which means the heading match is not the
+ * page segment and cannot be used as the removal rule.
  */
 function titleSegments(document: Document): string[] {
   const heading = normalizedText(firstMatch(document, ['.d2l-page-title', 'h1'])).toLowerCase();
-  return document.title
+  const segments = document.title
     .split(/\s+-\s+|\s+\|\s+/)
     .map((part) => part.trim())
-    .filter(Boolean)
-    .filter((part) => part.toLowerCase() !== heading);
+    .filter(Boolean);
+  const headingIndex = segments.findIndex((part) => part.toLowerCase() === heading);
+  return headingIndex > 0
+    ? segments.slice(1)
+    : segments.filter((part) => part.toLowerCase() !== heading);
 }
 
 /**
@@ -330,31 +394,35 @@ function meaningfulAncestor(element: Element): Element {
   return element.closest('tr, li, .d2l-datalist-item, .d2l-le-listitem, [role="listitem"]') ?? element.parentElement ?? element;
 }
 
-function routeAnchorCandidate(anchor: HTMLAnchorElement, input: AdapterInput): TaskCandidate | null {
+function routeAnchorCandidate(anchor: HTMLAnchorElement, input: AdapterInput, pageType: PageType): TaskCandidate | null {
   const raw = anchor.getAttribute('href') ?? '';
   // A secondary link points at the same work as the row's own link. Letting it
   // start a candidate is what produced the duplicate "Unread for topic ..." task.
   if (isSecondaryHref(raw)) return null;
-  const href = absoluteUrl(raw, input.url);
-  if (!href || isSecondaryHref(href)) return null;
-  const route = pageTypeFromTaskHref(href);
-  if (!route) return null;
-  return { row: meaningfulAncestor(anchor), anchor, href, route, strategy: route.strategy };
-}
-
-function rowCandidate(row: Element, input: AdapterInput, strategy: string): TaskCandidate {
-  const anchor = primaryAnchor(row);
-  const href = anchor ? absoluteUrl(anchor.getAttribute('href') ?? '', input.url) : null;
+  const href = safeTaskHref(raw, input.url);
+  const quizRoute = quizRouteForAnchor(anchor, input, pageType);
+  if (!href && !quizRoute) return null;
+  if (href && isSecondaryHref(href)) return null;
   const route = href ? pageTypeFromTaskHref(href) : null;
-  return { row, anchor, href, route, strategy };
+  if (!route && !quizRoute) return null;
+  const resolvedRoute = route ?? quizRoute;
+  return { row: meaningfulAncestor(anchor), anchor, href, route: resolvedRoute, strategy: resolvedRoute?.strategy ?? 'route link' };
 }
 
-function documentedCandidate(element: Element, input: AdapterInput): TaskCandidate {
-  return rowCandidate(meaningfulAncestor(element), input, 'documented D2L class convention');
+function rowCandidate(row: Element, input: AdapterInput, pageType: PageType, strategy: string): TaskCandidate {
+  const anchor = primaryAnchor(row);
+  const href = anchor ? safeTaskHref(anchor.getAttribute('href') ?? '', input.url) : null;
+  const route = href ? pageTypeFromTaskHref(href) : null;
+  const quizRoute = anchor ? quizRouteForAnchor(anchor, input, pageType) : null;
+  return { row, anchor, href, route: route ?? quizRoute, strategy: route?.strategy ?? quizRoute?.strategy ?? strategy };
 }
 
-function semanticCandidate(element: Element, input: AdapterInput): TaskCandidate {
-  return rowCandidate(element, input, 'semantic table row');
+function documentedCandidate(element: Element, input: AdapterInput, pageType: PageType): TaskCandidate {
+  return rowCandidate(meaningfulAncestor(element), input, pageType, 'documented D2L class convention');
+}
+
+function semanticCandidate(element: Element, input: AdapterInput, pageType: PageType): TaskCandidate {
+  return rowCandidate(element, input, pageType, 'semantic table row');
 }
 
 function isCoursework(candidate: TaskCandidate): boolean {
@@ -382,7 +450,7 @@ function isBetterCandidate(next: TaskCandidate, current: TaskCandidate): boolean
  * row, and treating each as its own candidate produced a second task per
  * discussion topic and titled closed assignments after their submission count.
  */
-function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[] {
+function taskCandidates(document: Document, input: AdapterInput, pageType: PageType): TaskCandidate[] {
   const byRow = new Map<Element, TaskCandidate>();
   const consider = (candidate: TaskCandidate | null): void => {
     if (!candidate) return;
@@ -391,10 +459,10 @@ function taskCandidates(document: Document, input: AdapterInput): TaskCandidate[
   };
 
   for (const anchor of document.querySelectorAll<HTMLAnchorElement>('a[href]')) {
-    consider(routeAnchorCandidate(anchor, input));
+    consider(routeAnchorCandidate(anchor, input, pageType));
   }
-  for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) consider(documentedCandidate(element, input));
-  for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) consider(semanticCandidate(element, input));
+  for (const element of allMatches(document, DOCUMENTED_ROW_SELECTORS)) consider(documentedCandidate(element, input, pageType));
+  for (const element of allMatches(document, SEMANTIC_ROW_SELECTORS)) consider(semanticCandidate(element, input, pageType));
 
   // Report rows in the order the page lists them. The passes above run
   // route-first, which would otherwise hand back a page's work in an order that
@@ -434,11 +502,32 @@ function taskTitle(candidate: TaskCandidate): string {
 }
 
 function dueText(element: Element): string {
+  const datesText = element.querySelector('.d2l-dates-text, .d2l-folderdates-wrapper');
+  const dateRows = datesText?.matches('.d2l-folderdates-wrapper')
+    ? Array.from(datesText.querySelectorAll('.d2l-folderdate-wrapper-row')).map(normalizedText).filter(Boolean).join(' ')
+    : '';
+  const rowText = Array.from(element.children).map(normalizedText).filter(Boolean).join(' ') || normalizedText(element);
+  const dueMarkers = Array.from(rowText.matchAll(/\b(?:due(?:\s+on)?|submit by)\b/gi));
+  const lastDueMarker = dueMarkers.at(-1);
+  if (lastDueMarker?.index !== undefined) {
+    const dueTail = rowText.slice(lastDueMarker.index);
+    const availabilityIndex = dueTail.search(/(?:available|starts?|availability|ends?|closes?)\b/i);
+    return (availabilityIndex >= 0 ? dueTail.slice(0, availabilityIndex) : dueTail).trim();
+  }
+
+  const text = datesText
+    ? dateRows || normalizedText(datesText)
+    : rowText;
+  const availabilityEnd = text.match(/\b(?:available(?:[^.;|]{0,80})?\s+until|availability ends|ends|closes)\b[^.;|]{0,80}?(?=\s+(?:available|starts?|availability|ends?|closes?)\b|[.;|]|$)/i);
+  if (availabilityEnd?.[0]) {
+    const raw = availabilityEnd[0].trim();
+    const untilIndex = raw.toLowerCase().indexOf('until');
+    return untilIndex > 'available'.length ? `Available until ${raw.slice(untilIndex + 'until'.length).trim()}` : raw;
+  }
   const time = element.querySelector('time[datetime]');
-  if (time) return time.getAttribute('datetime')?.trim() ?? '';
-  const datesText = element.querySelector('.d2l-dates-text');
-  if (datesText) return normalizedText(datesText);
-  return element.textContent?.match(/(?:due|available until|ends|closes|submit by)\b[^.;|]{0,60}/i)?.[0].trim() ?? '';
+  const hasAvailabilityStart = /\b(?:available|availability|starts?)\b/i.test(text);
+  if (time && !hasAvailabilityStart) return time.getAttribute('datetime')?.trim() ?? '';
+  return '';
 }
 
 function statusFor(element: Element): TaskStatus {
@@ -449,8 +538,8 @@ function statusFor(element: Element): TaskStatus {
   return 'todo';
 }
 
-function courseExternalId(input: AdapterInput): string | null {
-  return queryValue(input.url, ['ou', 'orgUnitId']) ?? courseIdFromUrl(input.url);
+function courseExternalId(url: string): string | null {
+  return queryValue(url, ['ou', 'orgUnitId']) ?? courseIdFromUrl(url);
 }
 
 function courseIdForTask(candidate: TaskCandidate, courseId: string | null): string | null {
@@ -463,7 +552,13 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
   const title = taskTitle(candidate);
   const resolvedCourseId = courseIdForTask(candidate, courseId);
   const dueRaw = dueText(candidate.row);
-  const due = parseDueDate(dueRaw, input.now, input.timeZone);
+  const parsedDue = parseDueDate(dueRaw, input.now, input.timeZone);
+  // Brightspace uses the same date wrapper for an availability window. An end
+  // is useful as a review hint, but it is not the assignment's due date unless
+  // the row explicitly says due/submit by.
+  const due = /\b(?:due(?:\s+on)?|submit by)\b/i.test(dueRaw)
+    ? parsedDue
+    : { ...parsedDue, confidence: 'low' as const };
   // A content route names reading material — a slide deck, a handout — which is
   // something to open, not something due. Listing a module's files as undated
   // deadlines buried the real ones, so a content row has to state a date of its
@@ -474,7 +569,13 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
 
   const capturedAt = input.now.toISOString();
   const normalizedTitle = title.toLowerCase().replace(/\s+/g, ' ').trim();
-  const id = candidate.href ? `d2l:${candidate.href}` : `d2l:title:${normalizedTitle}`;
+  const taskCourseId = resolvedCourseId.replace(/^d2l:/, '');
+  const quizId = candidate.anchor && pageType === 'quiz-list' ? quizIdFromAnchor(candidate.anchor) : null;
+  const id = quizId
+    ? `d2l:${taskCourseId}:quiz:${quizId}`
+    : candidate.href
+      ? `d2l:${canonicalTaskIdentity(candidate.href, taskCourseId) ?? `${taskCourseId}:title:${normalizedTitle}`}`
+      : `d2l:${taskCourseId}:title:${normalizedTitle}`;
   return {
     id,
     courseId: resolvedCourseId,
@@ -537,6 +638,19 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     return ROUTES.find((candidate) => candidate.pattern.test(pathname))?.pageType ?? null;
   }
 
+  courseIdForUrl(url: string): string | null {
+    if (!this.matchesHost(url)) return null;
+    return courseExternalId(url);
+  }
+
+  isLegacyTaskId(id: string, courseId: string): boolean {
+    if (/^d2l:(?:title:|javascript:\/\/)/i.test(id)) return true;
+    if (!/^d2l:https?:\/\//i.test(id)) return false;
+    const href = id.slice('d2l:'.length);
+    const canonical = canonicalTaskIdentity(href, courseId.replace(/^d2l:/, ''));
+    return canonical === null || `d2l:${canonical}` !== id;
+  }
+
   detectPage(input: AdapterInput): PageDetection | null {
     if (!this.matchesHost(input.url)) return null;
     const pathname = pathnameOf(input.url);
@@ -568,7 +682,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   extractCourse(input: AdapterInput): Course | null {
     // A sign-in stub carries the course URL but none of the course.
     if (this.detectPage(input)?.pageType === 'signed-out') return null;
-    const externalId = courseExternalId(input);
+    const externalId = courseExternalId(input.url);
     const { name, code } = courseIdentity(input.document);
     if (!externalId || !name) return null;
     const capturedAt = input.now.toISOString();
@@ -593,27 +707,20 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       pageType === 'unsupported' ||
       pageType === 'signed-out' ||
       pageType === 'dashboard' ||
+      pageType === 'announcements' ||
       pageType === 'grades' ||
       pageType === 'calendar'
     )
       return [];
 
-    const externalCourseId = courseExternalId(input);
+    const externalCourseId = courseExternalId(input.url);
     const tasks: CourseTask[] = [];
-    const seenHrefs = new Set<string>();
-    const seenTitles = new Set<string>();
-    for (const candidate of taskCandidates(input.document, input)) {
+    const seenTaskIds = new Set<string>();
+    for (const candidate of taskCandidates(input.document, input, pageType)) {
       const task = makeTask(candidate, input, pageType, externalCourseId);
       if (!task) continue;
-      const href = candidate.href;
-      const normalizedTitle = task.title.toLowerCase().replace(/\s+/g, ' ').trim();
-      if (href) {
-        if (seenHrefs.has(href)) continue;
-        seenHrefs.add(href);
-      } else {
-        if (seenTitles.has(normalizedTitle)) continue;
-        seenTitles.add(normalizedTitle);
-      }
+      if (seenTaskIds.has(task.id)) continue;
+      seenTaskIds.add(task.id);
       tasks.push(task);
     }
     return tasks;
