@@ -57,11 +57,11 @@ export class Repository<S extends z.ZodTypeAny> {
   }
 
   /** Validates before writing, so a bug cannot persist an invalid shape. */
-  async put(value: z.infer<S>): Promise<void> {
+  async put(value: z.input<S>): Promise<void> {
     await putRecord(this.db, this.store, this.schema.parse(value));
   }
 
-  async putMany(values: z.infer<S>[]): Promise<void> {
+  async putMany(values: z.input<S>[]): Promise<void> {
     await putAll(
       this.db,
       this.store,

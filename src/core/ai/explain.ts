@@ -4,7 +4,7 @@
  * that translates status into language they can act on.
  */
 
-import type { ProviderAvailability, ProviderId } from './types';
+import type { ProviderAvailability, ProviderErrorKind, ProviderId } from './types';
 
 const DISPLAY_NAMES: Record<ProviderId, string> = {
   'chrome-local': 'Chrome’s on-device model',
@@ -46,4 +46,13 @@ export function explainProviderStatus(providerId: ProviderId, availability: Prov
     case 'model-unavailable':
       return `The selected ${name} model is no longer available. Motion will use its recommended model instead.`;
   }
+}
+
+/** Explains an error whose result may have been processed by a provider. */
+export function explainProviderError(providerId: ProviderId, kind: ProviderErrorKind, fallbackMessage = ''): string {
+  if (kind === 'outcome-unknown') {
+    return `Motion lost contact with ${DISPLAY_NAMES[providerId]}; the request may have been processed and charged. Retry?`;
+  }
+  if (kind === 'cancelled' || kind === 'bad-response') return fallbackMessage;
+  return explainProviderStatus(providerId, { status: kind, message: fallbackMessage });
 }

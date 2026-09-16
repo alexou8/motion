@@ -101,6 +101,71 @@ describe('requestWithRetry', () => {
     controller.abort();
     await expect(pending).rejects.toMatchObject({ cancelled: true });
   });
+
+  it('does not retry a chargeable POST after a network failure', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('connection lost after send');
+    }) as unknown as FetchLike;
+
+    await expect(
+      requestWithRetry({
+        url: 'https://api.openai.com/v1/responses',
+        init: { method: 'POST', body: '{}' },
+        fetchImpl,
+      }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry an ambiguous chargeable POST response', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({}, { status: 500 })) as unknown as FetchLike;
+
+    const response = await requestWithRetry({
+      url: 'https://api.openai.com/v1/responses',
+      init: { method: 'POST', body: '{}' },
+      fetchImpl,
+    });
+
+    expect(response.status).toBe(500);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([503, 529])('retries an explicitly overloadable POST status (%i) only within the bound', async (status) => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      return jsonResponse({}, { status, headers: { 'retry-after': '0' } });
+    }) as unknown as FetchLike;
+
+    const response = await requestWithRetry({
+      url: 'https://api.openai.com/v1/responses',
+      init: { method: 'POST', body: '{}' },
+      fetchImpl,
+      maxRetries: 2,
+    });
+
+    expect(response.status).toBe(status);
+    expect(calls).toBe(3);
+  });
+
+  it('keeps the timeout active while a response body is stalled', async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 })) as unknown as FetchLike;
+    const pending = requestWithRetry({
+      url: 'https://api.openai.com/v1/responses',
+      init: { method: 'POST', body: '{}' },
+      fetchImpl,
+      timeoutMs: 1_000,
+    });
+    const response = await pending;
+    const bodyRead = response.text().then(
+      () => null,
+      (error) => error,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(bodyRead).resolves.toMatchObject({ outcomeUnknown: true });
+    vi.useRealTimers();
+  });
 });
 
 describe('classifyHttpError', () => {

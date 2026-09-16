@@ -21,3 +21,7 @@ No chain-of-thought is persisted. A `pendingModelRequest` is persisted before
 a provider request; recovery marks it blocked/retryable and does not resend it,
 because a paid request may already have happened.
 
+Provider POST failures after a request may have been sent are recorded as
+`outcome-unknown`; Motion does not retry them automatically. The student must
+explicitly choose whether to retry after seeing that the request may already
+have been processed and charged.

@@ -27,10 +27,11 @@ sections in a draft, suggesting an outline, comparing a draft against a rubric,
 checking citations and formatting, explaining an error in code or a
 calculation, and generating practice questions before an assessment.
 
-Motion may prepare work and perform permitted typed browser actions, but the
-consequence policy requires fresh confirmation for consequential actions. It
-never acts inside a graded/timed/proctored attempt, submits assessed work, or
-modifies remote course data. The boundary is enforced in `src/core/policy`.
+Motion may prepare work and perform permitted typed browser actions. Submission,
+posting, uploading, sending and other consequential actions require a fresh,
+target-bound, single-use confirmation each time. Motion never acts inside a
+graded, timed or proctored attempt; the boundary is enforced in
+`src/core/policy`.
 
 ## MVP scope
 
@@ -46,8 +47,9 @@ modifies remote course data. The boundary is enforced in `src/core/policy`.
 10. Clear restricted behaviour on graded assessments
 11. AgentSession workspaces with provider selection and resumable model turns
 
-Excluded: multi-LMS coverage, autonomous quiz answering, assignment submission,
-discussion posting, general web automation, accounts, sync, any backend.
+Excluded: multi-LMS coverage, autonomous quiz answering, unconfirmed assignment
+submission or discussion posting, general web automation, accounts, sync, any
+backend.
 
 ## Acceptance criteria
 
@@ -116,9 +118,10 @@ discussion posting, general web automation, accounts, sync, any backend.
 
 ### A10 — Privacy
 - Local mode uses the selected on-device provider when available. BYOK cloud
-  mode requires disclosure acceptance and sends the goal/message, trusted
-  session state and bounded relevant excerpts to the selected provider only,
-  during the model turn.
+  mode requires disclosure acceptance and sends the student's message, session
+  plan/state labels, relevant notes and bounded page excerpts to the selected
+  provider only, during the model turn. Excerpts are capped at 8,000 characters
+  per source and 24,000 characters per request, with excluded sources omitted.
 - Keys live only in session storage; IndexedDB, telemetry and Motion servers
   receive none. Local data can be deleted in full.
 

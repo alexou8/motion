@@ -8,6 +8,8 @@ import {
 import type { StepPlan } from '../workflows/types';
 import { actionForTool, type ToolCall } from './tools';
 import type { RefTables } from './refs';
+import { resolveCourseNav } from '../adapters';
+import { validateDestination, type DestinationProvenance } from './destination';
 
 /**
  * Resolves a model tool call to a concrete, policy-checked step (VISION §8,
@@ -34,6 +36,8 @@ export interface GuardContext {
   lmsOrigins: readonly string[];
   /** This turn's sequence number, for stable step ids `t<turnSeq>-<index>`. */
   turnSeq: number;
+  /** Session task, used only to resolve semantic assignment actions. */
+  activeTaskId?: string | null;
 }
 
 export type GuardResult =
@@ -57,14 +61,36 @@ const ALLOWED_IN_RESTRICTED_TAB: ReadonlySet<ActionType> = new Set<ActionType>([
   'focus-element',
 ]);
 
-function isHttpsSameOrigin(url: string, lmsOrigins: readonly string[]): boolean {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== 'https:') return false;
-    return lmsOrigins.includes(parsed.origin);
-  } catch {
-    return false;
+function destination(
+  url: string,
+  ctx: GuardContext,
+  provenance: DestinationProvenance,
+): { ok: true } | { ok: false; reason: string } {
+  return validateDestination(url, ctx.lmsOrigins, provenance);
+}
+
+function resourceUrls(refs: RefTables, taskId: string | undefined, kinds: readonly string[]): string[] {
+  const urls = new Set<string>();
+  if (taskId && kinds.includes('has-instructions')) {
+    const taskUrl = refs.taskByRef.get(taskId)?.provenance.sourceUrl;
+    if (taskUrl) urls.add(taskUrl);
   }
+  for (const link of refs.linkByRef.values()) {
+    if (taskId && link.taskId !== taskId && link.from.id !== taskId) continue;
+    if (!kinds.includes(link.relation) || link.userOverride?.state === 'rejected') continue;
+    if (link.to.url) urls.add(link.to.url);
+  }
+  return [...urls];
+}
+
+function sourceUrl(refs: RefTables, kind: 'instructions' | 'rubric'): string | undefined {
+  return [...refs.sourceByRef.values()].find((source) => source.kind === kind)?.url;
+}
+
+function courseNavSource(refs: RefTables): string | undefined {
+  return refs.tabByRef.values().next().value?.url
+    ?? refs.sourceByRef.values().next().value?.url
+    ?? refs.linkByRef.values().next().value?.provenance.sourceUrl;
 }
 
 function friendlyTitle(call: ToolCall): string {
@@ -133,25 +159,36 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
 
   switch (call.tool) {
     case 'open_assignment_resources': {
-      let taskId: string | undefined;
+      let taskId: string | undefined = ctx.activeTaskId ?? undefined;
       if (call.taskRef) {
         const task = refs.resolveTask(call.taskRef);
         if (!task) return { kind: 'rejected', reason: `unknown taskRef "${call.taskRef}"` };
         taskId = task.id;
       }
+      const urls = resourceUrls(refs, taskId, ['has-instructions', 'has-rubric', 'has-reading', 'has-module']);
+      const safeUrls = urls.filter((url) => destination(url, ctx, 'observed-link').ok);
+      if (safeUrls.length === 0)
+        return { kind: 'rejected', reason: 'no safe observed instruction, rubric, or reading links are available for this assignment' };
       const action = actionForTool(call.tool);
       return {
         kind: 'ok',
-        step: { id, title, action, input: { taskId } },
+        step: { id, title, action, input: { urls: safeUrls, destinationProvenance: 'observed-link' } },
         decision: decide(action, ctx, false),
       };
     }
 
     case 'open_course_page': {
+      const currentUrl = courseNavSource(refs);
+      if (!currentUrl) return { kind: 'rejected', reason: 'no observed course page is available to resolve this destination' };
+      const nav = resolveCourseNav(currentUrl, { links: [] });
+      const url = nav?.[`${call.page}Url` as keyof typeof nav];
+      if (!url) return { kind: 'rejected', reason: 'Motion could not resolve that course page' };
+      const checked = destination(url, ctx, 'd2l-route');
+      if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       const action = actionForTool(call.tool);
       return {
         kind: 'ok',
-        step: { id, title, action, input: { page: call.page } },
+        step: { id, title, action, input: { url, destinationProvenance: 'd2l-route' } },
         decision: decide(action, ctx, false),
       };
     }
@@ -161,13 +198,12 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
       if (!link) return { kind: 'rejected', reason: `unknown linkRef "${call.linkRef}"` };
       const url = link.to.url;
       if (!url) return { kind: 'rejected', reason: 'link has no resolvable URL' };
-      if (!isHttpsSameOrigin(url, ctx.lmsOrigins)) {
-        return { kind: 'rejected', reason: 'link resolves to a non-https or cross-origin URL' };
-      }
+      const checked = destination(url, ctx, 'observed-link');
+      if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       const action = actionForTool(call.tool);
       return {
         kind: 'ok',
-        step: { id, title, action, input: { url } },
+        step: { id, title, action, input: { url, destinationProvenance: 'observed-link' } },
         decision: decide(action, ctx, false),
       };
     }
@@ -192,28 +228,51 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
         tabId = tab.tabId;
       }
       const action = actionForTool(call.tool);
+      const url = tabId === undefined
+        ? resourceUrls(refs, ctx.activeTaskId ?? undefined, ['has-instructions'])[0] ?? sourceUrl(refs, 'instructions')
+        : undefined;
+      if (url) {
+        const checked = destination(url, ctx, 'observed-link');
+        if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
+      }
+      if (tabId === undefined && !url)
+        return { kind: 'rejected', reason: 'no observed assignment instructions are available to read' };
       return {
         kind: 'ok',
-        step: { id, title, action, input: { tabId } },
+        step: { id, title, action, input: tabId === undefined ? { url, destinationProvenance: 'observed-link' } : { tabId } },
         decision: decide(action, ctx, call.tabRef ? restrictedFor(call.tabRef) : false),
       };
     }
 
     case 'read_rubric': {
-      let url: string | undefined;
+      let url: string | undefined = sourceUrl(refs, 'rubric');
       if (call.linkRef) {
         const link = refs.resolveLink(call.linkRef);
         if (!link) return { kind: 'rejected', reason: `unknown linkRef "${call.linkRef}"` };
         url = link.to.url;
-        if (url && !isHttpsSameOrigin(url, ctx.lmsOrigins)) {
-          return { kind: 'rejected', reason: 'link resolves to a non-https or cross-origin URL' };
-        }
       }
+      if (!url) url = resourceUrls(refs, undefined, ['has-rubric'])[0];
+      if (!url) return { kind: 'rejected', reason: 'no observed rubric is available to read' };
+      const checked = destination(url, ctx, 'observed-link');
+      if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       const action = actionForTool(call.tool);
-      return { kind: 'ok', step: { id, title, action, input: { url } }, decision: decide(action, ctx, false) };
+      return { kind: 'ok', step: { id, title, action, input: { url, destinationProvenance: 'observed-link' } }, decision: decide(action, ctx, false) };
     }
 
-    case 'build_checklist':
+    case 'build_checklist': {
+      const action = actionForTool(call.tool);
+      const url = resourceUrls(refs, ctx.activeTaskId ?? undefined, ['has-instructions'])[0] ?? sourceUrl(refs, 'instructions');
+      if (url) {
+        const checked = destination(url, ctx, 'observed-link');
+        if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
+      }
+      return {
+        kind: 'ok',
+        step: { id, title, action, input: url ? { url, destinationProvenance: 'observed-link' } : {} },
+        decision: decide(action, ctx, false),
+      };
+    }
+
     case 'summarize_sources': {
       const action = actionForTool(call.tool);
       return { kind: 'ok', step: { id, title, action, input: {} }, decision: decide(action, ctx, false) };

@@ -1,6 +1,6 @@
 import { appendActivity, releaseTab, type AgentSession } from '@/core/session';
 import { openDatabase } from '@/core/storage/db';
-import { sessionRepository } from '@/core/storage/repositories';
+import { sessionRepository, updateSession } from '@/core/storage/repositories';
 import { ChromeTabs, NAVIGATION_MARKERS_KEY, type LiveTab, type TabsCapability } from '@/platform/tabs';
 
 const TAB_GROUP_ID_NONE = -1;
@@ -17,15 +17,19 @@ async function sessions(): Promise<{ db: IDBDatabase; records: AgentSession[] }>
 
 async function persistChanged(
   db: IDBDatabase,
-  changed: AgentSession[],
+  ids: string[],
+  mutate: (session: AgentSession) => AgentSession | null,
 ): Promise<void> {
-  const repository = sessionRepository(db);
-  for (const session of changed) await repository.put(session);
+  for (const id of ids) await updateSession(db, id, (session) => mutate(session));
   db.close();
 }
 
 function isTracked(session: AgentSession, tabId: number): boolean {
   return session.workspace.ownedTabIds.includes(tabId) || session.workspace.adoptedTabIds.includes(tabId);
+}
+
+function isTerminal(session: AgentSession): boolean {
+  return session.status === 'completed' || session.status === 'archived';
 }
 
 function isOutOfGroup(session: AgentSession, tab: chrome.tabs.Tab, changeInfo: chrome.tabs.TabChangeInfo): boolean {
@@ -72,10 +76,11 @@ function convertOwnedToAdopted(session: AgentSession, tabId: number, timestamp: 
 export async function onTabRemoved(tabId: number): Promise<void> {
   const { db, records } = await sessions();
   const timestamp = now();
-  const changed = records
-    .filter((session) => isTracked(session, tabId))
-    .map((session) => releaseTab(session, tabId, `Student closed tab ${tabId}.`, timestamp));
-  await persistChanged(db, changed);
+  await persistChanged(
+    db,
+    records.filter((session) => isTracked(session, tabId) && !isTerminal(session)).map((session) => session.id),
+    (session) => isTerminal(session) ? null : releaseTab(session, tabId, `Student closed tab ${tabId}.`, timestamp),
+  );
 }
 
 /** Applies student moves and navigations to durable workspace ownership. */
@@ -90,19 +95,20 @@ export async function onTabUpdated(
 
   const { db, records } = await sessions();
   const timestamp = now();
-  const changed: AgentSession[] = [];
-  for (const session of records) {
-    if (!isTracked(session, tabId)) continue;
-
-    let next = session;
-    if (isOutOfGroup(session, tab, changeInfo)) {
-      next = releaseTab(next, tabId, `Student moved tab ${tabId} out of the Motion workspace.`, timestamp);
-    } else if (navigated && !motionNavigation && session.workspace.ownedTabIds.includes(tabId)) {
-      next = convertOwnedToAdopted(next, tabId, timestamp);
-    }
-    if (next !== session) changed.push(next);
-  }
-  await persistChanged(db, changed);
+  await persistChanged(
+    db,
+    records.filter((session) => isTracked(session, tabId) && !isTerminal(session)).map((session) => session.id),
+    (session) => {
+      if (isTerminal(session) || !isTracked(session, tabId)) return null;
+      if (isOutOfGroup(session, tab, changeInfo)) {
+        return releaseTab(session, tabId, `Student moved tab ${tabId} out of the Motion workspace.`, timestamp);
+      }
+      if (navigated && !motionNavigation && session.workspace.ownedTabIds.includes(tabId)) {
+        return convertOwnedToAdopted(session, tabId, timestamp);
+      }
+      return null;
+    },
+  );
 }
 
 /** Closes only live, owned tabs from the current browser session. */

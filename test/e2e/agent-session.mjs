@@ -340,6 +340,37 @@ try {
   const approvalReplay = await send({ type: 'decide-approval', approvalId: submitApproval.id, approved: true });
   check('stale or replayed approval cannot execute again', approvalReplay?.result === undefined || approvalReplay?.result === null || (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED', 'single-use approval remains consumed');
 
+  // A pending approval is deliberately expired in durable storage, then the
+  // worker is stopped through CDP. The fresh worker must reject the old target
+  // approval and ask again without touching the synthetic form.
+  await actorPage.evaluate(() => { document.querySelector('#form-result').textContent = ''; });
+  await seedWorkflow({ id: 'e2e-stale-approval-workflow', sessionId: createdSession.id, action: 'submit-assignment', title: 'Stale synthetic submit', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: submit?.handle ?? '', target: 'Synthetic Example Assignment', effect: 'This will create a final LMS submission.' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-stale-approval-workflow', command: 'resume' });
+  const pendingApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'submit-assignment' && approval.status === 'pending'), 20_000);
+  await panel.evaluate(async (approvalId) => {
+    await new Promise((resolve, reject) => {
+      const request = indexedDB.open('motion');
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        const db = request.result;
+        const tx = db.transaction('approvals', 'readwrite');
+        const store = tx.objectStore('approvals');
+        const read = store.get(approvalId);
+        read.onsuccess = () => {
+          if (read.result) store.put({ ...read.result, status: 'approved', decidedAt: new Date(Date.now() - 2_000).toISOString(), expiresAt: new Date(Date.now() - 1_000).toISOString() });
+        };
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  }, pendingApproval?.id);
+  await send({ type: 'workflow-command', workflowId: 'e2e-stale-approval-workflow', command: 'pause' });
+  const stoppedWithStaleApproval = await stopServiceWorker(studentPage);
+  await waitForWorker();
+  await send({ type: 'workflow-command', workflowId: 'e2e-stale-approval-workflow', command: 'resume' });
+  const replacementApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'submit-assignment' && approval.status === 'pending' && approval.id !== pendingApproval?.id), 20_000);
+  check('expired approval after service-worker restart requires a new confirmation and submits nothing', stoppedWithStaleApproval && Boolean(pendingApproval) && Boolean(replacementApproval) && (await actorPage.locator('#form-result').textContent()) !== 'SUBMITTED', `${stoppedWithStaleApproval}/${pendingApproval?.id ?? 'none'}/${replacementApproval?.id ?? 'none'}`);
+
   // Stop/restart the worker while durable session state exists; the next message
   // is handled by a fresh worker and must retain the AgentSession/workspace.
   const stopped = await stopServiceWorker(studentPage);
@@ -367,6 +398,66 @@ try {
   check('settings offers BYOK when local AI is unavailable', optionsText.includes('OpenAI') && optionsText.includes('API key'));
 
   await send({ type: 'set-provider-key', providerId: 'openai', key: CANARY });
+
+  // Exercise the real extension-page -> worker provider path. Context routing
+  // is used because the request originates in the MV3 service worker while
+  // the panel is the extension document driving the turn.
+  await send({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: true });
+  await options.reload({ waitUntil: 'load' });
+  const openAiRadio = options.locator('input[name="provider"]').nth(1);
+  await openAiRadio.click();
+  const openAiSelected = await waitFor(() => openAiRadio.isChecked(), 3_000);
+  if (!openAiSelected) {
+    console.log('SKIP  extension-page provider stream/cancel — Chromium did not grant the optional OpenAI host permission in headless mode');
+  } else {
+    await send({ type: 'set-ai-preferences', providerId: 'openai', model: 'gpt-5' });
+
+    let responseCount = 0;
+    let heldResponse;
+    let releaseHeldResponse;
+    let heldResponseReleased = false;
+    const heldResponseDone = new Promise((resolve) => { releaseHeldResponse = resolve; });
+    let providerRequestFailed = false;
+    const onProviderRequestFailed = (request) => {
+      if (request.url() === 'https://api.openai.com/v1/responses') providerRequestFailed = true;
+    };
+    context.on('requestfailed', onProviderRequestFailed);
+    await context.route('https://api.openai.com/v1/models', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ data: [{ id: 'gpt-5' }] }) });
+    });
+    await context.route('https://api.openai.com/v1/responses', async (route) => {
+      responseCount += 1;
+      if (responseCount === 1) {
+        const event = (delta) => `event: response.output_text.delta\ndata: ${JSON.stringify({ delta })}\n\n`;
+        await route.fulfill({ status: 200, contentType: 'text/event-stream', body: event('{"reply":"Streamed from OpenAI","plan":[]}') });
+        return;
+      }
+      heldResponse = route;
+      await heldResponseDone;
+      if (!heldResponseReleased) return;
+      await route.fulfill({ status: 200, contentType: 'text/event-stream', body: '' }).catch(() => undefined);
+    });
+
+    await send({ type: 'session-message', sessionId: createdSession.id, text: 'Use the connected provider.', tabId: studentTabId });
+    const streamed = await waitFor(async () => {
+      const current = await state();
+      return current?.activeSession?.conversation?.some((entry) => entry.text === 'Streamed from OpenAI') ? current.activeSession : null;
+    }, 20_000);
+    check('extension-page-driven provider stream renders and accumulates deltas', Boolean(streamed) && responseCount === 1);
+
+    const stopMessage = send({ type: 'session-message', sessionId: createdSession.id, text: 'Hold this response.', tabId: studentTabId });
+    await waitFor(() => responseCount === 2, 10_000);
+    await send({ type: 'session-command', sessionId: createdSession.id, command: 'stop-generation' });
+    if (heldResponse) await heldResponse.abort().catch(() => undefined);
+    heldResponseReleased = true;
+    releaseHeldResponse();
+    await stopMessage.catch(() => undefined);
+    check('stopping an extension-page-driven stream aborts the provider request', providerRequestFailed && responseCount === 2);
+    context.off('requestfailed', onProviderRequestFailed);
+    await context.unroute('https://api.openai.com/v1/models');
+    await context.unroute('https://api.openai.com/v1/responses');
+  }
+
   await installMockFetch(await waitForWorker(), [], '401');
   const invalid = await send({ type: 'test-provider', providerId: 'openai' });
   check('invalid API key gives understandable feedback', /API key is no longer valid/i.test(invalid?.result?.availability?.message ?? ''), 'worker/provider message is redacted and student-readable');

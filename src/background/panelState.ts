@@ -13,6 +13,7 @@ import { resolveAdapter } from '@/core/adapters';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { DEFAULT_AI_PREFERENCES } from '@/core/ai/preferences';
 import { providerDisplayNames, resolveSessionProvider } from './providers';
+import { recoverWorkflows } from './recovery';
 
 const ACTIVE_SESSION_KEY = 'motion.activeSessionId';
 const STREAMING_KEY = 'motion.streaming';
@@ -41,6 +42,9 @@ async function courseForUrl(url: string | null | undefined) {
 
 /** Builds the whole panel view from durable state; no panel-local orchestration. */
 export async function buildPanelState(): Promise<PanelState> {
+  // Opening or waking the panel is a recovery trigger: a lease may have
+  // expired while the service worker was suspended and no alarm was delivered.
+  await recoverWorkflows();
   const db = await openDatabase();
   const taskRepo = new Repository(db, STORE.tasks, courseTaskSchema);
   const approvalRepo = new Repository(db, STORE.approvals, approvalRequestSchema);

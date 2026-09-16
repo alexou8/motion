@@ -9,7 +9,20 @@ import { act, buildSnapshot } from '@/content/actor';
 import { extract, initObserver, readContent } from '@/content/observer';
 import { contentRequestSchema } from '@/core/messaging';
 
-chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
+/**
+ * Handles a request sent to the page-adjacent content script.
+ *
+ * Shape validation is not authentication: only the extension's own service
+ * worker may send inward requests, and a message carrying a tab sender is
+ * treated as page-adjacent traffic rather than privileged worker traffic.
+ */
+export function handleContentRequest(
+  raw: unknown,
+  sender: chrome.runtime.MessageSender,
+  sendResponse: (response?: unknown) => void,
+): undefined {
+  if (sender.id !== chrome.runtime.id || sender.tab !== undefined) return undefined;
+
   // The only instructions this script accepts, validated rather than cast.
   // Untrusted page content never reaches this parse — it only ever flows
   // outward, from the content script to the worker.
@@ -37,6 +50,10 @@ chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
     default:
       return undefined;
   }
+}
+
+chrome.runtime.onMessage.addListener((raw: unknown, sender, sendResponse) => {
+  handleContentRequest(raw, sender, sendResponse);
 });
 
 initObserver();

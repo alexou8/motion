@@ -46,6 +46,8 @@ export interface BuildAgentPromptInput {
   deadlines?: DeadlineBuckets;
   pageContent?: { url: string; title: string; text: string };
   policyNotes?: string[];
+  /** Bounded page/note excerpts selected for this step. Always untrusted. */
+  stepContext?: UntrustedItem[];
 }
 
 function summarizeTrustedState(input: BuildAgentPromptInput): string {
@@ -78,10 +80,11 @@ function summarizeTrustedState(input: BuildAgentPromptInput): string {
       lines.push(`  - ${ref}: ${task.title} — ${task.due.iso ?? 'unknown date'} (${task.due.confidence})`);
     }
   }
-  if (input.refs.sourceByRef.size > 0) {
+  const includedSources = [...input.refs.sourceByRef.entries()].filter(([, source]) => !source.excluded);
+  if (includedSources.length > 0) {
     lines.push('Known sources (sourceRef: kind — title):');
-    for (const [ref, source] of input.refs.sourceByRef) {
-      lines.push(`  - ${ref}: ${source.kind}${source.excluded ? ' (excluded by student)' : ''} — ${source.title}`);
+    for (const [ref, source] of includedSources) {
+      lines.push(`  - ${ref}: ${source.kind} — ${source.title}`);
     }
   }
   if (input.refs.noteByRef.size > 0) {
@@ -104,7 +107,7 @@ function summarizeTrustedState(input: BuildAgentPromptInput): string {
 }
 
 function buildUntrustedItems(input: BuildAgentPromptInput): UntrustedItem[] {
-  const items: UntrustedItem[] = [];
+  const items: UntrustedItem[] = [...(input.stepContext ?? [])];
 
   if (input.pageContent) {
     items.push({
@@ -126,7 +129,10 @@ function buildUntrustedItems(input: BuildAgentPromptInput): UntrustedItem[] {
   }
 
   if (input.refs.sourceByRef.size > 0) {
-    const titles = [...input.refs.sourceByRef.values()].map((s) => s.title).filter(Boolean);
+    const titles = [...input.refs.sourceByRef.values()]
+      .filter((source) => !source.excluded)
+      .map((source) => source.title)
+      .filter(Boolean);
     if (titles.length > 0) items.push({ label: 'source titles', text: titles.join('\n') });
   }
 

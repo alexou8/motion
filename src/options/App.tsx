@@ -419,11 +419,11 @@ function BrowserAccess({ grants, revoke, grant }: { grants: Grant[]; revoke: (or
         </div>
       </div>
       <div className={`${card} mt-4`}>
-        <h3 className="text-md font-medium">What Motion will not do</h3>
+        <h3 className="text-md font-medium">Safety boundaries</h3>
         <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-ink-muted">
-          <li>Submit an assignment, or answer or act inside a graded quiz.</li>
-          <li>Modify or delete anything in your LMS.</li>
-          <li>Post or send anything without showing you exactly what it will send first.</li>
+          <li>Never answer or act inside a graded, timed or proctored attempt.</li>
+          <li>Supported submission, posting, uploading and sending actions require a fresh confirmation for the exact target and effect every time.</li>
+          <li>Motion never uses a saved setting as approval for a consequential action.</li>
         </ul>
       </div>
     </section>
@@ -483,8 +483,8 @@ function AgentBehaviour({ ai, setStatus, refresh }: { ai: AiStatusResult | null;
           ))}
         </ul>
         <p className="mt-3 text-sm text-ink-muted">
-          Submitting, posting, uploading and sending always ask you every time, no matter what is
-          turned on here.
+          Submitting, posting, uploading and sending always require a fresh confirmation for the
+          exact target and effect, no matter what is turned on here.
         </p>
       </div>
     </section>
@@ -509,8 +509,9 @@ function Privacy({
         <h3 className="text-md font-medium">What is stored locally</h3>
         <p className="mt-1 text-sm text-ink-muted">
           Everything Motion stores stays in this browser: courses, deadlines, notes, checklists,
-          sessions, and workflows. There is no account and no server, so nothing is uploaded and
-          nothing syncs between devices.
+          sessions, and workflows. There is no account and no server, so this stored database is
+          not uploaded and nothing syncs between devices. A selected cloud provider receives only
+          the bounded request described below.
         </p>
         <p className="mt-2 text-sm text-ink-muted">
           Stored data is protected by your browser profile. It is not separately encrypted, so
@@ -520,10 +521,12 @@ function Privacy({
       <div className={`${card} mt-4`}>
         <h3 className="text-md font-medium">What is sent to a cloud provider</h3>
         <p className="mt-1 text-sm text-ink-muted">
-          If you choose OpenAI or Anthropic, the coursework text Motion is working on at that
-          moment is sent to that provider to generate a response. Nothing is sent unless you have
-          accepted that provider&apos;s disclosure and selected it. Chrome&apos;s built-in model never
-          sends anything off this device.
+          If you choose OpenAI or Anthropic, Motion sends your message, session plan/state labels,
+          relevant notes, and bounded excerpts from pages read for this session to that provider
+          to generate a response. Each source excerpt is at most 8,000 characters and each request
+          is at most 24,000 characters; sources you excluded are omitted. Nothing is sent unless
+          you have accepted that provider&apos;s disclosure and selected it. Chrome&apos;s built-in model
+          never sends anything off this device.
         </p>
       </div>
       <div className={`${card} mt-4`}>

@@ -56,8 +56,13 @@ export interface RequestOptions {
   maxRetries?: number;
 }
 
-function isRetryStatus(status: number): boolean {
-  return status === 429 || status >= 500;
+function isRetryStatus(status: number, method: string, response: Response): boolean {
+  if (method !== 'POST') return status === 429 || status >= 500;
+  if (status === 429) return true;
+  // These overload responses are explicitly non-processing only when the
+  // provider supplies retry guidance. Other POST 5xx responses are
+  // outcome-unknown because the provider may have accepted the request.
+  return (status === 503 || status === 529) && parseRetryAfterMs(response) !== undefined;
 }
 
 function composeAbort(timeoutMs: number, external?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
@@ -92,15 +97,94 @@ export class HttpProviderError extends Error {
   readonly retryAfterMs: number | undefined;
   readonly cancelled: boolean;
   readonly networkError: boolean;
+  readonly outcomeUnknown: boolean;
 
-  constructor(message: string, opts: { status?: number; retryAfterMs?: number; cancelled?: boolean; networkError?: boolean } = {}) {
+  constructor(
+    message: string,
+    opts: { status?: number; retryAfterMs?: number; cancelled?: boolean; networkError?: boolean; outcomeUnknown?: boolean } = {},
+  ) {
     super(message);
     this.name = 'HttpProviderError';
     this.status = opts.status;
     this.retryAfterMs = opts.retryAfterMs;
     this.cancelled = opts.cancelled ?? false;
     this.networkError = opts.networkError ?? false;
+    this.outcomeUnknown = opts.outcomeUnknown ?? false;
   }
+}
+
+export function isOutcomeUnknownStatus(status: number): boolean {
+  return status === 500 || status === 502 || status === 504;
+}
+
+function responseWithBodyCleanup(
+  response: Response,
+  signal: AbortSignal,
+  externalSignal: AbortSignal | undefined,
+  cleanup: () => void,
+  outcomeUnknown: boolean,
+): Response {
+  if (!response.body) {
+    cleanup();
+    return response;
+  }
+
+  const source = response.body;
+  let sourceReader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const reader = source.getReader();
+      sourceReader = reader;
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        signal.removeEventListener('abort', onAbort);
+      };
+      const onAbort = () => {
+        if (settled) return;
+        const error = externalSignal?.aborted
+          ? new DOMException('Request cancelled.', 'AbortError')
+          : new HttpProviderError('Request timed out.', { outcomeUnknown });
+        // Do not use the provider-facing error as the source stream's cancel
+        // reason: a few browser stream implementations surface that reason as
+        // an unhandled rejection while the wrapped response is already
+        // reporting it through controller.error().
+        void reader.cancel().catch(() => undefined);
+        finish();
+        controller.error(error);
+      };
+
+      signal.addEventListener('abort', onAbort, { once: true });
+      void (async () => {
+        try {
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) {
+              finish();
+              controller.close();
+              return;
+            }
+            controller.enqueue(value);
+          }
+        } catch (error) {
+          finish();
+          controller.error(error);
+        }
+      })();
+    },
+    cancel(reason) {
+      cleanup();
+      return sourceReader?.cancel(reason).catch(() => undefined) ?? Promise.resolve();
+    },
+  });
+
+  return new Response(body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
 }
 
 /**
@@ -114,32 +198,35 @@ export async function requestWithRetry(options: RequestOptions): Promise<Respons
   const timeoutMs = options.timeoutMs ?? DEFAULT_GENERATE_TIMEOUT_MS;
   const maxRetries = options.maxRetries ?? MAX_RETRIES;
   const knownSecrets = options.knownSecrets ?? [];
+  const method = (options.init.method ?? 'GET').toString().toUpperCase();
+  const chargeablePost = method === 'POST';
 
   let attempt = 0;
   for (;;) {
     const { signal, cleanup } = composeAbort(timeoutMs, options.signal);
     try {
       const response = await options.fetchImpl(options.url, { ...options.init, signal });
-      cleanup();
 
-      if (!response.ok && isRetryStatus(response.status) && attempt < maxRetries) {
+      if (!response.ok && isRetryStatus(response.status, method, response) && attempt < maxRetries) {
         const retryAfterMs = parseRetryAfterMs(response);
         if (retryAfterMs !== undefined && retryAfterMs > MAX_RETRY_AFTER_MS) {
           // Too long to wait inline — surface as rate-limited instead of sleeping.
+          cleanup();
           return response;
         }
+        cleanup();
         attempt += 1;
         await new Promise((resolve) => setTimeout(resolve, retryAfterMs ?? 500 * attempt));
         continue;
       }
-      return response;
+      return responseWithBodyCleanup(response, signal, options.signal, cleanup, chargeablePost);
     } catch (err) {
       cleanup();
       if (options.signal?.aborted) {
         throw new HttpProviderError(redactSecrets(String(err), knownSecrets), { cancelled: true });
       }
       const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-      if (!isTimeout && attempt < maxRetries) {
+      if (!chargeablePost && !isTimeout && attempt < maxRetries) {
         attempt += 1;
         await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
         continue;
@@ -147,6 +234,7 @@ export async function requestWithRetry(options: RequestOptions): Promise<Respons
       throw new HttpProviderError(redactSecrets(String(err), knownSecrets), {
         networkError: !isTimeout,
         cancelled: isTimeout,
+        outcomeUnknown: chargeablePost,
       });
     }
   }

@@ -1,6 +1,9 @@
 import type { ActRequest, SnapshotResult } from '@/core/actor/contracts';
 import { deriveRequirements, toRequirements } from '@/core/assist';
 import type { AIProvider } from '@/core/ai/types';
+import { buildLayeredPrompt } from '@/core/ai/prompt';
+import { buildStepContext } from '@/core/agent/context';
+import { validateDestination, type DestinationProvenance } from '@/core/agent/destination';
 import {
   checklistSchema,
   courseSchema,
@@ -10,9 +13,10 @@ import {
 } from '@/core/domain';
 import { deriveLinksFromPage } from '@/core/graph';
 import { evaluateAssessmentContext, tierOf, type ActionType } from '@/core/policy';
+import { supportedHosts } from '@/core/adapters';
 import type { AgentSession } from '@/core/session';
 import { openDatabase } from '@/core/storage/db';
-import { courseLinkRepository, sessionRepository } from '@/core/storage/repositories';
+import { courseLinkRepository, sessionRepository, updateSession as updateStoredSession } from '@/core/storage/repositories';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
 import type { StepCapability, StepContext, StepOutcome } from '@/core/workflows';
@@ -87,20 +91,33 @@ function requireSessionId(context: StepContext): string {
 
 async function sessionFor(
   context: StepContext,
-): Promise<{ value: AgentSession; save: (next: AgentSession) => Promise<void> }> {
+): Promise<{ value: AgentSession }> {
   const db = await openDatabase();
   const sessions = sessionRepository(db);
   const value = await sessions.get(requireSessionId(context));
   if (!value) throw new Error('Motion could not find this session.');
-  return { value, save: (next) => sessions.put(next) };
+  return { value };
 }
 
 async function updateSession(
   context: StepContext,
-  fn: (session: AgentSession) => AgentSession,
-): Promise<void> {
-  const { value, save } = await sessionFor(context);
-  await save(fn(value));
+  fn: (session: AgentSession) => AgentSession | null,
+): Promise<AgentSession | null> {
+  const db = await openDatabase();
+  return updateStoredSession(db, requireSessionId(context), fn);
+}
+
+function destinationProvenance(input: Input): DestinationProvenance | undefined {
+  const value = input['destinationProvenance'];
+  return value === 'observed-link' || value === 'd2l-route' ? value : undefined;
+}
+
+function sessionDestinationAllowed(url: string, input: Input): boolean {
+  return validateDestination(
+    url,
+    supportedHosts,
+    destinationProvenance(input),
+  ).ok;
 }
 
 function workspaceHas(session: AgentSession, tabId: number): boolean {
@@ -135,6 +152,7 @@ async function isRestricted(tabId: number, content?: PageContent): Promise<boole
 }
 
 function sourceKind(content: PageContent): AgentSession['context']['sources'][number]['kind'] {
+  if (/\brubric\b/i.test(content.title)) return 'rubric';
   if (content.pageType === 'assignment') return 'instructions';
   if (content.pageType === 'discussion-topic') return 'discussion';
   if (content.pageType === 'content-module' || content.pageType === 'content-topic')
@@ -152,6 +170,8 @@ function openTabCapability(services: CapabilityServices): StepCapability {
       return openSourcesCapability(services.tabs).execute(context);
     }
     const { value: session } = await sessionFor(context);
+    if (urls.some((url) => !sessionDestinationAllowed(url, context.step.input)))
+      return { kind: 'blocked', reason: 'Motion will only open a known safe LMS destination.' };
     const tabIds: number[] = [];
     for (const [index, url] of urls.entries()) {
       if (!(await context.stillCurrent()))
@@ -230,7 +250,7 @@ function navigateOwnedTabCapability(services: CapabilityServices): StepCapabilit
     async execute(context) {
       const tabId = requireTabId(context.step.input);
       const url = requireString(context.step.input, 'url');
-      if (!isOpenableUrl(url))
+      if (!isOpenableUrl(url) || !sessionDestinationAllowed(url, context.step.input))
         return { kind: 'blocked', reason: 'Motion only navigates to secure HTTPS pages.' };
       const { value: session } = await sessionFor(context);
       if (
@@ -265,7 +285,41 @@ function readPageCapability(services: CapabilityServices): StepCapability {
             }
           : { kind: 'blocked', reason: 'That page is not a secure URL.' };
       }
-      const tabId = requireTabId(context.step.input);
+      const { value: initialSession } = await sessionFor(context);
+      let tabId: number;
+      if (typeof context.step.input['tabId'] === 'number') {
+        tabId = requireTabId(context.step.input);
+      } else {
+        const url = requireString(context.step.input, 'url');
+        if (!sessionDestinationAllowed(url, context.step.input))
+          return { kind: 'blocked', reason: 'Motion will only read a known safe LMS destination.' };
+        const owned = initialSession.workspace.ownedTabIds.filter(
+          (id) => !initialSession.workspace.releasedTabIds.includes(id),
+        );
+        const existing = await Promise.all(owned.map(async (id) => ({ id, tab: await services.tabs.get(id) })));
+        tabId = existing.find(({ tab }) => tab?.url === url)?.id ?? -1;
+        if (tabId < 0) {
+          const opened = await services.tabs.open(url, `${context.intentKey}:read`);
+          tabId = opened.tabId;
+          const groupId = await services.tabs.groupInto(
+            initialSession.workspace.groupId,
+            [tabId],
+            { title: workspaceTitle(initialSession), color: 'blue' },
+          );
+          const sessionKey = await services.tabs.sessionKey();
+          await updateSession(context, (current) => ({
+            ...current,
+            updatedAt: services.now().toISOString(),
+            workspace: {
+              ...current.workspace,
+              groupId,
+              groupTitle: workspaceTitle(current),
+              sessionKey,
+              ownedTabIds: [...new Set([...current.workspace.ownedTabIds, tabId])],
+            },
+          }));
+        }
+      }
       if (await isRestricted(tabId))
         return {
           kind: 'skipped',
@@ -278,7 +332,7 @@ function readPageCapability(services: CapabilityServices): StepCapability {
           kind: 'skipped',
           reason: 'Motion did not store anything from this restricted assessment page.',
         };
-      const { value: session, save } = await sessionFor(context);
+      const { value: session } = await sessionFor(context);
       const db = await openDatabase();
       const course = session.courseId
         ? await new Repository(db, STORE.courses, courseSchema).get(session.courseId)
@@ -296,17 +350,18 @@ function readPageCapability(services: CapabilityServices): StepCapability {
         kind: sourceKind(content),
         excluded: false,
         provenance: content.url,
+        excerpt: content.text.slice(0, 8_000),
       };
-      await save({
-        ...session,
+      await updateSession(context, (current) => ({
+        ...current,
         updatedAt: services.now().toISOString(),
         context: {
-          ...session.context,
-          sources: session.context.sources.some((item) => item.url === source.url)
-            ? session.context.sources
-            : [...session.context.sources, source],
+          ...current.context,
+          sources: current.context.sources.some((item) => item.url === source.url)
+            ? current.context.sources.map((item) => item.url === source.url ? { ...item, ...source, excluded: item.excluded } : item)
+            : [...current.context.sources, source],
         },
-      });
+      }));
       return {
         kind: 'done',
         result: 'Read the page and added it to this session’s context.',
@@ -422,14 +477,21 @@ function providerCapability(
             ? context.step.input['text']
             : context.step.title;
       if (request.trim() === '') throw new Error('This AI step needs a specific request.');
+      const { value: session } = await sessionFor(context);
+      const db = await openDatabase();
+      const notes = (await new Repository(db, STORE.notes, noteSchema).all()).records;
+      const prompt = buildLayeredPrompt({
+        systemPolicy: 'You are Motion. Help the student understand and prepare coursework. Do not claim to have completed work the student has not reviewed.',
+        userGoal: request,
+        trustedState: `Session: ${session.title}`,
+        untrusted: buildStepContext(session, notes),
+      });
       const resolved = await services.resolveProvider();
       if (resolved.kind === 'blocked') return { kind: 'blocked', reason: resolved.blocker.message };
       try {
-        const output = await generate(resolved.provider, resolved.model, request);
-        const { value: session, save } = await sessionFor(context);
+        const output = await generate(resolved.provider, resolved.model, request, prompt);
         const now = services.now().toISOString();
         const noteId = crypto.randomUUID();
-        const db = await openDatabase();
         await new Repository(db, STORE.notes, noteSchema).put({
           id: noteId,
           courseId: session.courseId,
@@ -448,11 +510,11 @@ function providerCapability(
           createdAt: now,
           updatedAt: now,
         });
-        await save({
-          ...session,
+        await updateSession(context, (current) => ({
+          ...current,
           updatedAt: now,
           artifacts: [
-            ...session.artifacts,
+            ...current.artifacts,
             {
               id: crypto.randomUUID(),
               kind: action === 'generate-draft' ? 'draft' : 'summary',
@@ -461,7 +523,7 @@ function providerCapability(
               createdAt: now,
             },
           ],
-        });
+        }));
         return {
           kind: 'done',
           result: `Created a ${action === 'generate-draft' ? 'draft' : 'note'} with ${resolved.displayName}.`,
@@ -476,10 +538,9 @@ function providerCapability(
   };
 }
 
-async function generate(provider: AIProvider, model: string, request: string): Promise<string> {
+async function generate(provider: AIProvider, model: string, request: string, prompt: string): Promise<string> {
   return provider.generate({
-    system:
-      'You are Motion. Help the student understand and prepare their coursework. Do not claim to have completed work the student has not reviewed.',
+    system: prompt,
     messages: [{ role: 'user', content: request }],
     model,
   });
@@ -489,7 +550,35 @@ function checklistCapability(services: CapabilityServices): StepCapability {
   return {
     action: 'create-checklist',
     async execute(context) {
-      const tabId = requireTabId(context.step.input);
+      let tabId: number;
+      if (typeof context.step.input['tabId'] === 'number') {
+        tabId = requireTabId(context.step.input);
+      } else {
+        const url = requireString(context.step.input, 'url');
+        if (!sessionDestinationAllowed(url, context.step.input))
+          return { kind: 'blocked', reason: 'Motion will only read a known safe LMS destination.' };
+        const { value: initialSession } = await sessionFor(context);
+        const existing = await Promise.all(initialSession.workspace.ownedTabIds
+          .filter((id) => !initialSession.workspace.releasedTabIds.includes(id))
+          .map(async (id) => ({ id, tab: await services.tabs.get(id) })));
+        tabId = existing.find(({ tab }) => tab?.url === url)?.id ?? -1;
+        if (tabId < 0) {
+          const opened = await services.tabs.open(url, `${context.intentKey}:checklist`);
+          tabId = opened.tabId;
+          const groupId = await services.tabs.groupInto(initialSession.workspace.groupId, [tabId], {
+            title: workspaceTitle(initialSession), color: 'blue',
+          });
+          const sessionKey = await services.tabs.sessionKey();
+          await updateSession(context, (current) => ({
+            ...current,
+            updatedAt: services.now().toISOString(),
+            workspace: {
+              ...current.workspace, groupId, groupTitle: workspaceTitle(current), sessionKey,
+              ownedTabIds: [...new Set([...current.workspace.ownedTabIds, tabId])],
+            },
+          }));
+        }
+      }
       if (await isRestricted(tabId))
         return { kind: 'skipped', reason: 'Motion did not read a restricted assessment.' };
       const content = await services.askContent(tabId);
@@ -501,7 +590,7 @@ function checklistCapability(services: CapabilityServices): StepCapability {
           kind: 'skipped',
           reason: 'Motion could not find stated requirements on this page.',
         };
-      const { value: session, save } = await sessionFor(context);
+      const { value: session } = await sessionFor(context);
       const now = services.now().toISOString();
       const id = crypto.randomUUID();
       const db = await openDatabase();
@@ -523,11 +612,11 @@ function checklistCapability(services: CapabilityServices): StepCapability {
         createdAt: now,
         updatedAt: now,
       });
-      await save({
-        ...session,
+      await updateSession(context, (current) => ({
+        ...current,
         updatedAt: now,
         artifacts: [
-          ...session.artifacts,
+          ...current.artifacts,
           {
             id: crypto.randomUUID(),
             kind: 'checklist',
@@ -536,7 +625,7 @@ function checklistCapability(services: CapabilityServices): StepCapability {
             createdAt: now,
           },
         ],
-      });
+      }));
       return {
         kind: 'done',
         result: `Created a checklist with ${requirements.length} requirements.`,
@@ -552,7 +641,7 @@ function noteCapability(services: CapabilityServices): StepCapability {
     async execute(context) {
       const title = requireString(context.step.input, 'title');
       const text = requireString(context.step.input, 'text');
-      const { value: session, save } = await sessionFor(context);
+      const { value: session } = await sessionFor(context);
       const now = services.now().toISOString();
       const id = crypto.randomUUID();
       const db = await openDatabase();
@@ -566,14 +655,14 @@ function noteCapability(services: CapabilityServices): StepCapability {
         createdAt: now,
         updatedAt: now,
       });
-      await save({
-        ...session,
+      await updateSession(context, (current) => ({
+        ...current,
         updatedAt: now,
         artifacts: [
-          ...session.artifacts,
+          ...current.artifacts,
           { id: crypto.randomUUID(), kind: 'note', refId: id, title, createdAt: now },
         ],
-      });
+      }));
       return { kind: 'done', result: `Saved “${title}”.` };
     },
   };

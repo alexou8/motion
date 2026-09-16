@@ -11,7 +11,7 @@
 
 import type { AIProvider, ProviderAvailability, ProviderId, ProviderStatus } from '@/core/ai/types';
 import { ProviderError } from '@/core/ai/types';
-import { explainProviderStatus } from '@/core/ai/explain';
+import { explainProviderError, explainProviderStatus } from '@/core/ai/explain';
 import { resolveModel } from '@/core/ai/models';
 import type { AIPreferences } from '@/core/ai/preferences';
 import { createProvider, type RegistryDeps } from '@/platform/ai/registry';
@@ -103,13 +103,16 @@ export function providerBlockerFromError(error: unknown, providerDisplayName: st
 }
 
 function explainByKind(
-  kind: ProviderStatus | 'cancelled' | 'bad-response',
+  kind: ProviderStatus | 'cancelled' | 'bad-response' | 'outcome-unknown',
   providerDisplayName: string,
   retryAfterMs: number | undefined,
   fallbackMessage: string,
 ): string {
   const providerId = (Object.entries(DISPLAY_NAMES).find(([, name]) => name === providerDisplayName)?.[0] ?? null) as ProviderId | null;
-  if (providerId && kind !== 'cancelled' && kind !== 'bad-response') {
+  if (providerId && kind === 'outcome-unknown') {
+    return explainProviderError(providerId, kind, fallbackMessage);
+  }
+  if (providerId && kind !== 'cancelled' && kind !== 'bad-response' && kind !== 'outcome-unknown') {
     return explainProviderStatus(providerId, {
       status: kind,
       message: fallbackMessage,

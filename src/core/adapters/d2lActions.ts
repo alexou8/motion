@@ -107,7 +107,7 @@ export function resolveAssignmentResources(content: PageContent): AssignmentReso
  * no org-unit id can be established: guessing at a course id would put a
  * student's assignments link into someone else's course.
  */
-export function resolveCourseNav(url: string, content: PageContent): CourseNav | null {
+export function resolveCourseNav(url: string, content: Pick<PageContent, 'links'>): CourseNav | null {
   const source = safeHttpsUrl(url);
   if (!source) return null;
 
@@ -134,7 +134,7 @@ function safeHttpsUrl(url: string): URL | null {
   }
 }
 
-function orgUnitIdFromLinks(content: PageContent, source: URL): string | null {
+function orgUnitIdFromLinks(content: Pick<PageContent, 'links'>, source: URL): string | null {
   for (const link of content.links) {
     const target = sameOriginHttpsLink(link.href, source.toString());
     if (!target) continue;

@@ -158,12 +158,12 @@ export type ToolName = ToolCall['tool'];
  * consequence just by how the model phrased the tool call.
  */
 export const TOOL_ACTION: Record<ToolName, ActionType> = {
-  open_assignment_resources: 'gather-material',
-  open_course_page: 'navigate-owned-tab',
+  open_assignment_resources: 'open-tab',
+  open_course_page: 'open-tab',
   open_link: 'open-tab',
   read_page: 'read-page',
   read_assignment_instructions: 'read-page',
-  read_rubric: 'analyze-rubric',
+  read_rubric: 'read-page',
   build_checklist: 'create-checklist',
   create_note: 'create-note',
   draft: 'generate-draft',

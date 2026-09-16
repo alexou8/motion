@@ -50,7 +50,7 @@ const task: CourseTask = {
 };
 
 const session: AgentSession = {
-  id: 'session-1',
+  id: 'session-1', revision: 0,
   title: 'CP363 · Assignment 2',
   goal: 'Work on Assignment 2',
   courseId: course.id,
@@ -68,7 +68,7 @@ const session: AgentSession = {
     currentStepId: 'step-2',
   },
   blockers: [],
-  context: { sources: [{ url: 'https://lms.example.test/course/1/rubric', title: 'Rubric', kind: 'rubric', excluded: false, provenance: 'assignment page' }] },
+  context: { sources: [{ url: 'https://lms.example.test/course/1/rubric', title: 'Rubric', kind: 'rubric', excluded: false, provenance: 'assignment page', excerpt: '' }] },
   artifacts: [{ id: 'artifact-1', kind: 'checklist', refId: 'checklist-1', title: 'Assignment 2 checklist', createdAt: NOW.toISOString() }],
   agent: { providerId: 'chrome-local', model: 'chrome-on-device' },
   conversation: [

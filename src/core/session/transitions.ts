@@ -7,7 +7,7 @@ import type { AgentSession, SessionStatus } from './types';
 const TRANSITIONS: Record<SessionStatus, readonly SessionStatus[]> = {
   active: ['working', 'waiting', 'paused', 'completed', 'archived'],
   working: ['waiting', 'paused', 'completed', 'active', 'archived'],
-  waiting: ['working', 'active', 'paused', 'archived'],
+  waiting: ['working', 'active', 'paused', 'completed', 'archived'],
   paused: ['active', 'working', 'archived'],
   completed: ['archived', 'active'],
   archived: [],

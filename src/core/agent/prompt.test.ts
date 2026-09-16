@@ -26,6 +26,7 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     workflowIds: [],
     pendingModelRequest: null,
     ...overrides,
+    revision: overrides.revision ?? 0,
   };
 }
 

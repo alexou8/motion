@@ -29,6 +29,7 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     workflowIds: [],
     pendingModelRequest: null,
     ...overrides,
+    revision: overrides.revision ?? 0,
   };
 }
 
@@ -83,6 +84,54 @@ describe('guardToolCall', () => {
     const refs = buildTrustedRefs(session(), { links: [httpLink], tabs: [], tasks: [], notes: [] });
     const result = guardToolCall({ tool: 'open_link', linkRef: 'L1' }, refs, baseCtx());
     expect(result.kind).toBe('rejected');
+  });
+
+  it('rejects a same-origin quiz attempt even when a hostile page labels it a reading', () => {
+    const attempt = link({
+      relation: 'has-reading',
+      to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/lms/quizzing/user/attempt/123`, title: 'Reading' },
+    });
+    const refs = buildTrustedRefs(session(), { links: [attempt], tabs: [], tasks: [], notes: [] });
+    const result = guardToolCall({ tool: 'open_link', linkRef: 'L1' }, refs, baseCtx());
+    expect(result).toEqual(expect.objectContaining({ kind: 'rejected', reason: expect.stringMatching(/assessment/i) }));
+  });
+
+  it('resolves assignment resources into workspace open steps instead of a metadata lookup', () => {
+    const resources = [
+      link({ relation: 'has-instructions', to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=1`, title: 'Instructions' } }),
+      link({ id: 'rubric', relation: 'has-rubric', to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } }),
+    ];
+    const refs = buildTrustedRefs(session(), { links: resources, tabs: [], tasks: [], notes: [] });
+    const result = guardToolCall({ tool: 'open_assignment_resources' }, refs, baseCtx());
+    expect(result).toEqual(expect.objectContaining({
+      kind: 'ok',
+      step: expect.objectContaining({ action: 'open-tab', input: expect.objectContaining({ urls: expect.arrayContaining([resources[0]!.to.url, resources[1]!.to.url]) }) }),
+    }));
+  });
+
+  it('makes rubric reads a page read with its resolved URL, never a provider analysis', () => {
+    const rubric = link({ to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } });
+    const refs = buildTrustedRefs(session(), { links: [rubric], tabs: [], tasks: [], notes: [] });
+    const result = guardToolCall({ tool: 'read_rubric', linkRef: 'L1' }, refs, baseCtx());
+    expect(result).toEqual(expect.objectContaining({
+      kind: 'ok',
+      step: expect.objectContaining({ action: 'read-page', input: expect.objectContaining({ url: rubric.to.url }) }),
+    }));
+  });
+
+  it('resolves a course navigation request to an open-tab URL', () => {
+    const courseOrigin = 'https://school.brightspace.com';
+    const current = session({
+      context: { sources: [{
+        url: `${courseOrigin}/d2l/home/363`, title: 'Course home', kind: 'other', excluded: false, provenance: 'observed page', excerpt: '',
+      }] },
+    });
+    const refs = buildTrustedRefs(current, { links: [], tabs: [], tasks: [], notes: [] });
+    const result = guardToolCall({ tool: 'open_course_page', page: 'assignments' }, refs, baseCtx({ lmsOrigins: [courseOrigin] }));
+    expect(result).toEqual(expect.objectContaining({
+      kind: 'ok',
+      step: expect.objectContaining({ action: 'open-tab', input: expect.objectContaining({ url: `${courseOrigin}/d2l/lms/dropbox/user/folders_list.d2l?ou=363` }) }),
+    }));
   });
 
   it('rejects a tabRef outside the workspace', () => {

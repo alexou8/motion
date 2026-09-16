@@ -847,6 +847,18 @@ describe('student controls', () => {
 });
 
 describe('recovery', () => {
+  it('schedules lease recovery when a step is claimed', async () => {
+    const scheduleLease = vi.fn();
+    const { engine } = makeEngine({ scheduleLease });
+    const created = await engine.create('scan-course');
+
+    await engine.advance(created.id);
+
+    expect(scheduleLease).toHaveBeenCalledWith(created.id, expect.any(Date));
+    const scheduledAt = scheduleLease.mock.calls[0]?.[1] as Date;
+    expect(scheduledAt.getTime()).toBe(START.getTime() + LEASE_TTL_MS);
+  });
+
   it('leaves workflows waiting on a person alone', async () => {
     const { engine, store } = makeEngine();
     const created = await engine.create('scan-course');

@@ -67,6 +67,17 @@ describe('AnthropicProvider', () => {
     }
   });
 
+  it('surfaces a network failure after a chargeable POST as outcome-unknown', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError('connection lost after send');
+    }) as unknown as FetchLike;
+    const provider = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
+    await expect(
+      provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] }),
+    ).rejects.toMatchObject({ kind: 'outcome-unknown' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
   it('honours retry-after (bounded) before succeeding', async () => {
     let calls = 0;
     const fetchImpl = vi.fn(async () => {

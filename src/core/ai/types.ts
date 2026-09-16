@@ -31,6 +31,8 @@ export type ProviderStatus =
   | 'network-error'
   | 'model-unavailable';
 
+export type ProviderErrorKind = ProviderStatus | 'cancelled' | 'bad-response' | 'outcome-unknown';
+
 export interface ProviderAvailability {
   status: ProviderStatus;
   /** Human-readable, never contains a secret. */
@@ -69,10 +71,10 @@ export interface AIProvider {
  * constructed — see `redactSecrets` in `./redact.ts`.
  */
 export class ProviderError extends Error {
-  readonly kind: ProviderStatus | 'cancelled' | 'bad-response';
+  readonly kind: ProviderErrorKind;
   readonly retryAfterMs: number | undefined;
 
-  constructor(kind: ProviderError['kind'], message: string, retryAfterMs?: number) {
+  constructor(kind: ProviderErrorKind, message: string, retryAfterMs?: number) {
     super(message);
     this.name = 'ProviderError';
     this.kind = kind;

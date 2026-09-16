@@ -21,8 +21,8 @@ FEATURES
 • Keeps each extracted item linked to the page and text it came from.
 • Creates source-linked notes and assignment checklists.
 • Helps draft and review coursework using Chrome's on-device model or a provider the student selects.
-• Shows progress and asks before consequential browser actions.
-• Stands back on detected graded attempts.
+• Shows progress and asks for a fresh, target-specific confirmation before each consequential browser action.
+• Never acts inside detected graded, timed or proctored attempts.
 
 HOW TO USE
 1. Open a supported D2L Brightspace or MyLearningSpace course page.
@@ -30,7 +30,7 @@ HOW TO USE
 3. Choose what to read, organize, or review.
 
 PRIVACY
-Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's goal/message, trusted session state, and bounded relevant page/note/source excerpts directly to the selected provider only. Motion has no server or telemetry; provider keys remain in session memory and are not persisted.
+Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's message, session plan/state labels, relevant notes, and bounded page excerpts directly to the selected provider only. Each source excerpt is at most 8,000 characters and each request is at most 24,000 characters; excluded sources are omitted. Motion has no server or telemetry; provider keys remain in session memory and are not persisted.
 
 SUPPORT
 Report bugs or request features at https://github.com/alexou8/motion/issues.
@@ -81,7 +81,7 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 
 ### Data Collection
 
-**Does the extension collect user data?** Yes — website content and user-created coursework records are processed locally. In BYOK cloud mode, the bounded model-turn payload described above is transmitted directly to the student's selected provider after disclosure.
+**Does the extension collect user data?** Yes — website content and user-created coursework records are processed locally. In BYOK cloud mode, the bounded model-turn payload described above is transmitted directly to the student's selected provider after disclosure. Supported submission, posting, uploading and sending actions require a fresh target-specific confirmation each time; graded, timed and proctored attempts are never acted in.
 
 | Data Type | Collected? | Transmitted Off-Device? | Purpose | Shared with Third Parties? |
 |-----------|-----------|------------------------|---------|---------------------------|

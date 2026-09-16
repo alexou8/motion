@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { explainProviderStatus } from './explain';
+import { explainProviderError, explainProviderStatus } from './explain';
 import type { ProviderStatus } from './types';
 
 const ALL_STATUSES: ProviderStatus[] = [
@@ -43,5 +43,13 @@ describe('explainProviderStatus', () => {
       const message = explainProviderStatus('openai', { status, message: '' });
       expect(message).not.toMatch(/sk-[A-Za-z0-9]{10,}/);
     }
+  });
+});
+
+describe('explainProviderError', () => {
+  it('warns when a chargeable request may have been processed', () => {
+    expect(explainProviderError('openai', 'outcome-unknown')).toBe(
+      'Motion lost contact with OpenAI; the request may have been processed and charged. Retry?',
+    );
   });
 });

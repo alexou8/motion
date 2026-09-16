@@ -10,8 +10,10 @@ import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { buildCapabilities } from './capabilities';
 import type { TabsCapability } from '@/platform/tabs';
 import { WORKFLOW_DEFINITIONS } from './definitions';
+import { sessionProjector } from './sessionProjector';
 
 export const RETRY_ALARM_PREFIX = 'motion:retry:';
+export const LEASE_ALARM_PREFIX = 'motion:lease:';
 
 /**
  * Alarms have a one-minute floor in Chrome. A retry due sooner is scheduled at
@@ -20,6 +22,12 @@ export const RETRY_ALARM_PREFIX = 'motion:retry:';
 export function scheduleRetryAlarm(workflowId: string, at: Date): void {
   const whenMs = Math.max(at.getTime(), Date.now() + 60_000);
   void chrome.alarms.create(`${RETRY_ALARM_PREFIX}${workflowId}`, { when: whenMs });
+}
+
+export function scheduleLeaseAlarm(workflowId: string, at: Date): void {
+  void chrome.alarms.create(`${LEASE_ALARM_PREFIX}${workflowId}`, {
+    when: at.getTime() + 1_000,
+  });
 }
 
 interface StoredObservation {
@@ -85,6 +93,8 @@ export async function createEngine(tabs?: TabsCapability): Promise<WorkflowEngin
     // recognisable as someone else's and expires rather than being reused.
     ownerId: `sw-${crypto.randomUUID().slice(0, 8)}`,
     scheduleRetry: scheduleRetryAlarm,
+    scheduleLease: scheduleLeaseAlarm,
+    onChange: sessionProjector,
     policyContext: (_workflow, step) => policyContextForStep(step),
   });
 }

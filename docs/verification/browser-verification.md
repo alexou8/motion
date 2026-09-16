@@ -17,10 +17,10 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
 | 7. Ownership | Automated | Pass; explicit adoption recorded the student tab separately from Motion-owned tabs. |
 | 8. Actor permitted | Automated | Pass; typed snapshot handles drove a synthetic field fill only after approval. |
 | 9. Approval blocks | Automated | Pass; synthetic Submit remained unexecuted until the confirmation dialog was confirmed. |
-| 10. Stale approval replay | Automated | Pass for single-use replay; a consumed decision could not execute again. The exact stop-then-resume re-ask sequence remains manual follow-up. |
+| 10. Stale approval replay | Automated | Pass for single-use replay and for an expired target-bound approval after a CDP worker restart: resume created a replacement confirmation and the synthetic form remained unsubmitted. |
 | 11. Worker interruption recovery | Automated | Pass; CDP-terminated service worker recovered the persisted AgentSession and workspace. |
 | 12. Malicious page | Automated | Pass for the synthetic attacker text and consequence path; no submit or attacker navigation occurred without fresh approval. Model streaming against a live provider was not used. |
-| 13. Provider stream/cancel | Not possible in this run | Extension service-worker `fetch` was not safely interceptable from the Playwright context, and network isolation forbade a real provider. Provider SSE parsing and abort behavior are covered by 33 focused unit tests; browser-level stream/cancel needs a provider-injection seam or manual run. |
+| 13. Provider stream/cancel | Attempted; not verified | `test:agent` now installs a context route for the OpenAI Responses SSE endpoint and checks stream accumulation plus request failure after Stop. Chromium headless did not grant the optional OpenAI host permission, so the route-backed browser checks were skipped. Provider SSE parsing, abort, timeout and retry behavior remain covered by focused unit tests. |
 | 14. Invalid key feedback | Automated | Pass; mocked 401 displayed “API key is no longer valid” with redacted, student-readable feedback. |
 | 15. Key absent persistence | Automated | Pass; canary was absent from `chrome.storage.local`, all IndexedDB stores, panel state, and captured logs. |
 | 16. Key absent logs | Automated | Pass; worker, panel, options, and content-page captures contained no canary. |
@@ -38,6 +38,16 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
 - Preserved abort cancellation after response headers by passing the request
   signal through SSE parsing and mapping provider aborts to a user-readable
   cancellation error. Focused provider tests pass.
+- Authenticated content-script requests by extension id and sender-tab absence;
+  foreign and tab-bearing requests are rejected before actor dispatch.
+- Made chargeable provider POST failures outcome-unknown on network loss,
+  timeout and ambiguous 500/502/504 responses, with bounded retries only for
+  explicit rate-limit/overload responses. The response timeout remains active
+  while an SSE body is being consumed.
 
 No Chrome permissions were broadened, no real LMS or provider endpoint was
 contacted, and the canary key was synthetic: `sk-test-CANARY1234567890`.
+
+Run evidence: `test:extension` 62/62, `test:agent` 29/29 (provider stream/cancel
+skipped because headless Chromium did not grant the optional host permission),
+and `test:chrome` 5/5. Logs are in `.motion-local/e2e-*.log`.

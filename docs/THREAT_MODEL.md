@@ -94,7 +94,12 @@ The worker must verify, for every message: `sender.id === chrome.runtime.id`;
 that the sender's role (content script vs. extension UI) may invoke that message
 type at all; that content messages carry `sender.tab` with an expected HTTPS
 origin; and that any claimed tab, window or URL is derived from `sender` rather
-than trusted from the payload. — *Planned*
+than trusted from the payload. The content-script inward listener separately
+accepts only `sender.id === chrome.runtime.id` with `sender.tab === undefined`.
+The actor's `confirmedConsequential` check remains defense in depth; a
+compromised extension page already has approval authority because it is the
+approval UI, so CSP and the no-remote-code policy are the residual controls.
+— *Mitigated for the content listener; residual extension-page risk accepted*
 
 `externally_connectable` is not declared, so no web page may message the
 extension directly. — *Mitigated (manifest omits it)*
@@ -338,8 +343,9 @@ permission flow remains in progress*
 
 Untrusted page text is fenced and the instruction is last, but model output is
 not authorization. Motion-issued references, worker policy, approval checks,
-and the typed actor provide layered defenses before any action. No model turn
-can submit assessed work or act in a graded attempt. — *Mitigated in design;
+and the typed actor provide layered defenses before any action. Consequential
+submission, posting, uploading and sending require fresh confirmation each time;
+graded, timed and proctored attempts remain forbidden. — *Mitigated in design;
 end-to-end actor path is in progress*
 
 ## T18 — Actor misuse or consequential click
@@ -361,16 +367,20 @@ mitigated*
 ## T20 — Duplicate chargeable requests on recovery
 
 Provider turns carry a persisted `pendingModelRequest` recovery record; recovery
-does not blindly resend an uncertain request. The student must re-run a model
-turn when its outcome cannot be established. — *Mitigated in design;
+does not blindly resend an uncertain request. POST network failures, timeouts
+after headers, and ambiguous 500/502/504 responses surface `outcome-unknown`
+with an explicit retry choice. The student must choose whether to re-run the
+model turn when its outcome cannot be established. — *Mitigated in design;
 provider-specific idempotency is not claimed*
 
 ## T21 — Cloud disclosure or silent fallback
 
 Local mode stays local. Cloud mode names the selected provider and requires
-disclosure acceptance before sending the student's goal/message, trusted
-session state, and bounded relevant excerpts. There is no Motion proxy,
-telemetry, or silent provider fallback. — *Mitigated in design*
+disclosure acceptance before sending the student's message, session plan/state
+labels, relevant notes, and bounded excerpts from pages read for the session.
+Each source is capped at 8,000 characters and each request at 24,000; excluded
+sources are omitted. There is no Motion proxy, telemetry, or silent provider
+fallback. — *Mitigated in design*
 
 ## T22 — Inference-port spoofing
 

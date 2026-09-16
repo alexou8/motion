@@ -17,7 +17,7 @@ import { evaluateAssessmentContext } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { handleMessage, forgetTab, handleActionClick } from './router';
-import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './recovery';
+import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX, LEASE_ALARM_PREFIX } from './recovery';
 import { registerInferencePort } from './inferencePort';
 import { onTabRemoved, onTabUpdated } from './workspaceEvents';
 import { warn } from './log';
@@ -98,17 +98,26 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
  * worker, and a workflow that quietly stops retrying is worse than one that
  * fails loudly.
  */
-chrome.alarms.onAlarm.addListener((alarm) => {
+export function handleAlarm(
+  alarm: chrome.alarms.Alarm,
+  recover: (workflowId?: string) => Promise<void> = recoverWorkflows,
+): void {
+  if (alarm.name.startsWith(LEASE_ALARM_PREFIX)) {
+    const workflowId = alarm.name.slice(LEASE_ALARM_PREFIX.length);
+    void recover(workflowId);
+  }
   if (alarm.name.startsWith(RETRY_ALARM_PREFIX)) {
     const workflowId = alarm.name.slice(RETRY_ALARM_PREFIX.length);
-    void recoverWorkflows(workflowId);
+    void recover(workflowId);
   }
   if (alarm.name.startsWith(MODEL_RETRY_ALARM_PREFIX)) {
     // A rate-limit alarm only makes the session retryable. It must not make a
     // new chargeable provider request without a fresh student retry gesture.
     void recoverStaleModelRequests();
   }
-});
+}
+
+chrome.alarms.onAlarm.addListener(handleAlarm);
 
 /** A closed tab has no page for the panel to describe. */
 chrome.tabs.onRemoved.addListener((tabId) => {

@@ -83,6 +83,8 @@ export interface EngineOptions {
   ownerId?: string;
   /** Schedules a retry. Backed by chrome.alarms, never setTimeout. */
   scheduleRetry?: (workflowId: string, at: Date) => void;
+  /** Schedules recovery just after a claimed lease expires. */
+  scheduleLease?: (workflowId: string, at: Date) => void;
   onChange?: (workflow: Workflow) => void;
   /**
    * Live policy context for a step's target, evaluated fresh before every
@@ -109,6 +111,7 @@ export class WorkflowEngine {
   private readonly newId: () => string;
   private readonly ownerId: string;
   private readonly scheduleRetry: (workflowId: string, at: Date) => void;
+  private readonly scheduleLease: (workflowId: string, at: Date) => void;
   private readonly onChange: (workflow: Workflow) => void;
   private readonly policyContext: (workflow: Workflow, step: WorkflowStep) => Promise<PolicyContext>;
 
@@ -121,6 +124,7 @@ export class WorkflowEngine {
     this.newId = options.newId ?? (() => crypto.randomUUID());
     this.ownerId = options.ownerId ?? `worker-${Math.random().toString(36).slice(2, 10)}`;
     this.scheduleRetry = options.scheduleRetry ?? (() => {});
+    this.scheduleLease = options.scheduleLease ?? (() => {});
     this.onChange = options.onChange ?? (() => {});
     this.policyContext =
       options.policyContext ?? (async () => ({ assessmentRestricted: false, allowedConfigurable: new Set() }));
@@ -207,7 +211,7 @@ export class WorkflowEngine {
    */
   private async claim(workflowId: string): Promise<Workflow | null> {
     const now = this.now();
-    return this.store.update(workflowId, (current) => {
+    const claimed = await this.store.update(workflowId, (current) => {
       if (isTerminal(current.status)) return null;
       if (current.status === 'paused') return null;
       if (current.status === 'awaiting-approval' || current.status === 'awaiting-permission') {
@@ -234,6 +238,11 @@ export class WorkflowEngine {
         updatedAt: now.toISOString(),
       };
     });
+    if (claimed?.lease) {
+      this.scheduleLease(workflowId, new Date(claimed.lease.expiresAt));
+      this.onChange(claimed);
+    }
+    return claimed;
   }
 
   private async release(workflowId: string): Promise<void> {

@@ -80,6 +80,8 @@ export const sessionSourceSchema = z.object({
   kind: sessionSourceKindSchema,
   excluded: z.boolean().default(false),
   provenance: z.string().default(''),
+  /** Bounded readable text captured from a non-restricted page. */
+  excerpt: z.string().max(8_000).default(''),
 });
 export type SessionSource = z.infer<typeof sessionSourceSchema>;
 
@@ -160,6 +162,8 @@ export type SessionWorkspace = z.infer<typeof sessionWorkspaceSchema>;
 
 export const agentSessionSchema = z.object({
   id: z.string().min(1),
+  /** Monotonic revision assigned by the repository's atomic session updater. */
+  revision: z.number().int().nonnegative().default(0),
   /** e.g. "CP363 · Assignment 2" — see `sessionTitle`. */
   title: z.string().min(1),
   goal: z.string().min(1),

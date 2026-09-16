@@ -47,13 +47,13 @@ describe('OpenAIProvider', () => {
     ).rejects.toMatchObject({ kind: 'invalid-key', message: expect.not.stringContaining(CANARY) });
   });
 
-  it('classifies 401 as invalid-key, 429 quota as insufficient-quota, plain 429 as rate-limited, 404 as model-unavailable, 500 as network-error', async () => {
+  it('classifies 401 as invalid-key, 429 quota as insufficient-quota, plain 429 as rate-limited, 404 as model-unavailable, 500 as outcome-unknown', async () => {
     const cases: [Response, string][] = [
       [jsonResponse({}, 401), 'invalid-key'],
       [jsonResponse({ error: { code: 'insufficient_quota' } }, 429), 'insufficient-quota'],
       [jsonResponse({ error: { code: 'rate_limit_exceeded' } }, 429), 'rate-limited'],
       [jsonResponse({}, 404), 'model-unavailable'],
-      [jsonResponse({}, 500), 'network-error'],
+      [jsonResponse({}, 500), 'outcome-unknown'],
     ];
     for (const [response, kind] of cases) {
       const fetchImpl = vi.fn(async () => response.clone()) as unknown as FetchLike;
@@ -64,14 +64,14 @@ describe('OpenAIProvider', () => {
     }
   });
 
-  it('surfaces a network TypeError as network-error without leaking the key', async () => {
+  it('surfaces a network TypeError as outcome-unknown without leaking the key', async () => {
     const fetchImpl = vi.fn(async () => {
       throw new TypeError('fetch failed');
     }) as unknown as FetchLike;
     const provider = new OpenAIProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
     await expect(
       provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'gpt-5' }),
-    ).rejects.toMatchObject({ kind: 'network-error' });
+    ).rejects.toMatchObject({ kind: 'outcome-unknown', message: expect.stringContaining('may have been processed and charged') });
   });
 
   it('parses SSE output_text deltas while streaming, handling a split chunk', async () => {

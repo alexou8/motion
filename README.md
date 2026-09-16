@@ -8,10 +8,10 @@ pages you are already authorized to see, pulls out what is due and what is asked
 of you, keeps notes linked back to their source, and runs longer jobs in the
 background while showing you every step it takes.
 
-> Motion takes coursework all the way to a draft you review — then stops. It
-> does not submit your work and does not act inside a graded quiz attempt. You
-> read it, rewrite it in your own words, and hand it in yourself. That boundary
-> is enforced in code and covered by tests, not just stated here.
+> Motion can prepare coursework and perform supported consequential actions only
+> after a fresh, target-specific confirmation each time. It never acts inside a
+> graded, timed or proctored attempt. That boundary is enforced in code and
+> covered by tests, not just stated here.
 
 ## Status
 
@@ -54,8 +54,9 @@ Motion knows what an assignment page is.
 - **Runs work in the background.** Long jobs survive the browser suspending the
   extension, and show completed, active, pending, blocked and failed steps.
 - **Asks before anything consequential.** Actions are classified by consequence.
-  Low-risk work happens; anything else stops and asks, with the specific target
-  and effect spelled out.
+  Low-risk work happens; submission, posting, uploading, sending and other
+  consequential actions stop for a fresh, single-use confirmation bound to the
+  specific target and effect.
 
 ## Design principles
 
@@ -126,11 +127,13 @@ them from a CDN. Local model mode stays on-device; BYOK cloud mode is described
 below.
 
 In local mode, model work stays on-device. In BYOK cloud mode, only during a
-model turn after disclosure acceptance, Motion sends your goal/message, trusted
-session state, and bounded excerpts relevant to that step to the selected
-provider. IndexedDB data, provider keys and telemetry remain local; keys are
-never persisted. Motion never stores passwords or session tokens, and never
-bypasses institutional authentication. See [DATA](docs/DATA.md).
+model turn after disclosure acceptance, Motion sends your message, session
+plan/state labels, relevant notes, and bounded excerpts from pages Motion read
+for that session to the selected provider. Each source excerpt is at most
+8,000 characters and each request is at most 24,000 characters; excluded
+sources are omitted. IndexedDB data, provider keys and telemetry remain local;
+keys are never persisted. Motion never stores passwords or session tokens, and
+never bypasses institutional authentication. See [DATA](docs/DATA.md).
 
 Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).

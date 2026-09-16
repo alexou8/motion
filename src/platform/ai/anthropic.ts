@@ -3,6 +3,7 @@
  */
 
 import { redactSecrets } from '@/core/ai/redact';
+import { explainProviderError } from '@/core/ai/explain';
 import { ProviderError, type AIProvider, type GenerateRequest, type ProviderAvailability, type ProviderCapabilities } from '@/core/ai/types';
 import { ANTHROPIC_RECOMMENDED } from '@/core/ai/models';
 import type { SecretStore } from './secrets';
@@ -11,6 +12,7 @@ import {
   DEFAULT_GENERATE_TIMEOUT_MS,
   DEFAULT_HEALTH_TIMEOUT_MS,
   HttpProviderError,
+  isOutcomeUnknownStatus,
   parseSSEStream,
   requestWithRetry,
   type FetchLike,
@@ -94,7 +96,7 @@ export class AnthropicProvider implements AIProvider {
       timeoutMs: DEFAULT_HEALTH_TIMEOUT_MS,
       knownSecrets: [key],
     });
-    if (!response.ok) throw await this.toProviderError(response, key);
+    if (!response.ok) throw await this.toProviderError(response, key, 'GET');
     const body = (await response.json()) as { data?: { id: string }[] };
     return (body.data ?? []).map((m) => m.id);
   }
@@ -110,28 +112,31 @@ export class AnthropicProvider implements AIProvider {
 
   private availabilityFromError(err: unknown): ProviderAvailability {
     if (err instanceof ProviderError) {
-      return { status: err.kind === 'cancelled' || err.kind === 'bad-response' ? 'network-error' : err.kind, message: err.message, retryAfterMs: err.retryAfterMs };
+      return { status: err.kind === 'cancelled' || err.kind === 'bad-response' || err.kind === 'outcome-unknown' ? 'network-error' : err.kind, message: err.message, retryAfterMs: err.retryAfterMs };
     }
     return { status: 'network-error', message: 'Motion couldn’t reach Anthropic. Check your connection and try again.' };
   }
 
-  private async toProviderError(response: Response, key: string): Promise<ProviderError> {
+  private async toProviderError(response: Response, key: string, method: 'GET' | 'POST'): Promise<ProviderError> {
     const body = await readErrorBody(response);
     const kind = classifyHttpError('anthropic', response.status, body);
+    const errorKind = method === 'POST' && isOutcomeUnknownStatus(response.status) ? 'outcome-unknown' as const : kind;
     const message = redactSecrets(
-      kind === 'invalid-key'
+      errorKind === 'outcome-unknown'
+        ? explainProviderError('anthropic', errorKind)
+        : errorKind === 'invalid-key'
         ? 'Your Anthropic API key is no longer valid. Reconnect.'
-        : kind === 'insufficient-quota'
+        : errorKind === 'insufficient-quota'
           ? 'Your Anthropic account is out of quota. Check your billing with Anthropic.'
-          : kind === 'rate-limited'
+          : errorKind === 'rate-limited'
             ? 'Anthropic is rate limited.'
-            : kind === 'model-unavailable'
+            : errorKind === 'model-unavailable'
               ? 'The selected Anthropic model is no longer available.'
               : 'Motion couldn’t reach Anthropic. Check your connection and try again.',
       [key],
     );
-    const retryAfterMs = kind === 'rate-limited' ? parseRetryAfterHeader(response) : undefined;
-    return new ProviderError(kind, message, retryAfterMs);
+    const retryAfterMs = errorKind === 'rate-limited' ? parseRetryAfterHeader(response) : undefined;
+    return new ProviderError(errorKind, message, retryAfterMs);
   }
 
   async generate(req: GenerateRequest): Promise<string> {
@@ -148,8 +153,13 @@ export class AnthropicProvider implements AIProvider {
     }).catch((err) => {
       throw toRequestError(err, key);
     });
-    if (!response.ok) throw await this.toProviderError(response, key);
-    const body = (await response.json()) as { content?: { type: string; text?: string }[] };
+    if (!response.ok) throw await this.toProviderError(response, key, 'POST');
+    let body: { content?: { type: string; text?: string }[] };
+    try {
+      body = (await response.json()) as { content?: { type: string; text?: string }[] };
+    } catch (error) {
+      throw toRequestError(error, key);
+    }
     return (body.content ?? []).filter((c) => c.type === 'text').map((c) => c.text ?? '').join('');
   }
 
@@ -167,7 +177,7 @@ export class AnthropicProvider implements AIProvider {
     }).catch((err) => {
       throw toRequestError(err, key);
     });
-    if (!response.ok || !response.body) throw await this.toProviderError(response, key);
+    if (!response.ok || !response.body) throw await this.toProviderError(response, key, 'POST');
 
     try {
       for await (const event of parseSSEStream(response.body, req.signal)) {
@@ -181,7 +191,7 @@ export class AnthropicProvider implements AIProvider {
       }
     } catch (error) {
       if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
-      throw error;
+      throw toRequestError(error, key);
     }
   }
 }
@@ -196,6 +206,7 @@ function parseRetryAfterHeader(response: Response): number | undefined {
 function toRequestError(err: unknown, key: string): ProviderError {
   if (err instanceof HttpProviderError) {
     if (err.cancelled) return new ProviderError('cancelled', 'Request cancelled.');
+    if (err.outcomeUnknown) return new ProviderError('outcome-unknown', explainProviderError('anthropic', 'outcome-unknown'));
     return new ProviderError('network-error', redactSecrets('Motion couldn’t reach Anthropic. Check your connection and try again.', [key]));
   }
   return new ProviderError('network-error', redactSecrets(String(err), [key]));

@@ -19,7 +19,9 @@ untrusted until validated.
 2. **The content script is page-adjacent.** It shares a DOM with hostile content.
    It observes and may execute only worker-authorized, typed, handle-based
    actor operations; it receives no selectors, scripts, arbitrary URLs, or
-   policy authority.
+   policy authority. Its inward listener accepts requests only when the browser
+   reports Motion's extension id and no sender tab; the actor's consequential
+   confirmation field remains defense in depth.
 3. **The service worker is the only privileged context.** All orchestration —
    tabs, tab groups, permissions, storage writes, approvals — happens here.
 4. **The side panel renders, and asks.** It owns no Chrome orchestration and
@@ -47,6 +49,12 @@ classification, approve an action, or widen scope. The approval gate is
 evaluated in the service worker from the persisted risk table — nothing a page
 says participates in that decision.
 
+### Consequential actions
+
+Supported submission, posting, uploading, sending and other consequential actions require a fresh,
+target-bound, single-use confirmation every time. No setting can act as permanent consent. Motion
+never acts inside a graded, timed or proctored attempt.
+
 ### Permissions
 - Request the narrowest scope the current feature needs.
 - Host access beyond the built-in D2L hosts is an *optional* permission,
@@ -66,9 +74,11 @@ says participates in that decision.
 ### Data
 - Local mode makes no model network request. BYOK cloud mode makes a direct
   request from the browser to the selected provider only after disclosure and
-  just-in-time host permission. The request contains the student's goal/message,
-  trusted session state, and bounded relevant excerpts; there is no Motion
-  proxy or telemetry.
+  just-in-time host permission. The request contains the student's message,
+  session plan/state labels, relevant notes, and bounded excerpts from pages
+  Motion read for the session: at most 8,000 characters per source and 24,000
+  characters per request, excluding sources the student excluded. There is no
+  Motion proxy or telemetry.
 - Never stored: passwords, session tokens or cookies copied from pages, model
   API keys, browsing history unrelated to a supported course page. BYOK keys
   live only in `chrome.storage.session` under `TRUSTED_CONTEXTS`, are never
