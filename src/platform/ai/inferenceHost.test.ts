@@ -62,7 +62,10 @@ describe('attachInferenceHost', () => {
   });
 
   it('sends an error frame when the provider throws, carrying no secret', async () => {
-    const provider = stubProvider(async function* () {
+    const provider = stubProvider(async function* (request) {
+      // Keep this an async generator in the failure path while preserving the
+      // assertion that no delta is sent for a rejected request.
+      if (request.signal?.aborted) yield '';
       throw new ProviderError('invalid-key', 'Your OpenAI API key is no longer valid. Reconnect.');
     });
     const port = fakePort();
@@ -82,6 +85,7 @@ describe('attachInferenceHost', () => {
           resolve();
         });
       });
+      if (req.signal?.aborted) yield '';
       // Nothing more yielded after abort.
     });
     const port = fakePort();

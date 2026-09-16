@@ -21,6 +21,8 @@ import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './reco
 import { registerInferencePort } from './inferencePort';
 import { onTabRemoved, onTabUpdated } from './workspaceEvents';
 import { warn } from './log';
+import { MODEL_RETRY_ALARM_PREFIX } from './modelTurn';
+import { recoverStaleModelRequests } from './sessions';
 
 // --- Registered synchronously. Do not move these into an async function. ---
 
@@ -52,6 +54,7 @@ chrome.action.onClicked.addListener((tab) => {
 
 chrome.runtime.onStartup.addListener(() => {
   void recoverWorkflows();
+  void recoverStaleModelRequests();
 });
 
 chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
@@ -96,9 +99,15 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
  * fails loudly.
  */
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (!alarm.name.startsWith(RETRY_ALARM_PREFIX)) return;
-  const workflowId = alarm.name.slice(RETRY_ALARM_PREFIX.length);
-  void recoverWorkflows(workflowId);
+  if (alarm.name.startsWith(RETRY_ALARM_PREFIX)) {
+    const workflowId = alarm.name.slice(RETRY_ALARM_PREFIX.length);
+    void recoverWorkflows(workflowId);
+  }
+  if (alarm.name.startsWith(MODEL_RETRY_ALARM_PREFIX)) {
+    // A rate-limit alarm only makes the session retryable. It must not make a
+    // new chargeable provider request without a fresh student retry gesture.
+    void recoverStaleModelRequests();
+  }
 });
 
 /** A closed tab has no page for the panel to describe. */

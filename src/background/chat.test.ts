@@ -33,10 +33,13 @@ beforeEach(async () => {
     links: [], capturedAt: '2026-09-11T12:00:00.000Z', instructionBlocks: [], warnings: [],
   } }));
   vi.stubGlobal('chrome', {
-    storage: { session: {
-      get: vi.fn(async (key: string) => ({ [key]: session[key] })),
-      set: vi.fn(async (values: Record<string, unknown>) => Object.assign(session, values)),
-    } },
+    storage: {
+      session: {
+        get: vi.fn(async (key: string) => ({ [key]: session[key] })),
+        set: vi.fn(async (values: Record<string, unknown>) => Object.assign(session, values)),
+      },
+      local: { get: vi.fn(async () => ({})) },
+    },
     tabs: { sendMessage, query: vi.fn(async () => [{ id: TAB }]) },
     runtime: { id: 'test-extension-id' },
   });

@@ -75,7 +75,7 @@ beforeEach(async () => {
           sessionStore = {};
         }),
       },
-      local: { clear: vi.fn(async () => undefined) },
+      local: { get: vi.fn(async () => ({})), clear: vi.fn(async () => undefined) },
     },
     tabs: {
       sendMessage: vi.fn(async () => undefined),
@@ -764,7 +764,7 @@ describe('drafting coursework for review', () => {
 
     // The label travels with the data, not with whichever screen renders it.
     expect(stored?.blocks[0]?.origin).toBe('generated');
-    expect(stored?.blocks[0]?.generatedBy).toBe('chrome-on-device');
+    expect(stored?.blocks[0]?.generatedBy).toBe('chrome-local');
   });
 
   it('surfaces claims the draft could not support', async () => {

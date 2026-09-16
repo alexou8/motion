@@ -9,6 +9,7 @@ import {
 } from '@/core/domain';
 import {
   composeDraftPrompt,
+  buildPrompt,
   composeChatPrompt,
   CHAT_LABEL,
   deriveRequirements,
@@ -18,11 +19,7 @@ import {
   toRequirements,
   unsupportedClaims,
 } from '@/core/assist';
-import {
-  ChromeLanguageModelCapability,
-  explainAvailability,
-  type LanguageModelCapability,
-} from '@/platform/languageModel';
+import { explainAvailability, type LanguageModelCapability } from '@/platform/languageModel';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
@@ -38,6 +35,10 @@ import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 import { askContentScript, sendToContentScript } from './contentBridge';
+import { handleSessionMessage } from './sessions';
+import { buildPanelState as buildAgentPanelState } from './panelState';
+import { handleAiMessage } from './aiHandlers';
+import { resolveSessionProvider } from './providers';
 
 /**
  * Handles an already-authorized message.
@@ -54,7 +55,23 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     case 'extraction-result':
       return handleExtraction(message);
     case 'get-state':
-      return buildPanelState();
+      return buildAgentPanelState();
+    case 'session-create':
+    case 'session-message':
+    case 'session-command':
+    case 'session-select':
+    case 'session-source':
+    case 'session-tab':
+      return handleSessionMessage(message);
+    case 'ai-status':
+    case 'set-provider-key':
+    case 'forget-provider-key':
+    case 'test-provider':
+    case 'set-ai-preferences':
+    case 'accept-cloud-disclosure':
+    case 'delete-local-data': {
+      return handleAiMessage(message);
+    }
     case 'decide-approval': {
       const engine = await createEngine();
       const workflow = await engine.decideApproval(message.approvalId, message.approved);
@@ -494,15 +511,14 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
   unsupported: string[];
   reason?: string;
 }> {
-  const model = new ChromeLanguageModelCapability();
-  const availability = await model.availability();
-  if (availability !== 'available') {
+  const resolved = await resolveSessionProvider();
+  if (resolved.kind === 'blocked') {
     return {
       noteId: null,
       draft: '',
       label: '',
       unsupported: [],
-      reason: explainAvailability(availability),
+      reason: resolved.blocker.message,
     };
   }
 
@@ -527,10 +543,11 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
 
   let draft: string;
   try {
-    draft = await model.generate({
-      instruction: composed.instruction,
-      context: composed.context,
-      ...(composed.targetWords ? { targetWords: composed.targetWords } : {}),
+    draft = await resolved.provider.generate({
+      system: composed.instruction,
+      messages: [{ role: 'user', content: buildPrompt(composed) }],
+      model: resolved.model,
+      ...(composed.targetWords ? { maxOutputTokens: composed.targetWords } : {}),
     });
   } catch (error) {
     return {
@@ -555,7 +572,7 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
         id: crypto.randomUUID(),
         origin: 'generated',
         text: draft,
-        generatedBy: 'chrome-on-device',
+        generatedBy: resolved.providerId,
         createdAt: now,
       },
     ],
@@ -572,8 +589,10 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
 }
 
 async function handleModelStatus(): Promise<{ availability: string; explanation: string }> {
-  const availability = await new ChromeLanguageModelCapability().availability();
-  return { availability, explanation: explainAvailability(availability) };
+  const resolved = await resolveSessionProvider();
+  return resolved.kind === 'ready'
+    ? { availability: 'available', explanation: `${resolved.displayName} is ready.` }
+    : { availability: resolved.blocker.kind, explanation: resolved.blocker.message };
 }
 
 const PREPARE_WORKSPACE = 'prepare-workspace';
@@ -597,7 +616,7 @@ export interface AskAboutPageResult {
  */
 export async function handleAskAboutPage(
   message: Extract<Message, { type: 'ask-about-page' }>,
-  model: LanguageModelCapability = new ChromeLanguageModelCapability(),
+  model?: LanguageModelCapability,
 ): Promise<AskAboutPageResult> {
   const observation = await readObservation(message.tabId);
   if (observation?.restricted) {
@@ -613,9 +632,14 @@ export async function handleAskAboutPage(
       reason: 'Motion can only answer questions about a course page it can read.',
     };
   }
-  const availability = await model.availability();
-  if (availability !== 'available')
-    return { answer: null, reason: explainAvailability(availability) };
+  const resolution = model ? null : await resolveSessionProvider();
+  const provider = resolution?.kind === 'ready' ? resolution : null;
+  if (model) {
+    const availability = await model.availability();
+    if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  } else if (resolution?.kind === 'blocked') {
+    return { answer: null, reason: resolution.blocker.message };
+  }
   const content = await askContentScript(message.tabId);
   if (!content) return { answer: null, reason: 'Motion could not read that page.' };
   if (!sameWorkspacePage(observation, content.url)) {
@@ -632,8 +656,18 @@ export async function handleAskAboutPage(
       question: message.question,
       history: message.history,
     });
-    const answer = await model.generate({ ...prompt, targetWords: 250 });
-    return { answer: answer.trim(), label: CHAT_LABEL };
+    const answer = model
+      ? await model.generate({ ...prompt, targetWords: 250 })
+      : await provider!.provider.generate({
+          system: prompt.instruction,
+          messages: [{ role: 'user', content: buildPrompt(prompt) }],
+          model: provider!.model,
+          maxOutputTokens: 250,
+        });
+    return {
+      answer: answer.trim(),
+      label: model ? CHAT_LABEL : 'Answered by Motion from this page. Check it against the page before relying on it.',
+    };
   } catch {
     console.warn('Motion on-device model generation failed.');
     return { answer: null, reason: 'The on-device model could not answer. Try again.' };
