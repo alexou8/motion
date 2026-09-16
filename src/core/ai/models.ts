@@ -1,0 +1,102 @@
+/**
+ * Curated model lists and resolution (ARCH D4 / VISION §19).
+ *
+ * Students should never need to understand model IDs. Each provider exposes
+ * a short, labelled list plus a `recommended` default; `resolveModel` maps a
+ * saved preference back to something usable even after a model is deprecated
+ * or renamed, without ever throwing (a bad saved id must not corrupt a
+ * session — it just falls back with a notice the caller can surface).
+ */
+
+import type { ProviderId } from './types';
+
+export interface CuratedModel {
+  id: string;
+  label: string;
+}
+
+export const CHROME_LOCAL_MODELS: CuratedModel[] = [{ id: 'chrome-on-device', label: 'On-device (Chrome)' }];
+
+export const ANTHROPIC_MODELS: CuratedModel[] = [
+  { id: 'claude-sonnet-5', label: 'Balanced' },
+  { id: 'claude-opus-5', label: 'Most capable' },
+  { id: 'claude-haiku-4-5-20251001', label: 'Fastest' },
+];
+
+export const ANTHROPIC_RECOMMENDED = 'claude-sonnet-5';
+
+/** Preference order for resolving OpenAI's "recommended" from `/v1/models`. */
+export const OPENAI_RECOMMENDED_PREFERENCE = ['gpt-5.6', 'gpt-5.5', 'gpt-5', 'gpt-4.1'];
+export const OPENAI_RECOMMENDED_FALLBACK = 'gpt-5';
+
+export const OPENAI_MODELS: CuratedModel[] = [
+  { id: 'gpt-5.6', label: 'Balanced' },
+  { id: 'gpt-5.6-mini', label: 'Fastest' },
+];
+
+export function curatedModelsFor(providerId: ProviderId): CuratedModel[] {
+  switch (providerId) {
+    case 'chrome-local':
+      return CHROME_LOCAL_MODELS;
+    case 'anthropic':
+      return ANTHROPIC_MODELS;
+    case 'openai':
+      return OPENAI_MODELS;
+  }
+}
+
+function recommendedFor(providerId: ProviderId): string {
+  switch (providerId) {
+    case 'chrome-local':
+      return 'chrome-on-device';
+    case 'anthropic':
+      return ANTHROPIC_RECOMMENDED;
+    case 'openai':
+      return OPENAI_RECOMMENDED_FALLBACK;
+  }
+}
+
+/**
+ * Picks the exact family id to use for a `recommended` OpenAI request:
+ * first entry in `OPENAI_RECOMMENDED_PREFERENCE` present in `listedIds`
+ * (prefix match on the exact family, excluding `-mini`/`-nano` variants),
+ * falling back to `OPENAI_RECOMMENDED_FALLBACK` when none match or no list
+ * was supplied.
+ */
+export function resolveOpenAIRecommended(listedIds?: string[]): string {
+  if (!listedIds || listedIds.length === 0) return OPENAI_RECOMMENDED_FALLBACK;
+  const usable = listedIds.filter((id) => !/-mini$|-nano$/i.test(id));
+  for (const family of OPENAI_RECOMMENDED_PREFERENCE) {
+    const match = usable.find((id) => id === family || id.startsWith(`${family}-`));
+    if (match) return match;
+  }
+  return OPENAI_RECOMMENDED_FALLBACK;
+}
+
+export interface ResolvedModel {
+  id: string;
+  /** Set when the requested/saved model wasn't usable and Motion fell back. */
+  fallbackNotice?: string;
+}
+
+/**
+ * Resolves a saved model preference (`'recommended'` or an explicit id) to a
+ * model id to send in a request. Never throws: an unknown or deprecated
+ * saved id silently falls back to the provider's recommended model, with a
+ * human-readable notice the caller may show once.
+ */
+export function resolveModel(providerId: ProviderId, preference: string, listedIds?: string[]): ResolvedModel {
+  const recommended =
+    providerId === 'openai' ? resolveOpenAIRecommended(listedIds) : recommendedFor(providerId);
+
+  if (preference === 'recommended') return { id: recommended };
+
+  const curated = curatedModelsFor(providerId);
+  const known = curated.some((m) => m.id === preference) || (listedIds?.includes(preference) ?? false);
+  if (known) return { id: preference };
+
+  return {
+    id: recommended,
+    fallbackNotice: `The saved model "${preference}" is no longer available, so Motion used its recommended model instead.`,
+  };
+}

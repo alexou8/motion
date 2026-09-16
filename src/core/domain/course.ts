@@ -68,6 +68,8 @@ export const dueDateSchema = z.object({
   /** True when the page gave a date but no clock time. */
   timeAssumed: z.boolean().default(false),
   confidence: confidenceSchema,
+  /** When this due date was last (re-)observed on a page, for staleness checks. */
+  lastObservedAt: z.string().datetime().optional(),
 });
 export type DueDate = z.infer<typeof dueDateSchema>;
 

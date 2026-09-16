@@ -1,5 +1,15 @@
 import { z } from 'zod';
 import { courseSchema, courseTaskSchema, pageContentSchema, pageTypeSchema } from '../domain';
+import { SESSION_MESSAGE_SCHEMAS } from './sessionContracts';
+import {
+  clickActionSchema,
+  fillActionSchema,
+  focusActionSchema,
+  scrollToActionSchema,
+  selectActionSchema,
+  snapshotRequestSchema,
+  toggleActionSchema,
+} from '../actor/contracts';
 
 /**
  * Typed message contracts between extension contexts.
@@ -170,6 +180,7 @@ export const messageSchema = z.discriminatedUnion('type', [
   composeDraftSchema,
   modelStatusSchema,
   getChecklistSchema,
+  ...SESSION_MESSAGE_SCHEMAS,
 ]);
 export type Message = z.infer<typeof messageSchema>;
 export type MessageType = Message['type'];
@@ -197,6 +208,19 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'compose-draft': ['extension-ui'],
   'model-status': ['extension-ui'],
   'get-checklist': ['extension-ui'],
+  'session-create': ['extension-ui'],
+  'session-message': ['extension-ui'],
+  'session-command': ['extension-ui'],
+  'session-select': ['extension-ui'],
+  'session-source': ['extension-ui'],
+  'session-tab': ['extension-ui'],
+  'ai-status': ['extension-ui'],
+  'set-provider-key': ['extension-ui'],
+  'forget-provider-key': ['extension-ui'],
+  'test-provider': ['extension-ui'],
+  'set-ai-preferences': ['extension-ui'],
+  'accept-cloud-disclosure': ['extension-ui'],
+  'delete-local-data': ['extension-ui'],
 };
 
 export function maySend(type: MessageType, role: SenderRole): boolean {
@@ -216,5 +240,17 @@ export const contentRequestSchema = z.discriminatedUnion('type', [
   // a request produce a result the schema then rejects.
   z.object({ type: z.literal('motion:extract'), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('motion:extract-content') }),
+  // Browser actor (ARCH D7): the worker asks for a snapshot of the page's
+  // interactive elements, then acts only against handles from that snapshot.
+  // These are content-bound requests, validated the same way as the two
+  // above — the schemas themselves (see core/actor/contracts.ts) are strict,
+  // so a forged extra field never reaches the content script's actor.
+  snapshotRequestSchema,
+  clickActionSchema,
+  fillActionSchema,
+  selectActionSchema,
+  toggleActionSchema,
+  scrollToActionSchema,
+  focusActionSchema,
 ]);
 export type ContentRequest = z.infer<typeof contentRequestSchema>;

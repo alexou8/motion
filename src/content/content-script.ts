@@ -1,286 +1,42 @@
 /**
- * Motion's content script.
+ * Motion's content script entry point.
  *
- * It runs inside a page Motion does not control and holds no privileged
- * capability. It reads, and it reports. It never clicks, submits, navigates or
- * modifies the document — extraction is a pure `(url, document) -> domain`
- * call, so "read-only" is a property of the code's shape rather than a flag
- * someone has to remember to check.
+ * Wires together the observer (`observer.ts`, read-only) and the actor
+ * (`actor.ts`, the only code here that ever changes a page) behind a single
+ * validated message listener. See ARCH D7 / VISION §8.
  */
-import { resolveAdapter } from '@/core/adapters';
-import { evaluateAssessmentContext } from '@/core/policy';
-import { contentRequestSchema, type Message } from '@/core/messaging';
-
-
-/** Milliseconds of DOM quiet before a page counts as rendered. */
-const SETTLE_MS = 400;
-
-/**
- * Longest wait before observing anyway. A page with a clock, a live region or
- * any other continuous churn never goes quiet, and without a ceiling the
- * re-observe this mechanism exists for would never run at all.
- */
-const SETTLE_MAX_MS = 3_000;
-
-let lastObservation = '';
-
-function send(message: Message): void {
-  // A failure here means the worker is asleep or the panel is closed; neither
-  // is worth surfacing to the student on a page they are reading.
-  void chrome.runtime.sendMessage(message).catch(() => undefined);
-}
-
-function currentUrl(): string {
-  // location.href rather than anything the page can set, and re-read each time
-  // because these are single-page apps that navigate without a reload.
-  return window.location.href;
-}
-
-/**
- * Look at the page and report what kind it is. Runs on load and after
- * client-side navigation.
- */
-function observe(): void {
-  const url = currentUrl();
-  const adapter = resolveAdapter(url);
-  if (!adapter) return;
-
-  const detection = adapter.detectPage({
-    url,
-    document,
-    now: new Date(),
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  });
-  if (!detection) return;
-
-  // Restricted mode is decided here, before anything is read into a payload,
-  // so an assessment page's content never leaves the tab at all.
-  const assessment = evaluateAssessmentContext({
-    pageType: detection.pageType,
-    url,
-    pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
-  });
-
-  // D2L renders its web components after document_idle, so the same page is
-  // observed several times as it settles. Only a change in what Motion would
-  // show is worth a message; repeating the previous observation would churn
-  // the panel and the worker for no new information.
-  const signature = [
-    url,
-    detection.pageType,
-    detection.confidence,
-    assessment.restricted,
-    document.title,
-    // Warnings are part of the payload: a page that reports a partial load and
-    // then resolves it must not keep the stale warning in the panel.
-    detection.warnings.join('\u001f'),
-  ].join('\u0000');
-  if (signature === lastObservation) return;
-  lastObservation = signature;
-
-  send({
-    type: 'page-observed',
-    url,
-    pageType: detection.pageType,
-    title: document.title.slice(0, 500),
-    detectionConfidence: detection.confidence,
-    warnings: detection.warnings.slice(0, 50),
-    restricted: assessment.restricted,
-  });
-}
-
-/** Full extraction, only when the worker asks and only when not restricted. */
-function extract(requestId: string): void {
-  const url = currentUrl();
-  const adapter = resolveAdapter(url);
-  if (!adapter) return;
-
-  const now = new Date();
-  const input = {
-    url,
-    document,
-    now,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  };
-
-  const detection = adapter.detectPage(input);
-  const assessment = evaluateAssessmentContext({
-    pageType: detection?.pageType ?? 'unsupported',
-    url,
-    pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
-  });
-  if (assessment.restricted) {
-    send({
-      type: 'extraction-result',
-      requestId,
-      url,
-      course: null,
-      tasks: [],
-      content: null,
-      warnings: [assessment.reason],
-    });
-    return;
-  }
-
-  send({
-    type: 'extraction-result',
-    requestId,
-    url,
-    course: adapter.extractCourse(input),
-    tasks: adapter.extractTasks(input),
-    content: adapter.extractPageContent(input),
-    warnings: detection?.warnings ?? [],
-  });
-}
-
-/**
- * Returns the page's content for the worker to analyse. Refuses on a restricted
- * page, so instructions are never harvested from a graded attempt.
- */
-function readContent(): { content: unknown } | { refused: string } {
-  const url = currentUrl();
-  const adapter = resolveAdapter(url);
-  if (!adapter) return { refused: 'Motion does not support this page.' };
-
-  const input = {
-    url,
-    document,
-    now: new Date(),
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-  };
-  const detection = adapter.detectPage(input);
-  const assessment = evaluateAssessmentContext({
-    pageType: detection?.pageType ?? 'unsupported',
-    url,
-    pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
-  });
-  if (assessment.restricted) return { refused: assessment.reason };
-
-  return { content: adapter.extractPageContent(input) };
-}
+import { act, buildSnapshot } from '@/content/actor';
+import { extract, initObserver, readContent } from '@/content/observer';
+import { contentRequestSchema } from '@/core/messaging';
 
 chrome.runtime.onMessage.addListener((raw: unknown, _sender, sendResponse) => {
   // The only instructions this script accepts, validated rather than cast.
-  // Neither carries page data inward.
+  // Untrusted page content never reaches this parse — it only ever flows
+  // outward, from the content script to the worker.
   const parsed = contentRequestSchema.safeParse(raw);
   if (!parsed.success) return undefined;
 
-  if (parsed.data.type === 'motion:extract') {
-    extract(parsed.data.requestId ?? crypto.randomUUID());
-    return undefined;
+  switch (parsed.data.type) {
+    case 'motion:extract':
+      extract(parsed.data.requestId ?? crypto.randomUUID());
+      return undefined;
+    case 'motion:extract-content':
+      sendResponse(readContent());
+      return undefined;
+    case 'motion:snapshot':
+      sendResponse(buildSnapshot());
+      return undefined;
+    case 'click':
+    case 'fill':
+    case 'select':
+    case 'toggle':
+    case 'scrollTo':
+    case 'focus':
+      sendResponse(act(parsed.data));
+      return undefined;
+    default:
+      return undefined;
   }
-
-  sendResponse(readContent());
-  return undefined;
 });
 
-observe();
-
-/**
- * D2L navigates without a full page load, so the URL can change under a
- * long-lived content script. Polling the URL is cruder than the Navigation API
- * but works in every Chrome version Motion supports, and the cost is one
- * string comparison per second.
- */
-let lastUrl = currentUrl();
-let urlPoll: ReturnType<typeof setInterval> | undefined;
-
-function startUrlPoll(): void {
-  if (urlPoll !== undefined) return;
-  urlPoll = setInterval(() => {
-    const url = currentUrl();
-    if (url === lastUrl) return;
-    lastUrl = url;
-    observe();
-  }, 1_000);
-}
-
-function stopUrlPoll(): void {
-  if (urlPoll === undefined) return;
-  clearInterval(urlPoll);
-  urlPoll = undefined;
-}
-
-startUrlPoll();
-
-/**
- * `document_idle` fires before D2L's web components have rendered, so the first
- * look at an assignment list can see an empty skeleton. Rather than guess at a
- * delay, watch the document and re-observe once it has been quiet for a moment.
- * `observe()` is a pure read and reports only when the observation changed, so
- * running it again is free when the page was already settled.
- */
-let settleTimer: ReturnType<typeof setTimeout> | undefined;
-let settleDeadline: ReturnType<typeof setTimeout> | undefined;
-
-function settled(): void {
-  if (settleTimer !== undefined) clearTimeout(settleTimer);
-  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
-  settleTimer = undefined;
-  settleDeadline = undefined;
-  observe();
-}
-
-const settleObserver = new MutationObserver(() => {
-  if (settleTimer !== undefined) clearTimeout(settleTimer);
-  settleTimer = setTimeout(settled, SETTLE_MS);
-  if (settleDeadline === undefined) settleDeadline = setTimeout(settled, SETTLE_MAX_MS);
-});
-
-/**
- * `characterData` as well as `childList`: D2L swaps the text of an existing
- * node — "Loading" becoming a quiz's own controls — without touching the
- * structure, and that changes what kind of page this is.
- */
-function watchPage(): void {
-  if (!document.documentElement) return;
-  settleObserver.observe(document.documentElement, {
-    childList: true,
-    subtree: true,
-    characterData: true,
-  });
-}
-
-function stopWatchingPage(): void {
-  settleObserver.disconnect();
-  if (settleTimer !== undefined) clearTimeout(settleTimer);
-  if (settleDeadline !== undefined) clearTimeout(settleDeadline);
-  settleTimer = undefined;
-  settleDeadline = undefined;
-}
-
-watchPage();
-
-// Coming back through the back/forward cache does not re-run the script, and
-// the service worker may have been suspended meanwhile: re-announce the page.
-// Only on a restore -- pageshow also fires on an ordinary load, where observe()
-// has already run and a second identical report would be noise.
-window.addEventListener('pageshow', (event) => {
-  if (!event.persisted) return;
-  // A restore reuses the document that pagehide tore down, so start watching
-  // again before reporting: otherwise the page is observed once and then never
-  // again for as long as the student stays on it.
-  watchPage();
-  startUrlPoll();
-  lastObservation = '';
-  observe();
-});
-
-// Returning to a tab is the other moment the panel may be showing something
-// else: the worker keeps one observation for all tabs, so the visible tab
-// re-announces itself.
-document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState !== 'visible') return;
-  lastObservation = '';
-  observe();
-});
-
-// Leave the page as we found it: stop watching before it is frozen or unloaded,
-// so the observer and the poll cannot hold a bfcache entry open.
-window.addEventListener('pagehide', () => {
-  stopWatchingPage();
-  stopUrlPoll();
-});
+initObserver();

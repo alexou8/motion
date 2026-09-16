@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { courseSchema, courseTaskSchema, pageTypeSchema } from '../domain';
 import { approvalRequestSchema } from '../policy';
 import { workflowSchema } from '../workflows/types';
+import { agentSessionSchema } from '../session/types';
 
 /**
  * Everything the side panel renders, in one serializable shape.
@@ -41,6 +42,33 @@ export const pageContextSchema = z.object({
 });
 export type PageContext = z.infer<typeof pageContextSchema>;
 
+export const sessionSummarySchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  status: agentSessionSchema.shape.status,
+  courseId: z.string().nullable(),
+  taskId: z.string().nullable(),
+  updatedAt: z.string().datetime(),
+  needsYou: z.number().int().nonnegative(),
+  currentStepTitle: z.string().nullable(),
+});
+export type SessionSummary = z.infer<typeof sessionSummarySchema>;
+
+export const deadlineIdsSchema = z.object({
+  today: z.array(z.string()),
+  upcoming: z.array(z.string()),
+  overdue: z.array(z.string()),
+  needsReview: z.array(z.string()),
+});
+
+export const panelAiSchema = z.object({
+  providerId: z.enum(['chrome-local', 'openai', 'anthropic']),
+  displayName: z.string(),
+  cloud: z.boolean(),
+  status: z.string(),
+  message: z.string(),
+});
+
 export const panelStateSchema = z.object({
   connection: connectionStateSchema,
   page: pageContextSchema,
@@ -54,6 +82,16 @@ export const panelStateSchema = z.object({
   corruptedRecords: z.number().int().nonnegative().default(0),
   /** True while the worker is mid-extraction, for the loading state. */
   busy: z.boolean().default(false),
+  /** AgentSessions, most recently updated first (summaries: no conversation/activity). */
+  sessions: z.array(sessionSummarySchema).default([]),
+  /** The session the panel is showing, in full. Null shows the session list. */
+  activeSession: agentSessionSchema.nullable().default(null),
+  /** Deadline buckets across known courses (task ids reference `tasks`). */
+  deadlines: deadlineIdsSchema.default({ today: [], upcoming: [], overdue: [], needsReview: [] }),
+  /** The selected AI provider as the session header shows it ("AI · OpenAI"). */
+  ai: panelAiSchema.default({ providerId: 'chrome-local', displayName: 'Chrome Local', cloud: false, status: 'unavailable', message: '' }),
+  /** Text being generated right now for the active session, if streaming. */
+  streaming: z.object({ sessionId: z.string(), text: z.string().max(40_000) }).nullable().default(null),
 });
 export type PanelState = z.infer<typeof panelStateSchema>;
 
@@ -73,6 +111,11 @@ export const EMPTY_PANEL_STATE: PanelState = {
   approvals: [],
   corruptedRecords: 0,
   busy: false,
+  sessions: [],
+  activeSession: null,
+  deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] },
+  ai: { providerId: 'chrome-local', displayName: 'Chrome Local', cloud: false, status: 'unavailable', message: '' },
+  streaming: null,
 };
 
 /** How long before an observation is shown as stale rather than current. */

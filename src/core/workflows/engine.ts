@@ -1,9 +1,12 @@
 import type { z } from 'zod';
 import {
+  consumeApproval,
+  FRESH_APPROVAL_TTL_MS,
+  tierOf,
   isApprovalUsable,
-  isProhibited,
-  requiresApproval,
+  policyDecision,
   riskOf,
+  targetDigest,
   type ActionType,
   type ApprovalRequest,
 } from '../policy';
@@ -81,6 +84,20 @@ export interface EngineOptions {
   /** Schedules a retry. Backed by chrome.alarms, never setTimeout. */
   scheduleRetry?: (workflowId: string, at: Date) => void;
   onChange?: (workflow: Workflow) => void;
+  /**
+   * Live policy context for a step's target, evaluated fresh before every
+   * execution attempt. Defaults to "not restricted, nothing auto-allowed",
+   * which is the conservative choice: a caller that does not wire this up
+   * gets approval gates rather than silent automation.
+   */
+  policyContext?: (workflow: Workflow, step: WorkflowStep) => Promise<PolicyContext>;
+}
+
+export interface PolicyContext {
+  /** Whether the step's target tab is currently a restricted assessment context. */
+  assessmentRestricted: boolean;
+  /** Configurable actions the student has opted into running automatically. */
+  allowedConfigurable: ReadonlySet<ActionType>;
 }
 
 export class WorkflowEngine {
@@ -93,6 +110,7 @@ export class WorkflowEngine {
   private readonly ownerId: string;
   private readonly scheduleRetry: (workflowId: string, at: Date) => void;
   private readonly onChange: (workflow: Workflow) => void;
+  private readonly policyContext: (workflow: Workflow, step: WorkflowStep) => Promise<PolicyContext>;
 
   constructor(options: EngineOptions) {
     this.store = options.store;
@@ -104,6 +122,8 @@ export class WorkflowEngine {
     this.ownerId = options.ownerId ?? `worker-${Math.random().toString(36).slice(2, 10)}`;
     this.scheduleRetry = options.scheduleRetry ?? (() => {});
     this.onChange = options.onChange ?? (() => {});
+    this.policyContext =
+      options.policyContext ?? (async () => ({ assessmentRestricted: false, allowedConfigurable: new Set() }));
   }
 
   async create(
@@ -231,9 +251,18 @@ export class WorkflowEngine {
 
   /** @returns true when the workflow should stop for now. */
   private async runStep(workflow: Workflow, step: WorkflowStep): Promise<boolean> {
-    // The integrity boundary, checked before anything else can influence it.
-    if (isProhibited(step.action)) {
-      await this.failStep(workflow.id, step.id, `Motion does not perform "${step.action}".`);
+    // The integrity boundary, checked before anything else can influence it —
+    // in particular, before any approval record is read. A forbidden action
+    // (statically, or because the step's target is a restricted assessment
+    // context right now) is refused regardless of what any approval claims.
+    const policyCtx = await this.policyContext(workflow, step);
+    const decision = policyDecision({
+      action: step.action,
+      assessmentRestricted: policyCtx.assessmentRestricted,
+      allowedConfigurable: policyCtx.allowedConfigurable,
+    });
+    if (decision.decision === 'forbid') {
+      await this.failStep(workflow.id, step.id, decision.reason);
       return true;
     }
 
@@ -243,10 +272,15 @@ export class WorkflowEngine {
       return true;
     }
 
-    if (requiresApproval(step.action)) {
-      const gate = await this.checkApproval(workflow, step);
-      if (gate === 'halt') return true;
-      if (gate === 'denied') return false; // moved on; keep going
+    let consumedApprovalId: string | null = null;
+    if (decision.decision === 'needs-approval' || decision.decision === 'needs-fresh-approval') {
+      const gate = await this.checkApproval(
+        workflow,
+        step,
+        decision.decision === 'needs-fresh-approval' ? 'fresh-confirmation' : 'configurable',
+      );
+      if (gate.outcome !== 'proceed') return gate.outcome === 'halt' ? true : false; // 'denied': moved on, keep going
+      consumedApprovalId = gate.approvalId;
     }
 
     const generation = workflow.lease?.generation ?? 0;
@@ -255,21 +289,33 @@ export class WorkflowEngine {
     const needsIntent = typeof capability.reconcile === 'function';
 
     // Write the intent BEFORE the effect, so a crash leaves evidence to
-    // reconcile against rather than an untracked side effect.
+    // reconcile against rather than an untracked side effect. Consuming the
+    // approval is folded into this same compare-and-swap: if another
+    // execution already stamped this exact approval id as consumed here, our
+    // write is declined, so a single approval can never authorize two runs
+    // even when two `advance()` calls race past the approval-store read.
     const started = await this.store.update(workflow.id, (current) => {
       if (current.lease?.generation !== generation) return null;
+      const currentStep = current.steps.find((s) => s.id === step.id);
+      if (consumedApprovalId && currentStep?.consumedApprovalId === consumedApprovalId) return null;
       return this.patchStep(current, step.id, (s) => ({
         ...s,
         status: 'running',
         attempt,
         startedAt: s.startedAt ?? this.now().toISOString(),
         error: null,
+        consumedApprovalId: consumedApprovalId ?? s.consumedApprovalId,
         intent: needsIntent
           ? { key: intentKey, state: 'prepared', evidence: {}, updatedAt: this.now().toISOString() }
           : null,
       }));
     });
-    if (!started) return true; // lost the lease
+    if (!started) return true; // lost the lease, or lost the race to consume the approval
+
+    if (consumedApprovalId) {
+      const approval = await this.approvals.get(consumedApprovalId);
+      if (approval) await this.approvals.save(consumeApproval(approval, this.now()));
+    }
 
     const context: StepContext = {
       workflow: started,
@@ -413,24 +459,31 @@ export class WorkflowEngine {
   private async checkApproval(
     workflow: Workflow,
     step: WorkflowStep,
-  ): Promise<'proceed' | 'halt' | 'denied'> {
+    tier: 'configurable' | 'fresh-confirmation',
+  ): Promise<{ outcome: 'proceed'; approvalId: string } | { outcome: 'halt' | 'denied' }> {
     const now = this.now();
+    const attempt = step.attempt + 1;
+    const target = String(step.input['target'] ?? workflow.title);
+    const digest = targetDigest({ action: step.action, target, payload: step.input });
 
     if (step.approvalId) {
       const existing = await this.approvals.get(step.approvalId);
       if (existing) {
-        const usable = isApprovalUsable(existing, now);
-        if (usable.usable) return 'proceed';
+        const usable = isApprovalUsable(existing, now, { targetDigest: digest, stepAttempt: attempt });
+        if (usable.usable) return { outcome: 'proceed', approvalId: existing.id };
         if (existing.status === 'denied') {
           await this.skipStep(workflow.id, step.id, 'Declined.');
-          return 'denied';
+          return { outcome: 'denied' };
         }
         if (existing.status === 'pending') {
           await this.park(workflow.id, step.id, 'awaiting-approval');
-          return 'halt';
+          return { outcome: 'halt' };
         }
-        // Expired: mark it and ask again rather than acting on a stale answer.
-        await this.approvals.save({ ...existing, status: 'expired' });
+        // Approved but stale/consumed/retargeted, or already expired: mark it
+        // (if not already) and ask again rather than acting on a stale answer.
+        if (existing.status === 'approved') {
+          await this.approvals.save({ ...existing, status: 'expired' });
+        }
       }
     }
 
@@ -440,15 +493,19 @@ export class WorkflowEngine {
       stepId: step.id,
       action: step.action,
       risk: riskOf(step.action),
+      tier,
       summary: step.title,
-      target: String(step.input['target'] ?? workflow.title),
+      target,
       effect: String(step.input['effect'] ?? 'Motion will carry out this step.'),
       reversible: step.input['reversible'] !== false,
       payload: step.input,
+      targetDigest: digest,
+      stepAttempt: attempt,
       status: 'pending',
       requestedAt: now.toISOString(),
       decidedAt: null,
       expiresAt: null,
+      consumedAt: null,
     };
     await this.approvals.save(approval);
 
@@ -464,7 +521,7 @@ export class WorkflowEngine {
         updatedAt: now.toISOString(),
       };
     });
-    return 'halt';
+    return { outcome: 'halt' };
   }
 
   /** Called from the UI once a student decides. */
@@ -480,8 +537,8 @@ export class WorkflowEngine {
       status: approved ? 'approved' : 'denied',
       decidedAt: now.toISOString(),
       expiresAt:
-        approved && approval.risk === 'high'
-          ? new Date(now.getTime() + 2 * 60 * 1000).toISOString()
+        approved && (approval.tier ?? tierOf(approval.action)) === 'fresh-confirmation'
+          ? new Date(now.getTime() + FRESH_APPROVAL_TTL_MS).toISOString()
           : null,
     });
 

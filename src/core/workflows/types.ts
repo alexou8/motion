@@ -83,6 +83,15 @@ export const workflowStepSchema = z.object({
   error: z.string().nullable().default(null),
   sourcesVisited: z.array(z.string().url()).default([]),
   approvalId: z.string().nullable().default(null),
+  /**
+   * The approval id actually consumed to authorize the attempt in progress
+   * (or the most recent completed attempt). Stamped in the same
+   * compare-and-swap commit that claims the step for execution, which is
+   * what makes single-use enforcement atomic even under two concurrent
+   * `advance()` calls: whichever call's mutate function runs first sees this
+   * still null and wins, the other sees it already set and its CAS declines.
+   */
+  consumedApprovalId: z.string().nullable().optional(),
   intent: intentSchema.nullable().default(null),
   startedAt: z.string().datetime().nullable().default(null),
   finishedAt: z.string().datetime().nullable().default(null),

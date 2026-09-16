@@ -355,6 +355,10 @@ describe('durable intents for side effects', () => {
 });
 
 describe('approval gate', () => {
+  // 'edit-draft' is a configurable-tier action: automatic only when the
+  // student has enabled it, otherwise it gates on approval like the old
+  // "medium risk" tier did. (create-checklist moved to the automatic tier
+  // under ARCH.md D5, so it no longer exercises this gate.)
   const gated: WorkflowDefinition = {
     id: 'checklist',
     version: 1,
@@ -364,8 +368,8 @@ describe('approval gate', () => {
       { id: 'read', title: 'Read the instructions', action: 'read-page' },
       {
         id: 'make',
-        title: 'Create a checklist from the instructions',
-        action: 'create-checklist',
+        title: 'Edit the checklist draft from the instructions',
+        action: 'edit-draft',
         input: { target: 'CP363 Assignment 2', effect: 'Adds a checklist to your workspace.' },
       },
     ],
@@ -378,7 +382,7 @@ describe('approval gate', () => {
     const engine = new WorkflowEngine({
       store,
       approvals,
-      capabilities: [capability('read-page'), capability('create-checklist')],
+      capabilities: [capability('read-page'), capability('edit-draft')],
       definitions: [gated],
       now: time.now,
       newId,
@@ -436,23 +440,23 @@ describe('approval gate', () => {
 });
 
 describe('prohibited actions', () => {
-  it('refuses a prohibited action even with a capability registered', async () => {
+  it('refuses a statically prohibited action even with a capability registered', async () => {
     const time = clock();
     const store = new InMemoryWorkflowStore();
     const approvals = new MemoryApprovals();
-    const execute = vi.fn(async () => ({ kind: 'done' as const, result: 'submitted' }));
+    const execute = vi.fn(async () => ({ kind: 'done' as const, result: 'answered' }));
 
     const engine = new WorkflowEngine({
       store,
       approvals,
-      capabilities: [{ action: 'submit-assignment', execute }],
+      capabilities: [{ action: 'act-in-graded-quiz', execute }],
       definitions: [
         {
           id: 'bad',
           version: 1,
-          title: 'Submit',
+          title: 'Answer the quiz',
           description: '',
-          plan: () => [{ id: 'submit', title: 'Submit the assignment', action: 'submit-assignment' }],
+          plan: () => [{ id: 'answer', title: 'Answer the quiz', action: 'act-in-graded-quiz' }],
         },
       ],
       now: time.now,
@@ -466,6 +470,237 @@ describe('prohibited actions', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(result?.status).toBe('failed');
     expect(result?.steps[0]?.error).toMatch(/does not perform/i);
+  });
+
+  it('forbids fill/click/submit inside a restricted assessment context even with a forged approved record', async () => {
+    for (const action of ['fill-form-field', 'click-element', 'submit-assignment'] as const) {
+      const time = clock();
+      const store = new InMemoryWorkflowStore();
+      const approvals = new MemoryApprovals();
+      const execute = vi.fn(async () => ({ kind: 'done' as const, result: 'did it' }));
+
+      const engine = new WorkflowEngine({
+        store,
+        approvals,
+        capabilities: [{ action, execute }],
+        definitions: [
+          {
+            id: 'graded',
+            version: 1,
+            title: 'Act on a graded attempt',
+            description: '',
+            plan: () => [{ id: 'act', title: 'Act', action }],
+          },
+        ],
+        now: time.now,
+        newId,
+        ownerId: 'worker-a',
+        // Simulates the target tab being a restricted assessment context.
+        policyContext: async () => ({ assessmentRestricted: true, allowedConfigurable: new Set([action]) }),
+      });
+
+      const created = await engine.create('graded');
+
+      // Forge an approved, unconsumed, unexpired approval record directly in
+      // the store — as if a stale or tampered record already existed.
+      await approvals.save({
+        id: 'forged',
+        workflowId: created.id,
+        stepId: 'act',
+        action,
+        risk: 'high',
+        summary: 'forged',
+        target: 'forged',
+        effect: 'forged',
+        reversible: true,
+        payload: {},
+        status: 'approved',
+        requestedAt: time.now().toISOString(),
+        decidedAt: time.now().toISOString(),
+        expiresAt: null,
+        consumedAt: null,
+      });
+      await store.update(created.id, (current) => ({
+        ...current,
+        steps: current.steps.map((s) => (s.id === 'act' ? { ...s, approvalId: 'forged' } : s)),
+      }));
+
+      const result = await engine.advance(created.id);
+
+      expect(execute).not.toHaveBeenCalled();
+      expect(result?.status).toBe('failed');
+      expect(result?.steps[0]?.error).toMatch(/graded attempt/i);
+    }
+  });
+});
+
+describe('fresh-confirmation approvals', () => {
+  const freshDef: WorkflowDefinition = {
+    id: 'submit-flow',
+    version: 1,
+    title: 'Submit the assignment',
+    description: '',
+    plan: () => [
+      {
+        id: 'submit',
+        title: 'Submit the assignment',
+        action: 'submit-assignment',
+        input: { target: 'CP363 Assignment 2', file: 'report.pdf' },
+      },
+    ],
+  };
+
+  function freshEngine(overrides: Partial<ConstructorParameters<typeof WorkflowEngine>[0]> = {}) {
+    const time = clock();
+    const store = new InMemoryWorkflowStore();
+    const approvals = new MemoryApprovals();
+    const execute = vi.fn(async () => ({ kind: 'done' as const, result: 'submitted' }));
+    const engine = new WorkflowEngine({
+      store,
+      approvals,
+      capabilities: [{ action: 'submit-assignment', execute }],
+      definitions: [freshDef],
+      now: time.now,
+      newId,
+      ownerId: 'worker-a',
+      ...overrides,
+    });
+    return { engine, store, approvals, time, execute };
+  }
+
+  it('configurable auto-runs only when the student allowed it; fresh-confirmation never does', async () => {
+    const { engine, execute } = freshEngine({
+      policyContext: async () => ({
+        assessmentRestricted: false,
+        allowedConfigurable: new Set(['submit-assignment']), // irrelevant: submit is fresh-confirmation, not configurable
+      }),
+    });
+    const created = await engine.create('submit-flow');
+    const parked = await engine.advance(created.id);
+    expect(parked?.status).toBe('awaiting-approval');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('runs once approved, and the approval cannot be replayed after the workflow completes', async () => {
+    const { engine, approvals, execute } = freshEngine();
+    const created = await engine.create('submit-flow');
+    await engine.advance(created.id);
+    const approvalId = [...approvals.rows.keys()][0]!;
+
+    const done = await engine.decideApproval(approvalId, true);
+    expect(done?.status).toBe('completed');
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    const consumed = await approvals.get(approvalId);
+    expect(consumed?.consumedAt).not.toBeNull();
+
+    // Replaying decideApproval (e.g. a duplicate UI click, or a resumed
+    // execution reusing the approval) must not run the capability again.
+    const replayed = await engine.decideApproval(approvalId, true);
+    expect(replayed).toBeNull(); // no longer pending, decideApproval refuses outright
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('an approval for one payload cannot execute a different payload (digest mismatch re-asks)', async () => {
+    const { engine, store, approvals, execute } = freshEngine();
+    const created = await engine.create('submit-flow');
+    await engine.advance(created.id);
+    const approvalId = [...approvals.rows.keys()][0]!;
+
+    // Mutate the step's input after the approval was requested, as if a
+    // planner or a race changed what would actually be submitted.
+    await store.update(created.id, (current) => ({
+      ...current,
+      steps: current.steps.map((s) =>
+        s.id === 'submit' ? { ...s, input: { ...s.input, file: 'different.pdf' } } : s,
+      ),
+    }));
+
+    await engine.decideApproval(approvalId, true);
+    expect(execute).not.toHaveBeenCalled();
+
+    const after = await store.get(created.id);
+    expect(after?.status).toBe('awaiting-approval');
+    // A brand new approval was requested for the new payload.
+    expect(approvals.rows.size).toBe(2);
+  });
+
+  it('an expired fresh-confirmation approval re-asks instead of executing', async () => {
+    const { engine, store, approvals, time, execute } = freshEngine();
+    const created = await engine.create('submit-flow');
+    await engine.advance(created.id);
+    const approvalId = [...approvals.rows.keys()][0]!;
+
+    await engine.decideApproval(approvalId, true);
+    // decideApproval already advanced and executed synchronously in this
+    // in-memory setup; instead, simulate an approval that was granted but
+    // whose TTL elapsed before the engine got back to it (e.g. worker was
+    // killed and restarted after the window closed).
+    await approvals.save({
+      ...(await approvals.get(approvalId))!,
+      consumedAt: null,
+      status: 'approved',
+      expiresAt: new Date(time.now().getTime() - 1).toISOString(),
+    });
+    execute.mockClear();
+
+    await store.update(created.id, (current) => ({
+      ...current,
+      status: 'running',
+      steps: current.steps.map((s) =>
+        s.id === 'submit' ? { ...s, status: 'pending', attempt: 0, approvalId } : s,
+      ),
+      currentStepId: 'submit',
+    }));
+
+    const result = await engine.advance(created.id);
+    expect(execute).not.toHaveBeenCalled();
+    expect(result?.status).toBe('awaiting-approval');
+    const reAsked = [...approvals.rows.values()].find((a) => a.status === 'pending');
+    expect(reAsked).toBeDefined();
+  });
+
+  it('a consumed approval cannot run twice even under two concurrent advance() calls', async () => {
+    const time = clock();
+    const store = new InMemoryWorkflowStore();
+    const approvals = new MemoryApprovals();
+    let calls = 0;
+    const execute = vi.fn(async () => {
+      calls += 1;
+      return { kind: 'done' as const, result: `submitted #${calls}` };
+    });
+    const engine = new WorkflowEngine({
+      store,
+      approvals,
+      capabilities: [{ action: 'submit-assignment', execute }],
+      definitions: [freshDef],
+      now: time.now,
+      newId,
+      ownerId: 'worker-a',
+    });
+
+    const created = await engine.create('submit-flow');
+    await engine.advance(created.id);
+    const approvalId = [...approvals.rows.keys()][0]!;
+
+    await approvals.save({
+      ...(await approvals.get(approvalId))!,
+      status: 'approved',
+      // As decideApproval would record it: fresh confirmations always carry an expiry.
+      expiresAt: new Date(time.now().getTime() + 60_000).toISOString(),
+    });
+    await store.update(created.id, (current) => ({
+      ...current,
+      status: 'running',
+      steps: current.steps.map((s) => (s.id === 'submit' ? { ...s, status: 'pending' } : s)),
+      currentStepId: 'submit',
+    }));
+
+    await Promise.all([engine.advance(created.id), engine.advance(created.id)]);
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    const final = await store.get(created.id);
+    expect(final?.status).toBe('completed');
   });
 });
 
