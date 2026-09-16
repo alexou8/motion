@@ -18,8 +18,13 @@ import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { handleMessage, forgetTab, handleActionClick } from './router';
 import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX } from './recovery';
+import { registerInferencePort } from './inferencePort';
+import { onTabRemoved, onTabUpdated } from './workspaceEvents';
+import { warn } from './log';
 
 // --- Registered synchronously. Do not move these into an async function. ---
+
+registerInferencePort();
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'update') {
@@ -37,11 +42,11 @@ chrome.action.onClicked.addListener((tab) => {
   // the first await, so open the panel before starting tab grouping.
   if (tab.windowId !== undefined) {
     void chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
-      console.warn('Motion: could not open the side panel —', error instanceof Error ? error.message : error);
+      void warn('Motion: could not open the side panel', error);
     });
   }
   void handleActionClick(tab).catch((error) => {
-    console.warn('Motion: toolbar grouping failed —', error instanceof Error ? error.message : error);
+    void warn('Motion: toolbar grouping failed', error);
   });
 });
 
@@ -66,7 +71,7 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
   if (!authorized.ok) {
     // Refusals are logged without the payload: a rejected message may contain
     // hostile or personal page content.
-    console.warn('Motion: rejected a message —', authorized.reason);
+    void warn('Motion: rejected a message', authorized.reason);
     sendResponse({ ok: false, error: authorized.reason });
     return false;
   }
@@ -76,9 +81,8 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
       const result = await handleMessage(authorized.message, authorized.tabId);
       sendResponse({ ok: true, result });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unexpected error';
-      console.warn('Motion: message handling failed —', message);
-      sendResponse({ ok: false, error: message });
+      void warn('Motion: message handling failed', error);
+      sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Unexpected error' });
     }
   })();
 
@@ -99,6 +103,9 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 
 /** A closed tab has no page for the panel to describe. */
 chrome.tabs.onRemoved.addListener((tabId) => {
+  void onTabRemoved(tabId).catch((error) => {
+    void warn('Motion: workspace tab removal handling failed', error);
+  });
   void forgetTab(tabId);
 });
 
@@ -108,6 +115,9 @@ chrome.tabs.onRemoved.addListener((tabId) => {
  * relevant inbound event doubles as a recovery trigger.
  */
 chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  void onTabUpdated(tabId, changeInfo, tab).catch((error) => {
+    void warn('Motion: workspace tab update handling failed', error);
+  });
   // A tab that has started going somewhere else is no longer showing what it
   // reported. Drop it now rather than describing the old page — including its
   // URL, which a note would otherwise be filed against — until the new page

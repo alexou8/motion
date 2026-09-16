@@ -1,127 +1,701 @@
+import type { ActRequest, SnapshotResult } from '@/core/actor/contracts';
+import { deriveRequirements, toRequirements } from '@/core/assist';
+import type { AIProvider } from '@/core/ai/types';
+import {
+  checklistSchema,
+  courseSchema,
+  courseTaskSchema,
+  noteSchema,
+  type PageContent,
+} from '@/core/domain';
+import { deriveLinksFromPage } from '@/core/graph';
+import { evaluateAssessmentContext, tierOf, type ActionType } from '@/core/policy';
+import type { AgentSession } from '@/core/session';
+import { openDatabase } from '@/core/storage/db';
+import { courseLinkRepository, sessionRepository } from '@/core/storage/repositories';
+import { Repository } from '@/core/storage/repository';
+import { STORE } from '@/core/storage/schema';
 import type { StepCapability, StepContext, StepOutcome } from '@/core/workflows';
+import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
+import { SessionSecretStore } from '@/platform/ai/secrets';
 import { ChromeTabs, groupTitle, isOpenableUrl, type TabsCapability } from '@/platform/tabs';
+import { actInContentScript, askContentScript, snapshotContentScript } from './contentBridge';
+import {
+  providerBlockerFromError,
+  resolveSessionProvider,
+  type ProviderResolution,
+} from './providers';
 
-/**
- * The closed set of things a workflow may actually do.
- *
- * This is the second enforcement point for the academic-integrity boundary.
- * Blocking prohibited action *names* is worthless if a workflow can reach a
- * generic "run this script" or "navigate to this URL" primitive, so no such
- * primitive exists: every capability is concrete and validates its own
- * parameters (docs/THREAT_MODEL.md T5).
- */
+const SNAPSHOTS_KEY = 'motion.snapshots';
+const OBSERVATION_PREFIX = 'observation:';
+type Input = Record<string, unknown>;
 
-function requireString(input: Record<string, unknown>, key: string): string {
+export interface CapabilityServices {
+  tabs: TabsCapability;
+  askContent: (tabId: number) => Promise<PageContent | null>;
+  snapshot: (tabId: number) => Promise<SnapshotResult | null>;
+  act: (tabId: number, request: ActRequest) => Promise<{ ok: boolean; message?: string } | null>;
+  resolveProvider: () => Promise<ProviderResolution>;
+  now: () => Date;
+}
+
+function defaults(tabs: TabsCapability): CapabilityServices {
+  return {
+    tabs,
+    askContent: askContentScript,
+    snapshot: snapshotContentScript,
+    act: actInContentScript,
+    resolveProvider: () =>
+      resolveSessionProvider({
+        preferencesStore: new ChromePreferencesStore(),
+        secrets: new SessionSecretStore(),
+      }),
+    now: () => new Date(),
+  };
+}
+
+function requireString(input: Input, key: string): string {
   const value = input[key];
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`Step is missing required input "${key}"`);
-  }
+  if (typeof value !== 'string' || value.trim() === '')
+    throw new Error(`Step is missing required input "${key}".`);
   return value;
 }
 
-function requireUrls(input: Record<string, unknown>, key: string): string[] {
-  const value = input[key];
-  if (!Array.isArray(value)) throw new Error(`Step input "${key}" must be a list of URLs`);
-  const urls = value.filter((entry): entry is string => typeof entry === 'string');
-  const rejected = urls.filter((url) => !isOpenableUrl(url));
-  if (rejected.length > 0) {
-    // A URL harvested from a page is attacker-influenced; refuse loudly rather
-    // than silently skipping, so the student learns the page was odd.
-    throw new Error(`Refusing ${rejected.length} link(s) that are not https`);
-  }
+function requireTabId(input: Input): number {
+  const value = input['tabId'];
+  if (!Number.isInteger(value) || (value as number) < 0)
+    throw new Error('Step requires a valid tabId.');
+  return value as number;
+}
+
+function requireUrls(input: Input): string[] {
+  const raw = input['urls'] ?? (typeof input['url'] === 'string' ? [input['url']] : undefined);
+  if (!Array.isArray(raw) || raw.length === 0 || raw.some((url) => typeof url !== 'string'))
+    throw new Error('Step requires one or more URLs.');
+  const urls = raw as string[];
+  if (urls.some((url) => !isOpenableUrl(url)))
+    throw new Error('Motion only opens secure HTTPS URLs.');
   return urls;
 }
 
-function optionalString(input: Record<string, unknown>, key: string): string | null {
-  const value = input[key];
-  return typeof value === 'string' ? value : null;
+function requireSessionId(context: StepContext): string {
+  const sessionId = context.workflow.params['sessionId'];
+  if (typeof sessionId !== 'string' || sessionId.length === 0)
+    throw new Error('This step is not associated with a Motion session.');
+  return sessionId;
 }
 
-/** Opens a set of course resources in a Motion-owned tab group. */
-export function openSourcesCapability(tabs: TabsCapability): StepCapability {
-  /**
-   * Safe to run more than once under the same intent key: `tabs.open` finds a
-   * tab already carrying its operation id instead of opening another, and
-   * `ensureGroup` only adds what is missing. That is what lets a restart finish
-   * a half-done step rather than either repeating it or abandoning it.
-   */
-  const openAndGroup = async (context: StepContext): Promise<StepOutcome> => {
-    const urls = requireUrls(context.step.input, 'urls');
-    if (urls.length === 0) return { kind: 'skipped', reason: 'No sources to open.' };
+async function sessionFor(
+  context: StepContext,
+): Promise<{ value: AgentSession; save: (next: AgentSession) => Promise<void> }> {
+  const db = await openDatabase();
+  const sessions = sessionRepository(db);
+  const value = await sessions.get(requireSessionId(context));
+  if (!value) throw new Error('Motion could not find this session.');
+  return { value, save: (next) => sessions.put(next) };
+}
 
-    // Checked before every effect, not only at commit: a student who closes
-    // the workspace mid-way means "stop opening tabs", and a rejected commit
-    // alone would let the rest of the list open anyway. The result of a stopped
-    // run is discarded by the engine, since its lease is gone.
-    const stopped: StepOutcome = { kind: 'skipped', reason: 'Stopped before finishing.' };
+async function updateSession(
+  context: StepContext,
+  fn: (session: AgentSession) => AgentSession,
+): Promise<void> {
+  const { value, save } = await sessionFor(context);
+  await save(fn(value));
+}
 
-    const opened: number[] = [];
-    for (const [index, url] of urls.entries()) {
-      if (!(await context.stillCurrent())) return stopped;
-      const tab = await tabs.open(url, `${context.intentKey}:${index}`);
-      opened.push(tab.tabId);
+function workspaceHas(session: AgentSession, tabId: number): boolean {
+  const workspace = session.workspace;
+  return (
+    !workspace.releasedTabIds.includes(tabId) &&
+    (workspace.ownedTabIds.includes(tabId) || workspace.adoptedTabIds.includes(tabId))
+  );
+}
+
+function workspaceTitle(session: AgentSession): string {
+  return groupTitle([session.title]);
+}
+
+async function isRestricted(tabId: number, content?: PageContent): Promise<boolean> {
+  const key = `${OBSERVATION_PREFIX}${tabId}`;
+  const stored = (await chrome.storage.session.get(key))[key];
+  if (
+    typeof stored === 'object' &&
+    stored !== null &&
+    (stored as { restricted?: unknown }).restricted === true
+  )
+    return true;
+  return content
+    ? evaluateAssessmentContext({
+        pageType: content.pageType,
+        url: content.url,
+        pageTitle: content.title,
+        visibleText: content.text.slice(0, 4_000),
+      }).restricted
+    : false;
+}
+
+function sourceKind(content: PageContent): AgentSession['context']['sources'][number]['kind'] {
+  if (content.pageType === 'assignment') return 'instructions';
+  if (content.pageType === 'discussion-topic') return 'discussion';
+  if (content.pageType === 'content-module' || content.pageType === 'content-topic')
+    return 'module';
+  return 'other';
+}
+
+function openTabCapability(services: CapabilityServices): StepCapability {
+  const execute = async (context: StepContext): Promise<StepOutcome> => {
+    const urls = requireUrls(context.step.input);
+    // Persisted pre-session workflows remain supported during the migration.
+    // They retain their original ownership model; agent-turns always supply a
+    // session id and take the stricter session workspace path below.
+    if (typeof context.workflow.params['sessionId'] !== 'string') {
+      return openSourcesCapability(services.tabs).execute(context);
     }
-    if (!(await context.stillCurrent())) return stopped;
-
-    const title = groupTitle([
-      optionalString(context.step.input, 'courseCode'),
-      optionalString(context.step.input, 'label'),
-    ]);
-    const groupId = await tabs.ensureGroup({ title, color: 'blue' }, opened);
-
+    const { value: session } = await sessionFor(context);
+    const tabIds: number[] = [];
+    for (const [index, url] of urls.entries()) {
+      if (!(await context.stillCurrent()))
+        return { kind: 'skipped', reason: 'Stopped before opening the next tab.' };
+      tabIds.push((await services.tabs.open(url, `${context.intentKey}:${index}`)).tabId);
+    }
+    if (!(await context.stillCurrent()))
+      return { kind: 'skipped', reason: 'Stopped before grouping tabs.' };
+    const groupId = await services.tabs.ensureGroup(
+      { title: workspaceTitle(session), color: 'blue' },
+      tabIds,
+    );
+    const sessionKey = await services.tabs.sessionKey();
+    await updateSession(context, (current) => ({
+      ...current,
+      updatedAt: services.now().toISOString(),
+      workspace: {
+        ...current.workspace,
+        groupId,
+        groupTitle: workspaceTitle(current),
+        sessionKey,
+        ownedTabIds: [...new Set([...current.workspace.ownedTabIds, ...tabIds])],
+      },
+    }));
     return {
       kind: 'done',
-      result: `Opened ${opened.length} page${opened.length === 1 ? '' : 's'} in "${title}".`,
+      result: `Opened ${tabIds.length} page${tabIds.length === 1 ? '' : 's'} in ${workspaceTitle(session)}.`,
       sourcesVisited: urls,
-      // The record of which tabs Motion owns, and in which browser session
-      // those ids mean anything (src/core/workspace/ownership.ts).
-      evidence: { groupId, tabIds: opened, sessionKey: await tabs.sessionKey() },
+      evidence: { groupId, tabIds, sessionKey },
     };
   };
-
   return {
     action: 'open-tab',
-
-    execute: openAndGroup,
-
-    /**
-     * After a restart, find out whether the tabs were actually opened before
-     * doing it again. Tabs Motion opened carry their operation id in the URL,
-     * which survives the worker dying; a stored tab id would not.
-     *
-     * Finding some is not the same as finishing: the worker may have died
-     * between opening the tabs and grouping them, or halfway through the list.
-     * So the step is completed under the *original* key — found tabs are
-     * reused, missing ones opened, and all of them grouped.
-     */
-    async reconcile(context: StepContext): Promise<StepOutcome | null> {
-      const urls = requireUrls(context.step.input, 'urls');
-      for (const index of urls.keys()) {
-        if (await tabs.findByOperation(`${context.intentKey}:${index}`)) {
-          return openAndGroup(context);
-        }
-      }
-      return null; // it never happened; safe to run
+    execute,
+    async reconcile(context) {
+      const urls = requireUrls(context.step.input);
+      const existing = await Promise.all(
+        urls.map((_, index) => services.tabs.findByOperation(`${context.intentKey}:${index}`)),
+      );
+      return existing.some(Boolean) ? execute(context) : null;
     },
   };
 }
 
-/**
- * Reading is deliberately not a browser action: the content script has already
- * observed the page, so this step consumes what was reported rather than
- * reaching into a tab itself.
- */
-export function readPageCapability(): StepCapability {
+function createTabGroupCapability(services: CapabilityServices): StepCapability {
+  return {
+    action: 'create-tab-group',
+    async execute(context) {
+      const { value: session } = await sessionFor(context);
+      const tabIds = session.workspace.ownedTabIds.filter(
+        (id) => !session.workspace.releasedTabIds.includes(id),
+      );
+      if (tabIds.length === 0)
+        return { kind: 'skipped', reason: 'There are no Motion-owned tabs to group.' };
+      const groupId = await services.tabs.ensureGroup(
+        { title: workspaceTitle(session), color: 'blue' },
+        tabIds,
+      );
+      await updateSession(context, (current) => ({
+        ...current,
+        updatedAt: services.now().toISOString(),
+        workspace: { ...current.workspace, groupId, groupTitle: workspaceTitle(current) },
+      }));
+      return {
+        kind: 'done',
+        result: `Created the ${workspaceTitle(session)} workspace.`,
+        evidence: { groupId, tabIds },
+      };
+    },
+  };
+}
+
+function navigateOwnedTabCapability(services: CapabilityServices): StepCapability {
+  return {
+    action: 'navigate-owned-tab',
+    async execute(context) {
+      const tabId = requireTabId(context.step.input);
+      const url = requireString(context.step.input, 'url');
+      if (!isOpenableUrl(url))
+        return { kind: 'blocked', reason: 'Motion only navigates to secure HTTPS pages.' };
+      const { value: session } = await sessionFor(context);
+      if (
+        !session.workspace.ownedTabIds.includes(tabId) ||
+        session.workspace.releasedTabIds.includes(tabId)
+      )
+        return {
+          kind: 'blocked',
+          reason: 'Motion only navigates tabs it opened for this workspace.',
+        };
+      await services.tabs.navigateOwned(tabId, url, context.intentKey);
+      return {
+        kind: 'done',
+        result: 'Navigated the Motion-owned workspace tab.',
+        sourcesVisited: [url],
+      };
+    },
+  };
+}
+
+function readPageCapability(services: CapabilityServices): StepCapability {
   return {
     action: 'read-page',
-    async execute(context: StepContext): Promise<StepOutcome> {
-      const url = requireString(context.step.input, 'url');
-      if (!isOpenableUrl(url)) return { kind: 'blocked', reason: 'That page is not a secure URL.' };
-      return { kind: 'done', result: 'Read the page Motion already had open.', sourcesVisited: [url] };
+    async execute(context) {
+      if (typeof context.workflow.params['sessionId'] !== 'string') {
+        const url = requireString(context.step.input, 'url');
+        return isOpenableUrl(url)
+          ? {
+              kind: 'done',
+              result: 'Read the page Motion already had open.',
+              sourcesVisited: [url],
+            }
+          : { kind: 'blocked', reason: 'That page is not a secure URL.' };
+      }
+      const tabId = requireTabId(context.step.input);
+      if (await isRestricted(tabId))
+        return {
+          kind: 'skipped',
+          reason: 'Motion did not store anything from this restricted assessment page.',
+        };
+      const content = await services.askContent(tabId);
+      if (!content) return { kind: 'blocked', reason: 'Motion could not read that page.' };
+      if (await isRestricted(tabId, content))
+        return {
+          kind: 'skipped',
+          reason: 'Motion did not store anything from this restricted assessment page.',
+        };
+      const { value: session, save } = await sessionFor(context);
+      const db = await openDatabase();
+      const course = session.courseId
+        ? await new Repository(db, STORE.courses, courseSchema).get(session.courseId)
+        : null;
+      const task = session.taskId
+        ? await new Repository(db, STORE.tasks, courseTaskSchema).get(session.taskId)
+        : null;
+      if (course)
+        await courseLinkRepository(db).putMany(
+          deriveLinksFromPage(content, course, task, services.now().toISOString()),
+        );
+      const source = {
+        url: content.url,
+        title: content.title,
+        kind: sourceKind(content),
+        excluded: false,
+        provenance: content.url,
+      };
+      await save({
+        ...session,
+        updatedAt: services.now().toISOString(),
+        context: {
+          ...session.context,
+          sources: session.context.sources.some((item) => item.url === source.url)
+            ? session.context.sources
+            : [...session.context.sources, source],
+        },
+      });
+      return {
+        kind: 'done',
+        result: 'Read the page and added it to this session’s context.',
+        sourcesVisited: [content.url],
+      };
     },
   };
 }
 
-export function buildCapabilities(tabs: TabsCapability = new ChromeTabs()): StepCapability[] {
-  return [readPageCapability(), openSourcesCapability(tabs)];
+function snapshotCapability(services: CapabilityServices): StepCapability {
+  return {
+    action: 'inspect-tab',
+    async execute(context) {
+      const tabId = requireTabId(context.step.input);
+      const { value: session } = await sessionFor(context);
+      if (!workspaceHas(session, tabId))
+        return { kind: 'blocked', reason: 'That tab is outside this Motion workspace.' };
+      if (await isRestricted(tabId))
+        return {
+          kind: 'skipped',
+          reason: 'Motion does not inspect controls in a restricted assessment.',
+        };
+      const snapshot = await services.snapshot(tabId);
+      if (!snapshot) return { kind: 'blocked', reason: 'Motion could not inspect page controls.' };
+      const stored = (await chrome.storage.session.get(SNAPSHOTS_KEY))[SNAPSHOTS_KEY];
+      const snapshots =
+        typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
+      await chrome.storage.session.set({ [SNAPSHOTS_KEY]: { ...snapshots, [tabId]: snapshot } });
+      return {
+        kind: 'done',
+        result: `Captured ${snapshot.elements.length} page controls.`,
+        sourcesVisited: [snapshot.url],
+        evidence: { snapshotId: snapshot.snapshotId, tabId },
+      };
+    },
+  };
+}
+
+type ActorAction = Extract<
+  ActionType,
+  | 'fill-form-field'
+  | 'select-option'
+  | 'toggle-control'
+  | 'click-element'
+  | 'save-remote-draft'
+  | 'submit-assignment'
+  | 'post-discussion'
+  | 'prepare-discussion-response'
+>;
+function actorCapability(action: ActorAction, services: CapabilityServices): StepCapability {
+  return {
+    action,
+    async execute(context) {
+      const tabId = requireTabId(context.step.input);
+      const snapshotId = requireString(context.step.input, 'snapshotId');
+      const handle = requireString(context.step.input, 'handle');
+      const { value: session } = await sessionFor(context);
+      if (!workspaceHas(session, tabId))
+        return { kind: 'blocked', reason: 'Motion only acts inside this session’s workspace.' };
+      if (await isRestricted(tabId))
+        return { kind: 'blocked', reason: 'Motion will not act in a restricted assessment.' };
+      const confirmedConsequential =
+        tierOf(action) === 'fresh-confirmation' && Boolean(context.step.consumedApprovalId);
+      const request: ActRequest =
+        action === 'fill-form-field' ||
+        (action === 'prepare-discussion-response' && typeof context.step.input['text'] === 'string')
+          ? {
+              type: 'fill',
+              snapshotId,
+              handle,
+              value: requireString(
+                context.step.input,
+                action === 'fill-form-field' ? 'value' : 'text',
+              ),
+            }
+          : action === 'select-option'
+            ? {
+                type: 'select',
+                snapshotId,
+                handle,
+                value: requireString(context.step.input, 'value'),
+              }
+            : action === 'toggle-control'
+              ? {
+                  type: 'toggle',
+                  snapshotId,
+                  handle,
+                  checked: context.step.input['checked'] === true,
+                }
+              : { type: 'click', snapshotId, handle, confirmedConsequential };
+      const result = await services.act(tabId, request);
+      if (!result?.ok)
+        return {
+          kind: 'blocked',
+          reason: result?.message ?? 'Motion could not complete that page action.',
+        };
+      return { kind: 'done', result: 'Completed the approved page action.' };
+    },
+  };
+}
+
+function providerCapability(
+  action: Extract<ActionType, 'generate-draft' | 'summarize' | 'analyze-rubric'>,
+  services: CapabilityServices,
+): StepCapability {
+  return {
+    action,
+    async execute(context) {
+      const request =
+        typeof context.step.input['direction'] === 'string'
+          ? context.step.input['direction']
+          : typeof context.step.input['text'] === 'string'
+            ? context.step.input['text']
+            : context.step.title;
+      if (request.trim() === '') throw new Error('This AI step needs a specific request.');
+      const resolved = await services.resolveProvider();
+      if (resolved.kind === 'blocked') return { kind: 'blocked', reason: resolved.blocker.message };
+      try {
+        const output = await generate(resolved.provider, resolved.model, request);
+        const { value: session, save } = await sessionFor(context);
+        const now = services.now().toISOString();
+        const noteId = crypto.randomUUID();
+        const db = await openDatabase();
+        await new Repository(db, STORE.notes, noteSchema).put({
+          id: noteId,
+          courseId: session.courseId,
+          taskId: session.taskId,
+          title: context.step.title,
+          tags: [],
+          blocks: [
+            {
+              id: crypto.randomUUID(),
+              origin: 'generated',
+              text: output,
+              generatedBy: resolved.providerId,
+              createdAt: now,
+            },
+          ],
+          createdAt: now,
+          updatedAt: now,
+        });
+        await save({
+          ...session,
+          updatedAt: now,
+          artifacts: [
+            ...session.artifacts,
+            {
+              id: crypto.randomUUID(),
+              kind: action === 'generate-draft' ? 'draft' : 'summary',
+              refId: noteId,
+              title: context.step.title,
+              createdAt: now,
+            },
+          ],
+        });
+        return {
+          kind: 'done',
+          result: `Created a ${action === 'generate-draft' ? 'draft' : 'note'} with ${resolved.displayName}.`,
+        };
+      } catch (error) {
+        return {
+          kind: 'blocked',
+          reason: providerBlockerFromError(error, resolved.displayName).message,
+        };
+      }
+    },
+  };
+}
+
+async function generate(provider: AIProvider, model: string, request: string): Promise<string> {
+  return provider.generate({
+    system:
+      'You are Motion. Help the student understand and prepare their coursework. Do not claim to have completed work the student has not reviewed.',
+    messages: [{ role: 'user', content: request }],
+    model,
+  });
+}
+
+function checklistCapability(services: CapabilityServices): StepCapability {
+  return {
+    action: 'create-checklist',
+    async execute(context) {
+      const tabId = requireTabId(context.step.input);
+      if (await isRestricted(tabId))
+        return { kind: 'skipped', reason: 'Motion did not read a restricted assessment.' };
+      const content = await services.askContent(tabId);
+      if (!content || (await isRestricted(tabId, content)))
+        return { kind: 'blocked', reason: 'Motion could not read assignment instructions.' };
+      const requirements = deriveRequirements(content.instructionBlocks);
+      if (requirements.length === 0)
+        return {
+          kind: 'skipped',
+          reason: 'Motion could not find stated requirements on this page.',
+        };
+      const { value: session, save } = await sessionFor(context);
+      const now = services.now().toISOString();
+      const id = crypto.randomUUID();
+      const db = await openDatabase();
+      await new Repository(db, STORE.checklists, checklistSchema).put({
+        id,
+        courseId: session.courseId ?? 'unassigned',
+        taskId: session.taskId,
+        title: `${content.title || 'Assignment'} checklist`,
+        items: toRequirements(
+          requirements,
+          {
+            url: content.url,
+            pageTitle: content.title,
+            pageType: content.pageType,
+            capturedAt: content.capturedAt,
+          },
+          () => crypto.randomUUID(),
+        ),
+        createdAt: now,
+        updatedAt: now,
+      });
+      await save({
+        ...session,
+        updatedAt: now,
+        artifacts: [
+          ...session.artifacts,
+          {
+            id: crypto.randomUUID(),
+            kind: 'checklist',
+            refId: id,
+            title: `${content.title || 'Assignment'} checklist`,
+            createdAt: now,
+          },
+        ],
+      });
+      return {
+        kind: 'done',
+        result: `Created a checklist with ${requirements.length} requirements.`,
+        sourcesVisited: [content.url],
+      };
+    },
+  };
+}
+
+function noteCapability(services: CapabilityServices): StepCapability {
+  return {
+    action: 'create-note',
+    async execute(context) {
+      const title = requireString(context.step.input, 'title');
+      const text = requireString(context.step.input, 'text');
+      const { value: session, save } = await sessionFor(context);
+      const now = services.now().toISOString();
+      const id = crypto.randomUUID();
+      const db = await openDatabase();
+      await new Repository(db, STORE.notes, noteSchema).put({
+        id,
+        courseId: session.courseId,
+        taskId: session.taskId,
+        title,
+        tags: [],
+        blocks: [{ id: crypto.randomUUID(), origin: 'student', text, createdAt: now }],
+        createdAt: now,
+        updatedAt: now,
+      });
+      await save({
+        ...session,
+        updatedAt: now,
+        artifacts: [
+          ...session.artifacts,
+          { id: crypto.randomUUID(), kind: 'note', refId: id, title, createdAt: now },
+        ],
+      });
+      return { kind: 'done', result: `Saved “${title}”.` };
+    },
+  };
+}
+
+function deadlinesCapability(): StepCapability {
+  return {
+    action: 'extract-deadlines',
+    async execute(context) {
+      const range = requireString(context.step.input, 'range');
+      if (!['today', 'week', 'overdue', 'all'].includes(range))
+        throw new Error('Deadline range is invalid.');
+      const { value: session } = await sessionFor(context);
+      const db = await openDatabase();
+      const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
+      const found = session.courseId
+        ? (await tasks.byIndex('byCourse', session.courseId)).records
+        : (await tasks.all()).records;
+      return {
+        kind: 'done',
+        result: `Found ${found.length} deadline${found.length === 1 ? '' : 's'} in this session’s course.`,
+      };
+    },
+  };
+}
+
+function gatherMaterialCapability(): StepCapability {
+  return {
+    action: 'gather-material',
+    async execute(context) {
+      const { value: session } = await sessionFor(context);
+      const taskId =
+        typeof context.step.input['taskId'] === 'string'
+          ? context.step.input['taskId']
+          : session.taskId;
+      if (!taskId)
+        return { kind: 'blocked', reason: 'Choose an assignment before gathering its resources.' };
+      const db = await openDatabase();
+      const links = (await courseLinkRepository(db).byIndex('byTask', taskId)).records;
+      const urls = links.flatMap((link) =>
+        typeof link.to.url === 'string' && isOpenableUrl(link.to.url) ? [link.to.url] : [],
+      );
+      return urls.length === 0
+        ? { kind: 'skipped', reason: 'Motion has no observed resources for this assignment yet.' }
+        : {
+            kind: 'done',
+            result: `Found ${urls.length} observed resource${urls.length === 1 ? '' : 's'} for this assignment.`,
+            sourcesVisited: urls,
+          };
+    },
+  };
+}
+
+/** The closed worker capability set; there is deliberately no generic DOM or scripting operation. */
+export function buildCapabilities(
+  tabs: TabsCapability = new ChromeTabs(),
+  overrides: Partial<CapabilityServices> = {},
+): StepCapability[] {
+  const services = { ...defaults(tabs), ...overrides, tabs: overrides.tabs ?? tabs };
+  return [
+    readPageCapability(services),
+    openTabCapability(services),
+    createTabGroupCapability(services),
+    navigateOwnedTabCapability(services),
+    gatherMaterialCapability(),
+    snapshotCapability(services),
+    actorCapability('fill-form-field', services),
+    actorCapability('select-option', services),
+    actorCapability('toggle-control', services),
+    actorCapability('click-element', services),
+    actorCapability('save-remote-draft', services),
+    actorCapability('submit-assignment', services),
+    actorCapability('post-discussion', services),
+    actorCapability('prepare-discussion-response', services),
+    providerCapability('generate-draft', services),
+    providerCapability('summarize', services),
+    providerCapability('analyze-rubric', services),
+    checklistCapability(services),
+    noteCapability(services),
+    deadlinesCapability(),
+  ];
+}
+
+/** Compatibility export for the original workspace workflow. */
+export function openSourcesCapability(tabs: TabsCapability): StepCapability {
+  const execute = async (context: StepContext): Promise<StepOutcome> => {
+    const urls = requireUrls(context.step.input);
+    const tabIds: number[] = [];
+    for (const [index, url] of urls.entries()) {
+      if (!(await context.stillCurrent()))
+        return { kind: 'skipped', reason: 'Stopped before finishing.' };
+      tabIds.push((await tabs.open(url, `${context.intentKey}:${index}`)).tabId);
+    }
+    if (!(await context.stillCurrent()))
+      return { kind: 'skipped', reason: 'Stopped before finishing.' };
+    const courseCode =
+      typeof context.step.input['courseCode'] === 'string'
+        ? context.step.input['courseCode']
+        : null;
+    const label =
+      typeof context.step.input['label'] === 'string' ? context.step.input['label'] : null;
+    const title = groupTitle([courseCode, label]);
+    const groupId = await tabs.ensureGroup({ title, color: 'blue' }, tabIds);
+    return {
+      kind: 'done',
+      result: `Opened ${tabIds.length} page${tabIds.length === 1 ? '' : 's'} in "${title}".`,
+      sourcesVisited: urls,
+      evidence: { groupId, tabIds, sessionKey: await tabs.sessionKey() },
+    };
+  };
+  return {
+    action: 'open-tab',
+    execute,
+    async reconcile(context) {
+      const urls = requireUrls(context.step.input);
+      return (
+        await Promise.all(
+          urls.map((_, index) => tabs.findByOperation(`${context.intentKey}:${index}`)),
+        )
+      ).some(Boolean)
+        ? execute(context)
+        : null;
+    },
+  };
 }

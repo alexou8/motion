@@ -1,12 +1,10 @@
-import { contentRequestSchema, type ContentRequest, type Message } from '@/core/messaging';
+import type { Message } from '@/core/messaging';
 import {
   checklistSchema,
   courseSchema,
   courseTaskSchema,
   noteSchema,
-  pageContentSchema,
   EXTRACTION_VERSION,
-  type PageContent,
   type CourseTask,
 } from '@/core/domain';
 import {
@@ -39,6 +37,7 @@ import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/
 import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
+import { askContentScript, sendToContentScript } from './contentBridge';
 
 /**
  * Handles an already-authorized message.
@@ -96,9 +95,12 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     }
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
-    case 'prepare-workspace': return handlePrepareWorkspace(message.tabId);
-    case 'ask-about-page': return handleAskAboutPage(message);
-    case 'close-workspace': return handleCloseWorkspace(message.workflowId);
+    case 'prepare-workspace':
+      return handlePrepareWorkspace(message.tabId);
+    case 'ask-about-page':
+      return handleAskAboutPage(message);
+    case 'close-workspace':
+      return handleCloseWorkspace(message.workflowId);
   }
 }
 
@@ -239,9 +241,10 @@ function legacyTitleMatches(legacy: CourseTask, incoming: CourseTask): boolean {
   const incomingTitle = normalizedTaskTitle(incoming.title);
   if (normalizedTaskTitle(legacy.title) === incomingTitle) return true;
   return legacy.corrections.some(
-    (correction) => correction.field === 'title'
-      && typeof correction.originalValue === 'string'
-      && normalizedTaskTitle(correction.originalValue) === incomingTitle,
+    (correction) =>
+      correction.field === 'title' &&
+      typeof correction.originalValue === 'string' &&
+      normalizedTaskTitle(correction.originalValue) === incomingTitle,
   );
 }
 
@@ -250,13 +253,16 @@ async function findLegacyTask(
   incoming: CourseTask,
 ): Promise<CourseTask | null> {
   const candidates = (await tasks.byIndex('byCourse', incoming.courseId)).records.filter(
-    (candidate) => !candidate.archived
-      && candidate.kind === incoming.kind
-      && (adapterById(candidate.provenance.platformId) ?? resolveAdapter(incoming.provenance.sourceUrl))
-        ?.isLegacyTaskId(candidate.id, incoming.courseId) === true
-      && legacyTitleMatches(candidate, incoming),
+    (candidate) =>
+      !candidate.archived &&
+      candidate.kind === incoming.kind &&
+      (
+        adapterById(candidate.provenance.platformId) ??
+        resolveAdapter(incoming.provenance.sourceUrl)
+      )?.isLegacyTaskId(candidate.id, incoming.courseId) === true &&
+      legacyTitleMatches(candidate, incoming),
   );
-  return candidates.length === 1 ? candidates[0] ?? null : null;
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
 }
 
 /**
@@ -279,7 +285,12 @@ async function handleCorrection(
       if (typeof message.value !== 'string') return { updated: false };
       next.corrections = [
         ...task.corrections,
-        { field: 'title', originalValue: task.title, correctedValue: message.value, correctedAt: now },
+        {
+          field: 'title',
+          originalValue: task.title,
+          correctedValue: message.value,
+          correctedAt: now,
+        },
       ];
       next.title = message.value;
       break;
@@ -308,7 +319,12 @@ async function handleCorrection(
       if (!parsed.success) return { updated: false };
       next.corrections = [
         ...task.corrections,
-        { field: 'status', originalValue: task.status, correctedValue: parsed.data, correctedAt: now },
+        {
+          field: 'status',
+          originalValue: task.status,
+          correctedValue: parsed.data,
+          correctedAt: now,
+        },
       ];
       next.status = parsed.data;
       break;
@@ -471,9 +487,7 @@ async function handleToggleRequirement(
  * submits, or fills anything in — the draft lands in the student's workspace
  * and stops.
  */
-async function handleComposeDraft(
-  message: Extract<Message, { type: 'compose-draft' }>,
-): Promise<{
+async function handleComposeDraft(message: Extract<Message, { type: 'compose-draft' }>): Promise<{
   noteId: string | null;
   draft: string;
   label: string;
@@ -562,60 +576,6 @@ async function handleModelStatus(): Promise<{ availability: string; explanation:
   return { availability, explanation: explainAvailability(availability) };
 }
 
-/** The only frame Motion reads: `all_frames` is false and stays false. */
-const MAIN_FRAME_ID = 0;
-
-/** Attempts, and the pause between them, when reaching the content script. */
-const CONTENT_SCRIPT_ATTEMPTS = 3;
-const CONTENT_SCRIPT_RETRY_MS = 150;
-
-/**
- * Sends one message to the content script in the tab's main frame.
- *
- * Two browser facts shape this:
- *
- *   1. The script is declared with `all_frames: false`, and the authorizer
- *      accepts observations from the main frame only. A tab-wide send is not
- *      reliably delivered to it -- in Chrome 141 it fails with "Receiving end
- *      does not exist" while the script is running -- so frame 0 is addressed
- *      explicitly.
- *   2. The bundled script registers its listener after an async import, so for
- *      a moment after a page loads there is no receiver. A page opened before
- *      the extension has none at all. Retrying a couple of times separates
- *      "not ready yet" from "not there", and the caller is told which.
- */
-async function sendToContentScript(tabId: number, message: ContentRequest): Promise<unknown> {
-  // Validated on the way out as well as on the way in, and it is the *parsed*
-  // value that travels: anything the schema does not describe is left behind
-  // rather than crossing the boundary unexamined.
-  const payload = contentRequestSchema.parse(message);
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CONTENT_SCRIPT_ATTEMPTS; attempt += 1) {
-    try {
-      return await chrome.tabs.sendMessage(tabId, payload, { frameId: MAIN_FRAME_ID });
-    } catch (error) {
-      lastError = error;
-      if (attempt < CONTENT_SCRIPT_ATTEMPTS - 1) {
-        await new Promise((resolve) => setTimeout(resolve, CONTENT_SCRIPT_RETRY_MS));
-      }
-    }
-  }
-  throw lastError;
-}
-
-/** Asks the content script for the current page's content, once. */
-async function askContentScript(tabId: number): Promise<PageContent | null> {
-  try {
-    const response = (await sendToContentScript(tabId, { type: 'motion:extract-content' })) as
-      | { content?: unknown }
-      | undefined;
-    const parsed = pageContentSchema.safeParse(response?.content);
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
-}
-
 const PREPARE_WORKSPACE = 'prepare-workspace';
 
 export interface AskAboutPageResult {
@@ -641,17 +601,28 @@ export async function handleAskAboutPage(
 ): Promise<AskAboutPageResult> {
   const observation = await readObservation(message.tabId);
   if (observation?.restricted) {
-    return { answer: null, reason: 'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.' };
+    return {
+      answer: null,
+      reason:
+        'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.',
+    };
   }
   if (connectionFor(observation) !== 'supported') {
-    return { answer: null, reason: 'Motion can only answer questions about a course page it can read.' };
+    return {
+      answer: null,
+      reason: 'Motion can only answer questions about a course page it can read.',
+    };
   }
   const availability = await model.availability();
-  if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  if (availability !== 'available')
+    return { answer: null, reason: explainAvailability(availability) };
   const content = await askContentScript(message.tabId);
   if (!content) return { answer: null, reason: 'Motion could not read that page.' };
   if (!sameWorkspacePage(observation, content.url)) {
-    return { answer: null, reason: 'The page changed while Motion was reading it. Ask again once it has loaded.' };
+    return {
+      answer: null,
+      reason: 'The page changed while Motion was reading it. Ask again once it has loaded.',
+    };
   }
   try {
     const prompt = composeChatPrompt({
@@ -669,7 +640,10 @@ export async function handleAskAboutPage(
   }
 }
 
-function sameWorkspacePage(observation: StoredObservation | null | undefined, contentUrl: string): boolean {
+function sameWorkspacePage(
+  observation: StoredObservation | null | undefined,
+  contentUrl: string,
+): boolean {
   const observedUrl = observation?.url;
   return observedUrl ? workspacePageUrl(observedUrl) === workspacePageUrl(contentUrl) : false;
 }
@@ -721,9 +695,7 @@ export async function handlePrepareWorkspace(
   }
 
   const adapter = resolveAdapter(content.url);
-  const sources = adapter
-    ? selectWorkspaceSources(content, (url) => adapter.classifyUrl(url))
-    : [];
+  const sources = adapter ? selectWorkspaceSources(content, (url) => adapter.classifyUrl(url)) : [];
   const page = sources[0];
   if (!page) {
     return {
@@ -799,9 +771,7 @@ export async function handleCloseWorkspace(
   // as part of it, so they close with it. Recorded tabs are excluded here: if
   // one is outside the group, the student moved it there.
   const recorded = new Set(tabIds);
-  const unrecorded = (await tabs.tabsOpenedBy(`${workflow.id}:`)).filter(
-    (id) => !recorded.has(id),
-  );
+  const unrecorded = (await tabs.tabsOpenedBy(`${workflow.id}:`)).filter((id) => !recorded.has(id));
 
   const closing = [...new Set([...kept, ...unrecorded])];
   await tabs.close(closing);
@@ -816,7 +786,10 @@ export async function handleCloseWorkspace(
  * both use it, so the readings join the group the icon started rather than a
  * second one. Both page titles come from `document.title`.
  */
-export function workspaceGroupTitle(courseCode: string | null | undefined, pageTitle: string): string {
+export function workspaceGroupTitle(
+  courseCode: string | null | undefined,
+  pageTitle: string,
+): string {
   return groupTitle([courseCode, pageTitle || 'Assignment']);
 }
 
@@ -866,8 +839,10 @@ export async function handleActionClick(
     const live = await tabs.get(tabId);
     const observation = await readObservation(tabId);
     const liveMayAdopt = live !== null && mayAdopt(live, observation);
-    const samePage = liveMayAdopt && typeof observation?.url === 'string'
-      && workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
+    const samePage =
+      liveMayAdopt &&
+      typeof observation?.url === 'string' &&
+      workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
     if (!liveMayAdopt || !samePage) {
       await tabs.forgetAdopted(tabId);
       return declined;
@@ -910,7 +885,8 @@ async function courseForUrl(url: string | null | undefined): Promise<Course | nu
 }
 
 async function currentCourseId(tabId?: number): Promise<string | null> {
-  const activeTabId = tabId ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+  const activeTabId =
+    tabId ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
   if (activeTabId === undefined) return null;
   const observation = await readObservation(activeTabId);
   return (await courseForUrl(observation?.url))?.id ?? null;
@@ -937,7 +913,9 @@ async function requestExtraction(tabId: number | undefined): Promise<{ requested
  * rendered the coursework workspace: the panel claimed a page Motion could not
  * read. The page type is the fact that decides it.
  */
-function connectionFor(observation: StoredObservation | null | undefined): PanelState['connection'] {
+function connectionFor(
+  observation: StoredObservation | null | undefined,
+): PanelState['connection'] {
   if (!observation) return 'idle';
   if (observation.restricted) return 'restricted';
   if (observation.pageType === 'signed-out') return 'signed-out';

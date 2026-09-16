@@ -20,6 +20,7 @@ const MOTION_MARKER = 'motion_op';
 const BROWSER_SESSION_KEY = 'motion:browser-session';
 const OPERATION_KEY_PREFIX = 'motion:op:';
 const ADOPTED_KEY_PREFIX = 'motion:adopted:';
+export const NAVIGATION_MARKERS_KEY = 'motion.navMarkers';
 
 /** An adoption recorded before its grouping, settled with the group id after. */
 export const adoptionRecordSchema = z.discriminatedUnion('state', [
@@ -58,6 +59,11 @@ export interface TabGroupPlan {
   windowId?: number;
 }
 
+export interface SessionGroupPlan {
+  title: string;
+  color: chrome.tabGroups.ColorEnum;
+}
+
 /**
  * Only https URLs on hosts Motion has permission for are ever opened. A URL
  * extracted from a page is attacker-influenced: `javascript:` and `data:` must
@@ -88,9 +94,38 @@ export function operationIdOf(url: string | undefined): string | null {
   }
 }
 
+/**
+ * Records a navigation before asking Chrome to perform it. The marker is
+ * consumed by the workspace event handler when the resulting URL event
+ * arrives, so a student navigation is distinguishable from Motion's own.
+ */
+export async function navigateOwned(tabId: number, url: string, marker: string): Promise<chrome.tabs.Tab> {
+  if (!isOpenableUrl(url)) {
+    throw new Error(`Refusing to navigate to a non-https URL: ${url.slice(0, 40)}`);
+  }
+
+  const stored = await chrome.storage.session.get(NAVIGATION_MARKERS_KEY);
+  const current = stored[NAVIGATION_MARKERS_KEY];
+  const markers: Record<string, string> = {};
+  if (typeof current === 'object' && current !== null) {
+    for (const [key, value] of Object.entries(current)) {
+      if (typeof value === 'string') markers[key] = value;
+    }
+  }
+  markers[String(tabId)] = marker;
+  await chrome.storage.session.set({ [NAVIGATION_MARKERS_KEY]: markers });
+  return chrome.tabs.update(tabId, { url });
+}
+
+/** Ensures a titled Motion group using the platform tabs capability. */
+export async function ensureSessionGroup(plan: SessionGroupPlan, tabIds: number[]): Promise<number> {
+  return new ChromeTabs().ensureGroup(plan, tabIds);
+}
+
 export interface TabsCapability {
   findByOperation(operationId: string): Promise<OpenedTab | null>;
   open(url: string, operationId: string, windowId?: number): Promise<OpenedTab>;
+  navigateOwned(tabId: number, url: string, marker: string): Promise<chrome.tabs.Tab>;
   ensureGroup(plan: TabGroupPlan, tabIds: number[]): Promise<number>;
   findGroup(plan: TabGroupPlan): Promise<number | null>;
   groupInto(existingGroupId: number | null, tabIds: number[], plan: TabGroupPlan): Promise<number>;
@@ -121,6 +156,10 @@ export interface TabsCapability {
 }
 
 export class ChromeTabs implements TabsCapability {
+  async navigateOwned(tabId: number, url: string, marker: string): Promise<chrome.tabs.Tab> {
+    return navigateOwned(tabId, url, marker);
+  }
+
   /**
    * Look for a tab this operation already opened. This is what makes opening a
    * tab idempotent across a service-worker restart.

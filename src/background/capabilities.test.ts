@@ -1,7 +1,17 @@
-import { describe, expect, it } from 'vitest';
-import { workflowSchema, type StepContext } from '@/core/workflows';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
+import {
+  WorkflowEngine,
+  workflowSchema,
+  type ApprovalStore,
+  type StepContext,
+} from '@/core/workflows';
+import { InMemoryWorkflowStore } from '@/core/storage/workflowStore';
+import type { ApprovalRequest } from '@/core/policy';
 import { FakeTabs } from '@/test/fakeTabs';
-import { openSourcesCapability } from './capabilities';
+import { openDatabase } from '@/core/storage/db';
+import { sessionRepository } from '@/core/storage/repositories';
+import { buildCapabilities, openSourcesCapability } from './capabilities';
+import { agentTurn } from './definitions';
 
 const NOW = '2026-03-02T12:00:00.000Z';
 const URLS = [
@@ -19,6 +29,7 @@ function context(
     definitionId: 'prepare-workspace',
     definitionVersion: 1,
     title: 'Motion · CP363 · A2',
+    params: { sessionId: 'cap-session' },
     steps: [
       {
         id: 'open-sources',
@@ -34,8 +45,71 @@ function context(
   return { workflow, step: workflow.steps[0]!, intentKey, now: new Date(NOW), stillCurrent };
 }
 
+const sessionStore = new Map<string, unknown>();
+
+beforeAll(() => {
+  vi.stubGlobal('chrome', {
+    storage: {
+      session: {
+        get: async (key: string | null) =>
+          key === null ? Object.fromEntries(sessionStore) : { [key]: sessionStore.get(key) },
+        set: async (items: Record<string, unknown>) => {
+          Object.entries(items).forEach(([key, value]) => sessionStore.set(key, value));
+        },
+        remove: async (key: string | string[]) => {
+          (Array.isArray(key) ? key : [key]).forEach((item) => sessionStore.delete(item));
+        },
+      },
+      local: { get: async () => ({}), set: async () => undefined },
+    },
+  });
+});
+
+async function seedSession(overrides: Record<string, unknown> = {}) {
+  const db = await openDatabase();
+  await sessionRepository(db).put({
+    id: 'cap-session',
+    title: 'CP363 · A2',
+    goal: 'Work on Assignment 2',
+    courseId: null,
+    taskId: null,
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+    workspace: {
+      groupId: null,
+      groupTitle: '',
+      sessionKey: null,
+      ownedTabIds: [],
+      adoptedTabIds: [],
+      releasedTabIds: [],
+    },
+    plan: { steps: [], currentStepId: null },
+    blockers: [],
+    context: { sources: [] },
+    artifacts: [],
+    agent: { providerId: null, model: null },
+    conversation: [],
+    activity: [],
+    workflowIds: [],
+    pendingModelRequest: null,
+    ...overrides,
+  });
+}
+
+class MemoryApprovals implements ApprovalStore {
+  readonly approvals = new Map<string, ApprovalRequest>();
+  async get(id: string) {
+    return this.approvals.get(id) ?? null;
+  }
+  async save(approval: ApprovalRequest) {
+    this.approvals.set(approval.id, approval);
+  }
+}
+
 describe('opening a workspace', () => {
   it('opens every source and groups them under one titled group', async () => {
+    await seedSession();
     const tabs = new FakeTabs();
     const outcome = await openSourcesCapability(tabs).execute(context());
 
@@ -49,6 +123,7 @@ describe('opening a workspace', () => {
   });
 
   it('stops opening tabs the moment it no longer holds the workflow', async () => {
+    await seedSession();
     const tabs = new FakeTabs();
     let current = true;
     // The student closes the workspace while the first tab is opening.
@@ -68,6 +143,7 @@ describe('opening a workspace', () => {
 
 describe('recovering after the worker died mid-step', () => {
   it('groups the tabs already open and opens only the one still missing', async () => {
+    await seedSession();
     const tabs = new FakeTabs();
     const capability = openSourcesCapability(tabs);
     // The previous worker opened two of three tabs, then died before grouping.
@@ -88,5 +164,126 @@ describe('recovering after the worker died mid-step', () => {
     const tabs = new FakeTabs();
     expect(await openSourcesCapability(tabs).reconcile!(context())).toBeNull();
     expect(tabs.opened).toBe(0);
+  });
+});
+
+describe('capability boundaries', () => {
+  it('validates malformed input before any browser effect', async () => {
+    const tabs = new FakeTabs();
+    const capability = openSourcesCapability(tabs);
+    const malformed = context();
+    malformed.step.input = { urls: ['http://not-secure.example.test'] };
+    await expect(capability.execute(malformed)).rejects.toThrow(/HTTPS/);
+    expect(tabs.opened).toBe(0);
+  });
+
+  it('refuses actor work on a tab outside the session workspace', async () => {
+    await seedSession();
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find(
+      (item) => item.action === 'fill-form-field',
+    )!;
+    const actorContext = context();
+    actorContext.step.action = 'fill-form-field';
+    actorContext.step.input = {
+      tabId: 99,
+      snapshotId: 'snap-1',
+      handle: 'e1',
+      value: 'synthetic value',
+    };
+    const result = await capability.execute(actorContext);
+    expect(result).toEqual({
+      kind: 'blocked',
+      reason: 'Motion only acts inside this session’s workspace.',
+    });
+    expect(act).not.toHaveBeenCalled();
+  });
+
+  it('marks consequential actor calls only after a fresh approval was consumed', async () => {
+    await seedSession({
+      workspace: {
+        groupId: 100,
+        groupTitle: 'Motion · CP363 · A2',
+        sessionKey: 'session-1',
+        ownedTabIds: [10],
+        adoptedTabIds: [],
+        releasedTabIds: [],
+      },
+    });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find(
+      (item) => item.action === 'submit-assignment',
+    )!;
+    const actorContext = context();
+    actorContext.step.action = 'submit-assignment';
+    actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1' };
+    actorContext.step.consumedApprovalId = 'fresh-approval';
+    await capability.execute(actorContext);
+    expect(act).toHaveBeenCalledWith(
+      10,
+      expect.objectContaining({ type: 'click', confirmedConsequential: true }),
+    );
+  });
+
+  it('refuses a workspace control on a restricted assessment tab', async () => {
+    await seedSession({
+      workspace: {
+        groupId: 100,
+        groupTitle: 'Motion · CP363 · A2',
+        sessionKey: 'session-1',
+        ownedTabIds: [10],
+        adoptedTabIds: [],
+        releasedTabIds: [],
+      },
+    });
+    sessionStore.set('observation:10', { restricted: true });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find(
+      (item) => item.action === 'fill-form-field',
+    )!;
+    const actorContext = context();
+    actorContext.step.action = 'fill-form-field';
+    actorContext.step.input = {
+      tabId: 10,
+      snapshotId: 'snap-1',
+      handle: 'e1',
+      value: 'synthetic value',
+    };
+    await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'blocked' });
+    expect(act).not.toHaveBeenCalled();
+    sessionStore.delete('observation:10');
+  });
+
+  it('does not act on a compliant injected plan until fresh approval is granted', async () => {
+    const act = vi.fn(async () => ({ ok: true }));
+    const engine = new WorkflowEngine({
+      store: new InMemoryWorkflowStore(),
+      approvals: new MemoryApprovals(),
+      capabilities: buildCapabilities(new FakeTabs(), { act }),
+      definitions: [agentTurn],
+      now: () => new Date(NOW),
+      newId: () => 'approval-1',
+    });
+    const workflow = await engine.create('agent-turn', {
+      sessionId: 'cap-session',
+      turnSeq: 1,
+      steps: [
+        {
+          id: 't1-0',
+          title: 'Submit synthetic Assignment 2?',
+          action: 'submit-assignment',
+          input: {
+            tabId: 10,
+            snapshotId: 'snap-1',
+            handle: 'e1',
+            target: 'Synthetic Assignment 2',
+            effect: 'This will create a final LMS submission.',
+          },
+        },
+      ],
+    });
+    const waiting = await engine.advance(workflow.id);
+    expect(waiting?.status).toBe('awaiting-approval');
+    expect(act).not.toHaveBeenCalled();
   });
 });

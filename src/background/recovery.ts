@@ -4,6 +4,9 @@ import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
 import { approvalRequestSchema, type ApprovalRequest } from '@/core/policy';
+import { evaluateAssessmentContext, type ActionType } from '@/core/policy';
+import { pageTypeSchema } from '@/core/domain';
+import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { buildCapabilities } from './capabilities';
 import type { TabsCapability } from '@/platform/tabs';
 import { WORKFLOW_DEFINITIONS } from './definitions';
@@ -17,6 +20,45 @@ export const RETRY_ALARM_PREFIX = 'motion:retry:';
 export function scheduleRetryAlarm(workflowId: string, at: Date): void {
   const whenMs = Math.max(at.getTime(), Date.now() + 60_000);
   void chrome.alarms.create(`${RETRY_ALARM_PREFIX}${workflowId}`, { when: whenMs });
+}
+
+interface StoredObservation {
+  restricted?: unknown;
+  url?: unknown;
+  pageType?: unknown;
+  title?: unknown;
+}
+
+/** Re-evaluated for every attempt: an old observation never grants an action. */
+async function policyContextForStep(step: { input: Record<string, unknown> }): Promise<{
+  assessmentRestricted: boolean;
+  allowedConfigurable: ReadonlySet<ActionType>;
+}> {
+  const tabId = step.input['tabId'];
+  let assessmentRestricted = false;
+  if (Number.isInteger(tabId) && (tabId as number) >= 0) {
+    const key = `observation:${tabId}`;
+    const raw = (await chrome.storage.session.get(key))[key] as StoredObservation | undefined;
+    if (raw?.restricted === true) {
+      assessmentRestricted = true;
+    } else if (typeof raw?.url === 'string' && pageTypeSchema.safeParse(raw?.pageType).success) {
+      assessmentRestricted = evaluateAssessmentContext({
+        url: raw.url,
+        pageType: pageTypeSchema.parse(raw.pageType),
+        pageTitle: typeof raw.title === 'string' ? raw.title : '',
+      }).restricted;
+    }
+  }
+  // A missing storage.local is possible during early browser startup (and in
+  // narrow tab-only tests). It must fail closed: configurable actions still
+  // require per-step approval rather than making recovery unavailable.
+  const preferences = await new ChromePreferencesStore().get().catch(() => ({
+    allowedConfigurableActions: [] as ActionType[],
+  }));
+  return {
+    assessmentRestricted,
+    allowedConfigurable: new Set<ActionType>(preferences.allowedConfigurableActions),
+  };
 }
 
 /**
@@ -43,6 +85,7 @@ export async function createEngine(tabs?: TabsCapability): Promise<WorkflowEngin
     // recognisable as someone else's and expires rather than being reused.
     ownerId: `sw-${crypto.randomUUID().slice(0, 8)}`,
     scheduleRetry: scheduleRetryAlarm,
+    policyContext: (_workflow, step) => policyContextForStep(step),
   });
 }
 
