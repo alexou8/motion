@@ -4,6 +4,9 @@ import { resolveAdapter } from '@/core/adapters';
 import { z } from 'zod';
 import type { MotionBridge, MotionCommand } from './bridge';
 import { parseWorkerResult } from './responses';
+import { ChromeLocalProvider } from '@/platform/ai/chromeLocal';
+import { attachInferenceHost } from '@/platform/ai/inferenceHost';
+import { INFERENCE_PORT_NAME } from '@/platform/ai/inferenceFrames';
 
 /**
  * Connects the panel to the service worker.
@@ -48,15 +51,33 @@ async function toWorkerMessage(
   state: PanelState,
 ): Promise<Record<string, unknown> | null> {
   switch (command.type) {
-    case 'prepare-workspace': {
+    case 'session-create': {
+      if (command.tabId !== null) return command;
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      return tab?.id === undefined ? null : { type: 'prepare-workspace', tabId: tab.id };
+      return { ...command, tabId: tab?.id ?? null };
     }
-    case 'ask-about-page': {
+    case 'session-message': {
+      if (command.tabId !== null) return command;
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      return tab?.id === undefined ? null : { type: 'ask-about-page', tabId: tab.id, question: command.question, history: command.history };
+      return { ...command, tabId: tab?.id ?? null };
     }
-    case 'close-workspace': return { type: 'close-workspace', workflowId: command.workflowId };
+    case 'session-adopt-current-tab': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tab?.id === undefined) return null;
+      return { type: 'session-tab', sessionId: command.sessionId, tabId: tab.id, op: 'adopt' };
+    }
+    case 'session-command':
+    case 'session-select':
+    case 'session-source':
+    case 'session-tab':
+    case 'ai-status':
+    case 'set-provider-key':
+    case 'forget-provider-key':
+    case 'test-provider':
+    case 'set-ai-preferences':
+    case 'accept-cloud-disclosure':
+    case 'delete-local-data':
+      return command;
     case 'build-checklist': {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id === undefined) return null;
@@ -81,11 +102,66 @@ async function toWorkerMessage(
       };
     case 'review-draft':
       return { type: 'review-draft', checklistId: command.checklistId, draft: command.draft };
-    case 'model-status':
-      return { type: 'model-status' };
+    case 'get-checklist':
+      return { type: 'get-checklist', checklistId: command.checklistId };
     default:
       return null;
   }
+}
+
+/**
+ * Hosts Chrome's on-device model for the worker (ARCH D2): the Prompt API
+ * only runs in an extension document, never the MV3 service worker, so the
+ * side panel connects a `motion-inference` port outward — which the worker's
+ * own `onConnect` listener receives — and serves generate/cancel frames over
+ * it via {@link attachInferenceHost}. This is platform wiring, not a React
+ * concern, so it is called once from `main.tsx`, never from a component.
+ *
+ * Reconnects with capped exponential backoff whenever the port drops (the
+ * worker can restart at any time; MV3 service workers are ephemeral), so the
+ * panel keeps offering local inference for as long as it stays open.
+ */
+export function startLocalInferenceHost(
+  connect: () => chrome.runtime.Port = () => chrome.runtime.connect({ name: INFERENCE_PORT_NAME }),
+): () => void {
+  let stopped = false;
+  let detach: (() => void) | null = null;
+  let attempt = 0;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+
+  const MAX_BACKOFF_MS = 30_000;
+  const backoffMs = () => Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** attempt);
+
+  const connectOnce = () => {
+    if (stopped) return;
+    let port: chrome.runtime.Port;
+    try {
+      port = connect();
+    } catch {
+      scheduleReconnect();
+      return;
+    }
+    attempt = 0;
+    detach = attachInferenceHost(port, new ChromeLocalProvider());
+    port.onDisconnect.addListener(() => {
+      detach = null;
+      scheduleReconnect();
+    });
+  };
+
+  const scheduleReconnect = () => {
+    if (stopped) return;
+    attempt += 1;
+    timer = setTimeout(connectOnce, backoffMs());
+  };
+
+  connectOnce();
+
+  return () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    detach?.();
+  };
 }
 
 export function createRuntimeBridge(): MotionBridge {
@@ -244,23 +320,18 @@ export function createRuntimeBridge(): MotionBridge {
           return;
         }
 
-        case 'workflow-command': {
-          await ask({
-            type: 'workflow-command',
-            workflowId: command.workflowId,
-            command: command.command,
-          });
-          await refresh();
-          return;
-        }
-
-        case 'close-workspace': {
-          await ask({ type: 'close-workspace', workflowId: command.workflowId });
-          await refresh();
-          return;
-        }
-
-        case 'prepare-workspace': {
+        case 'session-create':
+        case 'session-message':
+        case 'session-command':
+        case 'session-select':
+        case 'session-source':
+        case 'session-tab':
+        case 'session-adopt-current-tab':
+        case 'set-provider-key':
+        case 'forget-provider-key':
+        case 'set-ai-preferences':
+        case 'accept-cloud-disclosure':
+        case 'delete-local-data': {
           const payload = await toWorkerMessage(command, state);
           if (payload) await ask(payload);
           await refresh();

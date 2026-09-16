@@ -4,7 +4,7 @@ import '../assets/fonts.css';
 import '../ui/tokens.css';
 import './styles.css';
 import { App } from './App';
-import { createRuntimeBridge } from './runtimeBridge';
+import { createRuntimeBridge, startLocalInferenceHost } from './runtimeBridge';
 
 const root = document.getElementById('root');
 if (!root) throw new Error('Motion panel root is missing.');
@@ -16,3 +16,7 @@ createRoot(root).render(
     <App bridge={createRuntimeBridge()} />
   </StrictMode>,
 );
+
+// Platform wiring, not a React concern: serves Chrome's on-device model to
+// the worker for as long as this panel stays open (ARCH D2).
+startLocalInferenceHost();

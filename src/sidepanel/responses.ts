@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { checklistSchema } from '@/core/domain';
+import { aiStatusResultSchema } from '@/core/messaging/sessionContracts';
 import type { MotionCommand } from './bridge';
 
 const generatedTextSchema = z.string().max(20_000);
@@ -26,10 +27,7 @@ const draftReviewSchema = z.object({
 });
 
 const workerResultSchemas = {
-  'model-status': z.object({
-    availability: z.enum(['available', 'downloadable', 'downloading', 'unavailable']),
-    explanation: reasonSchema,
-  }),
+  'ai-status': aiStatusResultSchema,
   'build-checklist': z.object({
     checklistId: z.string().uuid().nullable(),
     items: z.number().int().nonnegative(),
@@ -46,16 +44,6 @@ const workerResultSchemas = {
   'review-draft': z.object({
     review: draftReviewSchema.nullable(),
     summary: reasonSchema,
-  }),
-  'prepare-workspace': z.object({
-    workflowId: z.string().min(1).nullable(),
-    reused: z.boolean().optional(),
-    reason: reasonSchema.optional(),
-  }),
-  'ask-about-page': z.object({
-    answer: generatedTextSchema.nullable(),
-    reason: reasonSchema.optional(),
-    label: reasonSchema.optional(),
   }),
   'toggle-requirement': z.object({ updated: z.boolean() }),
 } satisfies Partial<Record<MotionCommand['type'], z.ZodTypeAny>>;
