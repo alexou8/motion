@@ -18,6 +18,8 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src --ext .ts,.tsx",
     "test:extension": "node test/e2e/extension-smoke.mjs",
+    "test:agent": "node test/e2e/agent-session.mjs",
+    "test:chrome": "node test/e2e/chrome-branded.mjs",
     "verify:extension": "node scripts/verify-extension-build.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"docs/**/*.md\"",
     "package": "node scripts/package.mjs",

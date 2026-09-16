@@ -163,14 +163,26 @@ export interface SSEEvent {
  * split mid-line or mid-event (providers do not align frames to chunk
  * boundaries, and a naive per-chunk split would corrupt or drop data).
  */
-export async function* parseSSEStream(body: ReadableStream<Uint8Array>): AsyncGenerator<SSEEvent> {
+export async function* parseSSEStream(
+  body: ReadableStream<Uint8Array>,
+  signal?: AbortSignal,
+): AsyncGenerator<SSEEvent> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
+  const onAbort = () => {
+    void reader.cancel(signal?.reason).catch(() => undefined);
+  };
+  if (signal) {
+    if (signal.aborted) onAbort();
+    else signal.addEventListener('abort', onAbort, { once: true });
+  }
+
   try {
     for (;;) {
       const { done, value } = await reader.read();
+      if (signal?.aborted) throw new DOMException('Request cancelled.', 'AbortError');
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
@@ -189,6 +201,7 @@ export async function* parseSSEStream(body: ReadableStream<Uint8Array>): AsyncGe
       if (event) yield event;
     }
   } finally {
+    signal?.removeEventListener('abort', onAbort);
     reader.releaseLock();
   }
 }

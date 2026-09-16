@@ -18,7 +18,7 @@ checks are time-bounded to five seconds. Inference itself is not exercised.
 | Extension page/side panel | function; downloadable | function; availability never resolved |
 | Offscreen document | function; downloadable | not measured |
 
-Evidence is recorded in [LOCAL-AI-PROBE.md](../development/agentic/LOCAL-AI-PROBE.md).
+Evidence is recorded in [local-ai-probe.md](../verification/local-ai-probe.md).
 The side-panel host is preferred because long worker inference reliability is
 unproven.
 

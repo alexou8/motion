@@ -169,14 +169,19 @@ export class AnthropicProvider implements AIProvider {
     });
     if (!response.ok || !response.body) throw await this.toProviderError(response, key);
 
-    for await (const event of parseSSEStream(response.body)) {
-      if (event.event !== 'content_block_delta') continue;
-      try {
-        const parsed = JSON.parse(event.data) as { delta?: { type?: string; text?: string } };
-        if (parsed.delta?.type === 'text_delta' && parsed.delta.text) yield parsed.delta.text;
-      } catch {
-        // Malformed frame — skip rather than corrupt output.
+    try {
+      for await (const event of parseSSEStream(response.body, req.signal)) {
+        if (event.event !== 'content_block_delta') continue;
+        try {
+          const parsed = JSON.parse(event.data) as { delta?: { type?: string; text?: string } };
+          if (parsed.delta?.type === 'text_delta' && parsed.delta.text) yield parsed.delta.text;
+        } catch {
+          // Malformed frame — skip rather than corrupt output.
+        }
       }
+    } catch (error) {
+      if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
+      throw error;
     }
   }
 }

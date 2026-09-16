@@ -193,14 +193,19 @@ export class OpenAIProvider implements AIProvider {
     });
     if (!response.ok || !response.body) throw await this.toProviderError(response, key);
 
-    for await (const event of parseSSEStream(response.body)) {
-      if (event.event !== 'response.output_text.delta') continue;
-      try {
-        const parsed = JSON.parse(event.data) as { delta?: string };
-        if (parsed.delta) yield parsed.delta;
-      } catch {
-        // Malformed frame — skip rather than corrupt output.
+    try {
+      for await (const event of parseSSEStream(response.body, req.signal)) {
+        if (event.event !== 'response.output_text.delta') continue;
+        try {
+          const parsed = JSON.parse(event.data) as { delta?: string };
+          if (parsed.delta) yield parsed.delta;
+        } catch {
+          // Malformed frame — skip rather than corrupt output.
+        }
       }
+    } catch (error) {
+      if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
+      throw error;
     }
   }
 }

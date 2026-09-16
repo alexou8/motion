@@ -402,7 +402,7 @@ try {
     await settings.getByRole('heading', { name: 'Privacy & data' }).isVisible(),
   );
   const sectionNames = await settings.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').allInnerTexts();
-  check('the settings page lists its four sections', sectionNames.join('|') === 'Permissions|Privacy & data|Capabilities|About', sectionNames.join('|'));
+  check('the settings page lists every rendered section', sectionNames.join('|') === 'AI|Browser access|Agent behaviour|Privacy & data|About', sectionNames.join('|'));
   const serif = await settings.evaluate(async () => {
     const faces = await document.fonts.load('600 28px "Source Serif 4"');
     return {
@@ -419,13 +419,18 @@ try {
   check('the composer is offered on a readable course page', (await panel.locator('textarea').count()) === 1);
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
+  const restrictedBody = await panel.innerText('body');
+  const restrictedControls = await panel.locator('button, a, textarea, input, select, form').allInnerTexts();
   check(
-    'there is no composer beside a graded attempt',
-    (await panel.locator('textarea').count()) === 0 && /Chat is off beside a graded attempt/i.test(await panel.innerText('body')),
+    'restricted mode explains the boundary and offers no page action affordance',
+    /Restricted mode/i.test(restrictedBody) &&
+      /will not read this page|will not .*draft/i.test(restrictedBody) &&
+      restrictedControls.every((text) => !/read|draft|act|capture|submit|send|fill|click/i.test(text)),
+    `${restrictedControls.join('|')} — ${restrictedBody.replace(/\s+/g, ' ').slice(0, 180)}`,
   );
 
-  // Prepare workspace has so far only been unit-tested. Here Chrome creates the
-  // group, and closing it must close Motion's tab and leave the student's.
+  // Chrome creates the group here, and closing it must close Motion's tab and
+  // leave the student's.
   await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
   const prepared = await panel.evaluate(async (origin) => {
