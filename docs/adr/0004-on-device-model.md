@@ -1,6 +1,7 @@
 # ADR 0004 — Draft with Chrome's on-device model, not a hosted API
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0005](0005-ai-provider-abstraction-and-byok.md)
+  and [ADR 0006](0006-chrome-local-ai-runtime.md)
 - **Date:** 2026-09-07
 - **Supersedes:** part of [ADR 0002](0002-local-first-no-backend.md), which
   deferred model-assisted features on the grounds that they would require a
@@ -17,9 +18,11 @@ Chrome ships a built-in on-device model (`LanguageModel`) that extensions can
 use in the service worker, popup and side panel with no additional manifest
 permission.
 
-## Decision
+## Historical decision
 
-Use the browser's on-device model. No backend, no API key, no account.
+Use the browser's on-device model. No backend, no API key, no account. This
+was the original decision; the current provider abstraction and runtime
+composition are defined by ADRs 0005 and 0006.
 
 ## Rationale
 

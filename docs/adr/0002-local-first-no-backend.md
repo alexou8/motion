@@ -1,6 +1,7 @@
 # ADR 0002 — Ship the MVP local-first, with no backend
 
-- **Status:** Accepted
+- **Status:** Accepted (local-first remains; optional user-selected cloud AI
+  now exists under ADR 0005)
 - **Date:** 2026-09-07
 
 ## Context
@@ -11,15 +12,17 @@ is required for a student to get value from the first release.
 
 ## Decision
 
-The MVP stores everything in the browser (IndexedDB) and makes no network
-requests of its own. No accounts, no sync, no server.
+The MVP stores coursework and workflow state in the browser, has no account,
+sync service or Motion server, and makes no Motion-owned telemetry requests.
+An explicitly selected BYOK provider may receive disclosed model-turn context;
+ADR 0005 defines that exception.
 
 ## Rationale
 
-1. **The data is sensitive and the cheapest way to protect it is not to collect
-   it.** Deadlines, drafts, grades and course enrolment are academic records.
-   Data that never leaves the device cannot be breached on a server, subpoenaed
-   from one, or retained past its usefulness.
+1. **The data is sensitive and the default is not to collect it remotely.**
+   Deadlines, drafts, grades and course enrolment are academic records. Local
+   mode keeps them on-device; BYOK is an explicit, disclosed exception to this
+   default.
 2. **A backend does not test the risky hypothesis.** The open question is
    whether adapter-based extraction and resumable workflows are reliable enough
    to trust. That is answerable entirely on-device.

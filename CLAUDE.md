@@ -32,11 +32,15 @@ src/core/       platform-agnostic — no chrome.*, no React
   domain/       Zod schemas and types (authoritative)
   adapters/     the ONLY place LMS selectors may live
   parse/        due-date and text parsing
+  ai/           provider contracts, prompts, selection and redaction
+  agent/        intents, plans, trusted refs and tool guards
+  session/      AgentSession state and transitions
+  graph/        course links and queries
   policy/       risk classification, approvals, assessment restriction
   storage/      IndexedDB schema, migrations, repositories
 src/platform/   thin mockable wrappers over chrome.*
 src/background/ MV3 service worker — owns ALL orchestration
-src/content/    content script — read-only, never acts on a page
+src/content/    observer + typed actor — snapshot/handle actions only
 src/sidepanel/  React UI — talks to the worker via typed messages only
 src/ui/         design system: tokens and components
 ```
@@ -46,10 +50,9 @@ persist it and read it back on each event.
 
 ## Model routing
 
-Opus orchestrates and owns product and design decisions. Delegate
-implementation slices to Codex Luna (`gpt-5.6-luna`) and reserve Codex Sol
-(`gpt-5.6-sol`) for architecture and security review of consequential work.
-Give each file one owner at a time; serialize when ownership overlaps.
+Claude/Opus orchestrates and owns product and design decisions. Codex Terra
+and Codex Luna handle implementation and review. Keep ownership explicit and
+serialize when files overlap.
 
 Write Codex output straight to a file rather than piping it through `tail` —
 a piped run that hits its timeout flushes nothing and the work is lost.

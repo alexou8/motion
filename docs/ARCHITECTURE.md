@@ -4,7 +4,8 @@
 
 ```
 ┌─ LMS page (hostile input) ──────────────────────────────────────┐
-│  content script — reads the DOM, never acts on it               │
+│  content script — observes DOM; only typed, worker-authorized  │
+│  handle-based actor operations are permitted                   │
 └───────────────────────────┬─────────────────────────────────────┘
                             │ typed message, validated + sender-checked
 ┌───────────────────────────▼─────────────────────────────────────┐
@@ -30,9 +31,13 @@
 - The side panel holds no repository or approval-mutation API. If the panel is
   ever XSS'd, the attacker inherits a narrow command surface rather than
   database access (see [threat T3](THREAT_MODEL.md)).
-- Content scripts cannot act. Extraction is a pure `(url, document) → domain`
-  function, so "read-only" is a property of the code shape, not a flag someone
-  must remember to check.
+- Content is an observer plus typed actor: extraction remains a pure
+  `(url, document) → domain` function, while any page-adjacent action is a
+  validated handle-based operation authorized by the worker. Content never
+  receives selectors, scripts, arbitrary URLs, or policy authority.
+- `src/core/ai`, `src/core/agent`, `src/core/session`, and
+  `src/core/graph` define platform-agnostic AI, agent, AgentSession, and
+  graph contracts.
 
 ## Layout
 
@@ -42,6 +47,10 @@ src/core/         platform-agnostic
   adapters/       LMS adapters; the only home for selectors and routes
   parse/          due-date and text parsing
   policy/         risk classification, approvals, assessment restriction
+  ai/             model-turn contracts and redaction boundaries
+  agent/          agent capabilities and typed action contracts
+  session/        AgentSession lifecycle, plan, workspace and recovery state
+  graph/          bounded execution graph primitives
   storage/        IndexedDB schema, migrations, validate-on-read repositories
   workflows/      the resumable state machine
 src/platform/     capability wrappers over chrome.* (semantic, not thin mirrors)

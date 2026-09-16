@@ -52,11 +52,11 @@ steps). See [`THREAT_MODEL.md`](THREAT_MODEL.md) T7 and T8.
 | Item | Status | Evidence |
 | --- | --- | --- |
 | Requirement extraction → checklist | **Done** | `src/core/assist/requirements.ts`; source-linked, refuses to invent items |
-| Draft composition (outline, draft, section, reply, revision) | **Done** | `src/core/assist/compose.ts` + on-device model; [ADR 0004](adr/0004-on-device-model.md) |
+| Draft composition (outline, draft, section, reply, revision) | **Partial** | `src/core/assist/compose.ts` + composite local/provider abstraction; local and BYOK paths are implemented, while provider disclosure and real inference remain in progress; [ADRs 0004–0006](adr/0004-on-device-model.md) |
 | Draft-vs-requirements review | **Done** | `src/core/assist/draftReview.ts`; reports "no evidence", not "missing" |
 | AI labelling | **Done** | `origin: 'generated'` stored with the text, not applied by the UI |
 | Prompt-injection defence | **Done** | Context fenced, delimiters neutralised, instruction last; tested with a planted directive |
-| Chat about the current page | **Partial** | `src/core/assist/chat.ts`, `handleAskAboutPage` in `src/background/router.ts`, `src/sidepanel/views/ChatView.tsx`. On-device model only; ephemeral, stored nowhere; page text and earlier turns fenced; refused before any read beside a graded attempt, with no composer shown there. Unit-tested against a fake model. Not yet run against Chrome's real on-device model, which was unavailable on the test machine; which hosted model a student may bring is undecided (`docs/development/ai-account-handoff.md`, Track 2) |
+| Chat about the current page | **Partial** | `src/core/assist/chat.ts`, `handleAskAboutPage` in `src/background/router.ts`, `src/sidepanel/views/ChatView.tsx`. Composite local/BYOK provider; ephemeral conversation, fenced page text and earlier turns, graded-attempt refusal before read. Unit-tested against a fake model; real local inference and cloud disclosure flow remain in progress |
 | Practice questions and study guides | **Not started** | — |
 | Citation and formatting checks | **Partial** | Numeric constraints (word counts) checked exactly; citation style not yet |
 | Assessment restriction enforcement | **Done** | `src/core/policy/assessment.ts`, tested |

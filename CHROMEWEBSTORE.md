@@ -20,7 +20,7 @@ FEATURES
 • Finds coursework and deadlines on supported D2L Brightspace pages.
 • Keeps each extracted item linked to the page and text it came from.
 • Creates source-linked notes and assignment checklists.
-• Helps draft and review coursework using Chrome's on-device model when available.
+• Helps draft and review coursework using Chrome's on-device model or a provider the student selects.
 • Shows progress and asks before consequential browser actions.
 • Stands back on detected graded attempts.
 
@@ -30,7 +30,7 @@ HOW TO USE
 3. Choose what to read, organize, or review.
 
 PRIVACY
-Coursework data stays in your browser profile. Motion makes no network requests of its own, uses no analytics, and does not share your data with third parties.
+Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's goal/message, trusted session state, and bounded relevant page/note/source excerpts directly to the selected provider only. Motion has no server or telemetry; provider keys remain in session memory and are not persisted.
 
 SUPPORT
 Report bugs or request features at https://github.com/alexou8/motion/issues.
@@ -74,12 +74,14 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 | `https://*.desire2learn.com/*` | host_permissions | Reads supported legacy D2L course pages to extract user-requested coursework information. |
 | `https://mylearningspace.wlu.ca/*` | host_permissions | Reads Wilfrid Laurier University MyLearningSpace course pages to extract user-requested coursework information. |
 | `https://*/*` | optional_host_permissions | Lets a student explicitly grant access to one additional HTTPS institution host when its D2L deployment uses a custom domain. |
+| `https://api.openai.com/*` | optional_host_permissions | Lets a student grant OpenAI API access just-in-time for the explicitly selected BYOK provider. |
+| `https://api.anthropic.com/*` | optional_host_permissions | Lets a student grant Anthropic API access just-in-time for the explicitly selected BYOK provider. |
 
 ## Privacy & Data Use
 
 ### Data Collection
 
-**Does the extension collect user data?** Yes — website content and user-created coursework records are processed and stored locally to provide the requested features. They are not transmitted off-device by Motion.
+**Does the extension collect user data?** Yes — website content and user-created coursework records are processed locally. In BYOK cloud mode, the bounded model-turn payload described above is transmitted directly to the student's selected provider after disclosure.
 
 | Data Type | Collected? | Transmitted Off-Device? | Purpose | Shared with Third Parties? |
 |-----------|-----------|------------------------|---------|---------------------------|
@@ -87,7 +89,8 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 | Personal communications | No | No | Not accessed or stored | No |
 | Web history | Limited | No | Stores source URLs only for supported course content the student asks Motion to organize | No |
 | User activity | Limited | No | Stores workflow state and approval decisions inside the browser profile | No |
-| Website content | Yes | No | Extracts course names, instructions, tasks, deadlines, and student-selected notes | No |
+| Website content | Yes | Yes, BYOK only | Extracts course names, instructions, tasks, deadlines, and relevant excerpts for the selected model turn | Selected AI provider only, after disclosure |
+| User-provided AI provider credentials | Yes | No | Held in session memory for the selected provider | Selected AI provider only when used |
 
 ### Data Use Certification
 
@@ -127,5 +130,6 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 
 - Chrome 116 or newer is required.
 - The manifest currently declares the unused `scripting` permission; remove it before submission unless an implemented feature requires it.
-- Draft assistance additionally requires Chrome's on-device model and degrades with an explanation when it is unavailable.
+- Local draft assistance requires Chrome's on-device model; BYOK assistance requires the selected provider, disclosure, and just-in-time host permission.
+- Remote code: none. All executable code ships in the extension package.
 - The privacy policy URL, publisher name, contact email, and at least one synthetic-data screenshot must be supplied before submission.

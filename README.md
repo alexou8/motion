@@ -38,7 +38,8 @@ Motion knows what an assignment page is.
   sentence in the instructions it came from. When nothing on the page is
   actually stated as a requirement, Motion says so rather than inventing one.
 - **Drafts the work.** Outlines, first drafts, sections, discussion replies,
-  revisions — written from your requirements and your own notes, on-device.
+  revisions — generated through the selected local provider or, when you
+  explicitly configure BYOK cloud mode, the provider you selected.
   Anything the material could not support comes back marked
   `[needs a source]` so you can see exactly what to check.
 - **Checks your draft against the rubric** before you hand it in, and tells you
@@ -63,8 +64,9 @@ Motion knows what an assignment page is.
 2. **Student control.** Consequential actions are reviewable and editable before
    they happen.
 3. **Source provenance.** An extracted fact you cannot trace is a rumour.
-4. **Local-first privacy.** Data stays on the device. See
-   [ADR 0002](docs/adr/0002-local-first-no-backend.md).
+4. **Local-first privacy.** Motion has no Motion server or telemetry. Local
+   mode keeps model work on-device; BYOK cloud mode sends only the disclosed
+   step context to the selected provider. See [ADR 0005](docs/adr/0005-ai-provider-abstraction-and-byok.md).
 5. **Adapter isolation.** LMS quirks stay behind one boundary. See
    [ADR 0003](docs/adr/0003-adapter-isolation.md).
 6. **Resumable reliability.** Designed for a service worker that dies mid-task.
@@ -82,6 +84,10 @@ npm test          # unit, adapter fixture, and policy tests
 npm run typecheck
 npm run build     # emits dist/
 ```
+
+Working in VS Code? `code motion.code-workspace` opens the repository with its
+build, test, and Chrome-debugging configuration already set up —
+see [`docs/development/vscode.md`](docs/development/vscode.md).
 
 ### Install it in Chrome
 
@@ -114,15 +120,17 @@ press the button.
 ## Privacy
 
 Motion requests the narrowest permissions that make the current feature work,
-and the supported domains are visible in the extension's options. It stores data
-locally in IndexedDB, makes no network requests of its own, and bundles its
-fonts rather than loading them from a CDN — so using Motion does not tell a
-third party that you are using it.
+and the supported domains are visible in the extension's options. It stores
+coursework data locally in IndexedDB and bundles its fonts rather than loading
+them from a CDN. Local model mode stays on-device; BYOK cloud mode is described
+below.
 
-Drafting runs on Chrome's built-in on-device model, so your coursework, notes
-and drafts are never sent anywhere ([ADR 0004](docs/adr/0004-on-device-model.md)).
-Motion never stores passwords or session tokens, and never bypasses
-institutional authentication.
+In local mode, model work stays on-device. In BYOK cloud mode, only during a
+model turn after disclosure acceptance, Motion sends your goal/message, trusted
+session state, and bounded excerpts relevant to that step to the selected
+provider. IndexedDB data, provider keys and telemetry remain local; keys are
+never persisted. Motion never stores passwords or session tokens, and never
+bypasses institutional authentication. See [DATA](docs/DATA.md).
 
 Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md).
@@ -139,6 +147,7 @@ Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 | [`docs/ROADMAP.md`](docs/ROADMAP.md) | Phased milestones with evidence-based status |
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`SKILLS.md`](SKILLS.md) | Installed agent skills and when they apply |
+| [`docs/development/vscode.md`](docs/development/vscode.md) | VS Code workspace, tasks, and extension debugging |
 
 ## Licence
 

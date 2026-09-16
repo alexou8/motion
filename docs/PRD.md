@@ -27,9 +27,10 @@ sections in a draft, suggesting an outline, comparing a draft against a rubric,
 checking citations and formatting, explaining an error in code or a
 calculation, and generating practice questions before an assessment.
 
-It stops at submitting assessed work and at acting inside a graded attempt.
-That boundary is enforced in `src/core/policy` and covered by tests rather than
-asserted in prose.
+Motion may prepare work and perform permitted typed browser actions, but the
+consequence policy requires fresh confirmation for consequential actions. It
+never acts inside a graded/timed/proctored attempt, submits assessed work, or
+modifies remote course data. The boundary is enforced in `src/core/policy`.
 
 ## MVP scope
 
@@ -43,6 +44,7 @@ asserted in prose.
 8. Permission and approval foundations
 9. Local-first storage with a versioned schema
 10. Clear restricted behaviour on graded assessments
+11. AgentSession workspaces with provider selection and resumable model turns
 
 Excluded: multi-LMS coverage, autonomous quiz answering, assignment submission,
 discussion posting, general web automation, accounts, sync, any backend.
@@ -92,16 +94,16 @@ discussion posting, general web automation, accounts, sync, any backend.
   not own; tabs the student moved or closed are treated as the student's
   decision.
 
-### A7 — Approvals
-- Nothing above low risk happens without a confirmation naming the target, the
-  effect, and whether it can be undone.
-- A high-risk confirmation expires, so it cannot be consumed by a workflow
-  resuming later.
+### A7 — Consequence policy
+- Automatic actions are low-risk and bounded; configurable actions require the
+  student setting; consequential actions require a target-bound, single-use,
+  two-minute fresh confirmation.
+- No setting can make a fresh-confirmation or forbidden action always allowed.
 - A prohibited action is refused even when an approval record claims approval.
 
 ### A8 — Restricted mode
-- On a page that is or might be a graded attempt, Motion refuses to read, draft
-  or act, and explains why in the panel.
+- On a page that is or might be a graded attempt, Motion refuses page content,
+  drafting and actions, and explains why in the panel.
 - Detection is over-inclusive by design; a quiz *list* is not treated as an
   attempt.
 
@@ -113,10 +115,12 @@ discussion posting, general web automation, accounts, sync, any backend.
 - Colour pairs meet WCAG 2.2 AA, enforced by a test.
 
 ### A10 — Privacy
-- Permissions are limited to supported hosts; anything wider is optional and
-  requested just-in-time.
-- No network requests of Motion's own, including for fonts.
-- Local data can be deleted in full, verified by a test.
+- Local mode uses the selected on-device provider when available. BYOK cloud
+  mode requires disclosure acceptance and sends the goal/message, trusted
+  session state and bounded relevant excerpts to the selected provider only,
+  during the model turn.
+- Keys live only in session storage; IndexedDB, telemetry and Motion servers
+  receive none. Local data can be deleted in full.
 
 ## Success
 

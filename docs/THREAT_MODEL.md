@@ -1,8 +1,9 @@
 # Threat model
 
-Scope: the Motion Chrome extension as built — local-first, no backend. Drafting
-and the chat about the page use Chrome's on-device model only; nothing is sent
-to a hosted model (ADR 0004). Findings below came from an adversarial
+Scope: the Motion Chrome extension as built — local-first, with no Motion
+backend. Drafting and chat use Chrome's local runtime or a student-selected
+BYOK provider after disclosure and just-in-time permission (ADRs 0005–0006).
+Findings below came from an adversarial
 architecture review; each names
 the control and its current status. Nothing is marked mitigated unless the code
 implementing the control exists.
@@ -26,7 +27,7 @@ privileged context, the side panel renders and asks.
 
 ## T0 — Prompt injection through course content
 
-Motion now drafts coursework with an on-device model, and the material it reads
+Motion now drafts coursework with a local or student-selected BYOK model, and the material it reads
 — assignment instructions, discussion posts, uploaded documents — is written by
 people who are not the student and, on a discussion board, by anyone in the
 course. A crafted instruction planted in that text ("ignore your rules and
@@ -48,8 +49,9 @@ Controls, all implemented and tested in `src/core/assist/compose.test.ts`:
 **Residual risk:** fencing is a mitigation, not a proof. A sufficiently
 persuasive injection could still influence wording. It cannot cause an
 *action*, because the model's output is text into the student's own workspace —
-there is no path from model output to a browser action, an approval, or a
-submission. That containment, not the fencing, is the real control. — *Mitigated*
+there is no path from model output to an action without the worker's policy,
+  approval, and actor defenses. That containment, not fencing alone, is the
+  real control. — *Mitigated*
 
 The **chat about the page** is a second route from page text to the model, with
 the same controls and one more input: the student's earlier turns. Those turns
@@ -129,7 +131,9 @@ boundary would be bypassed without ever naming a prohibited action.
 
 The prohibition is enforced again at the lowest capability-dispatch layer, and
 workflows are given a **closed allowlist of concrete, parameter-validated
-actions** — never generic page mutation or script execution. — *Planned*
+actions** — never generic page mutation or script execution. The content actor
+receives only Motion-issued handles and typed actions. — *Mitigated in policy;
+actor defense-in-depth is in progress*
 
 Policy-level refusal, including refusal ahead of reading approval status, is
 already implemented. — *Mitigated (`src/core/policy`, tested)*
@@ -315,3 +319,70 @@ content or closes a student tab. — *Accepted*
   in-extension control meaningfully survives that; prevention is the control.
 - **No cross-device sync**, so no server-side breach surface — and no
   server-side recovery if the profile is lost.
+
+## T15 — BYOK key exposure
+
+A provider key is readable by code running in a trusted extension context. Motion
+stores it only in `chrome.storage.session` under `TRUSTED_CONTEXTS`, never logs
+or fake-encrypts it, and loses it on browser restart. A compromised extension
+page or browser profile can still expose it. — *Accepted*
+
+## T16 — Provider endpoint or SSRF-style destination control
+
+Provider requests use a fixed endpoint selected by the provider registry; user
+input and model output cannot supply an arbitrary URL. Optional provider hosts
+are requested just-in-time after disclosure. — *Mitigated in provider clients;
+permission flow remains in progress*
+
+## T17 — Prompt injection leading to tool calls
+
+Untrusted page text is fenced and the instruction is last, but model output is
+not authorization. Motion-issued references, worker policy, approval checks,
+and the typed actor provide layered defenses before any action. No model turn
+can submit assessed work or act in a graded attempt. — *Mitigated in design;
+end-to-end actor path is in progress*
+
+## T18 — Actor misuse or consequential click
+
+The actor accepts only validated handles and closed typed actions; the worker
+classifies consequences and requires a fresh target-bound single-use approval
+for consequential work. Forbidden actions are refused and there is no
+always-allow setting. — *Mitigated in policy; browser end-to-end coverage is
+in progress*
+
+## T19 — Stale approval replay after resume
+
+Approvals are target-bound, single-use, expire after two minutes, and are
+checked immediately before dispatch. Recovery clears or revalidates pending
+work rather than treating resume as fresh consent. Parameter binding and atomic
+consumption remain a follow-up where not yet implemented. — *Partially
+mitigated*
+
+## T20 — Duplicate chargeable requests on recovery
+
+Provider turns carry a persisted `pendingModelRequest` recovery record; recovery
+does not blindly resend an uncertain request. The student must re-run a model
+turn when its outcome cannot be established. — *Mitigated in design;
+provider-specific idempotency is not claimed*
+
+## T21 — Cloud disclosure or silent fallback
+
+Local mode stays local. Cloud mode names the selected provider and requires
+disclosure acceptance before sending the student's goal/message, trusted
+session state, and bounded relevant excerpts. There is no Motion proxy,
+telemetry, or silent provider fallback. — *Mitigated in design*
+
+## T22 — Inference-port spoofing
+
+The local composite provider accepts a panel-host port only through the
+worker-controlled connection path and validates messages at the boundary; it
+falls back to the worker LanguageModel probe or reports
+`needs-document-context`. The inference path itself has not been exercised. —
+*Partially mitigated*
+
+## T23 — Workspace tab ownership override
+
+Session workspace ownership is recorded by tab id and session key, with owned,
+adopted, and released sets. Group membership alone never grants ownership;
+close operations affect only owned tabs still in the expected group. — *Partially
+mitigated; real-browser race coverage is in progress*
