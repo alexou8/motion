@@ -68,11 +68,14 @@ export const panelAiSchema = z.object({
   status: z.string(),
   message: z.string(),
 });
+export const discoveryStateSchema = z.object({ host: z.string().nullable(), optedIn: z.boolean().nullable(), busy: z.boolean().default(false), result: z.object({ deadlines: z.number().int().nonnegative(), courses: z.number().int().nonnegative(), updatedAt: z.string().datetime() }).nullable().default(null), blocker: z.string().nullable().default(null) });
 
 export const panelStateSchema = z.object({
   connection: connectionStateSchema,
   page: pageContextSchema,
   course: courseSchema.nullable(),
+  /** Known courses, used to name grouped deadline counts without another panel round trip. */
+  courses: z.array(courseSchema).default([]),
   /** Upcoming and recent work, already sorted by the worker. */
   tasks: z.array(courseTaskSchema).default([]),
   workflows: z.array(workflowSchema).default([]),
@@ -92,6 +95,7 @@ export const panelStateSchema = z.object({
   ai: panelAiSchema.default({ providerId: 'chrome-local', displayName: 'Chrome Local', cloud: false, status: 'unavailable', message: '' }),
   /** Text being generated right now for the active session, if streaming. */
   streaming: z.object({ sessionId: z.string(), text: z.string().max(40_000) }).nullable().default(null),
+  discovery: discoveryStateSchema.default({ host: null, optedIn: null, busy: false, result: null, blocker: null }),
 });
 export type PanelState = z.infer<typeof panelStateSchema>;
 
@@ -106,6 +110,7 @@ export const EMPTY_PANEL_STATE: PanelState = {
     observedAt: null,
   },
   course: null,
+  courses: [],
   tasks: [],
   workflows: [],
   approvals: [],
@@ -116,6 +121,7 @@ export const EMPTY_PANEL_STATE: PanelState = {
   deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] },
   ai: { providerId: 'chrome-local', displayName: 'Chrome Local', cloud: false, status: 'unavailable', message: '' },
   streaming: null,
+  discovery: { host: null, optedIn: null, busy: false, result: null, blocker: null },
 };
 
 /** How long before an observation is shown as stale rather than current. */

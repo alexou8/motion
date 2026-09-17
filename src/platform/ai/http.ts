@@ -10,13 +10,39 @@
 import { redactSecrets } from '@/core/ai/redact';
 import type { ProviderStatus } from '@/core/ai/types';
 
+/**
+ * Build-time-only override of the OpenAI base URL, used exclusively by the
+ * `MOTION_E2E_PROVIDER_HOSTS=1` test build (`npm run build:e2e-provider-hosts`)
+ * so `test/e2e/provider-stream.mjs` can point at a local Node SSE server
+ * bound to 127.0.0.1 instead of the real OpenAI API — Playwright's
+ * `context.route` cannot intercept fetches made by the MV3 service worker,
+ * so a real local server is used instead of interception.
+ *
+ * `__MOTION_PROVIDER_BASE_URL__` is a global injected by `define` in
+ * vite.config.ts (and pinned to `''` in vitest.config.ts). It is always the
+ * empty string in the production build (`npm run build`), which keeps
+ * `ALLOWED_ENDPOINTS` byte-identical to the fixed `api.openai.com` /
+ * `api.anthropic.com` endpoints — see `http.test.ts`
+ * "production keeps the fixed OpenAI endpoints".
+ */
+declare const __MOTION_PROVIDER_BASE_URL__: string | undefined;
+export const E2E_PROVIDER_BASE_URL: string =
+  typeof __MOTION_PROVIDER_BASE_URL__ === 'string' ? __MOTION_PROVIDER_BASE_URL__ : '';
+
 /** The only hosts Motion will ever send a cloud-provider request to. */
-export const ALLOWED_ENDPOINTS = [
-  'https://api.openai.com/v1/responses',
-  'https://api.openai.com/v1/models',
-  'https://api.anthropic.com/v1/messages',
-  'https://api.anthropic.com/v1/models',
-] as const;
+export const ALLOWED_ENDPOINTS: readonly string[] = E2E_PROVIDER_BASE_URL
+  ? [
+      `${E2E_PROVIDER_BASE_URL}/v1/responses`,
+      `${E2E_PROVIDER_BASE_URL}/v1/models`,
+      'https://api.anthropic.com/v1/messages',
+      'https://api.anthropic.com/v1/models',
+    ]
+  : [
+      'https://api.openai.com/v1/responses',
+      'https://api.openai.com/v1/models',
+      'https://api.anthropic.com/v1/messages',
+      'https://api.anthropic.com/v1/models',
+    ];
 
 export class EndpointNotAllowedError extends Error {
   constructor(url: string) {
@@ -26,10 +52,15 @@ export class EndpointNotAllowedError extends Error {
 }
 
 export function assertAllowlisted(url: string): void {
-  if (!ALLOWED_ENDPOINTS.includes(url as (typeof ALLOWED_ENDPOINTS)[number])) {
+  if (!ALLOWED_ENDPOINTS.includes(url)) {
     throw new EndpointNotAllowedError(url);
   }
-  if (!url.startsWith('https://')) {
+  // The E2E provider-hosts build points OpenAI at a local, build-time-fixed
+  // http://127.0.0.1 URL (never attacker- or runtime-controllable — it comes
+  // only from `__MOTION_PROVIDER_BASE_URL__`, baked in at build time). Every
+  // other endpoint, in every other build, must still be https.
+  const isPinnedE2EOverride = Boolean(E2E_PROVIDER_BASE_URL) && url.startsWith(E2E_PROVIDER_BASE_URL);
+  if (!isPinnedE2EOverride && !url.startsWith('https://')) {
     throw new EndpointNotAllowedError(url);
   }
 }

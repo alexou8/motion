@@ -1,9 +1,19 @@
 import { useCallback, useEffect, useState } from 'react';
 import { supportedHosts } from '@/core/adapters';
-import type { AiStatusResult, ProviderDiagnostic } from '@/core/messaging/sessionContracts';
+import { aiStatusResultSchema, type AiStatusResult, type ProviderDiagnostic } from '@/core/messaging/sessionContracts';
 import { CONFIGURABLE_ACTION_IDS, type ConfigurableActionId } from '@/core/ai/preferences';
 import { curatedModelsFor } from '@/core/ai/models';
 import type { ProviderId } from '@/core/ai/types';
+import {
+  DEFAULT_REMINDER_PREFERENCES,
+  loadReminderPreferences,
+  REMINDER_KINDS,
+  REMINDER_OFFSETS,
+  updateReminderPreferences,
+  type ReminderOffset,
+  type ReminderPreferences,
+  type ReminderStorageArea,
+} from '@/core/reminders';
 
 /**
  * Settings: AI, browser access, agent behaviour, privacy, and about.
@@ -19,11 +29,12 @@ interface Grant {
   builtIn: boolean;
 }
 
-type Section = 'ai' | 'browser' | 'behaviour' | 'privacy' | 'about';
+type Section = 'ai' | 'browser' | 'behaviour' | 'reminders' | 'privacy' | 'about';
 const sections: Array<{ id: Section; label: string }> = [
   { id: 'ai', label: 'AI' },
   { id: 'browser', label: 'Browser access' },
   { id: 'behaviour', label: 'Agent behaviour' },
+  { id: 'reminders', label: 'Reminders' },
   { id: 'privacy', label: 'Privacy & data' },
   { id: 'about', label: 'About' },
 ];
@@ -86,7 +97,9 @@ export function App(): JSX.Element {
 
   const loadAiStatus = useCallback(async () => {
     const response = await ask({ type: 'ai-status' });
-    if (response.ok) setAi(response.result as AiStatusResult);
+    if (!response.ok) return;
+    const parsed = aiStatusResultSchema.safeParse(response.result);
+    setAi(parsed.success ? parsed.data : null);
   }, []);
 
   useEffect(() => {
@@ -172,6 +185,7 @@ export function App(): JSX.Element {
           {section === 'ai' && <AISection ai={ai} refresh={loadAiStatus} setStatus={setStatus} />}
           {section === 'browser' && <BrowserAccess grants={grants} revoke={revoke} grant={grant} />}
           {section === 'behaviour' && <AgentBehaviour ai={ai} setStatus={setStatus} refresh={loadAiStatus} />}
+          {section === 'reminders' && <ReminderSection setStatus={setStatus} />}
           {section === 'privacy' && (
             <Privacy
               confirming={confirmingDelete}
@@ -186,6 +200,170 @@ export function App(): JSX.Element {
         </div>
       </div>
     </main>
+  );
+}
+
+const REMINDER_LABELS: Record<ReminderOffset, string> = {
+  '2d': '2 days before',
+  morning: 'Morning of',
+  '2h': '2 hours before',
+};
+
+const REMINDER_KIND_LABELS: Record<string, string> = {
+  assignment: 'Assignments',
+  quiz: 'Quizzes',
+  discussion: 'Discussions',
+  other: 'Other',
+};
+
+function ReminderSection({ setStatus }: { setStatus: (s: string) => void }) {
+  const [preferences, setPreferences] = useState<ReminderPreferences | null>(null);
+  const storage = chrome.storage.local as unknown as ReminderStorageArea;
+
+  useEffect(() => {
+    let mounted = true;
+    void loadReminderPreferences(storage).then((loaded) => {
+      if (mounted) setPreferences(loaded);
+    }).catch(() => {
+      if (mounted) setPreferences(DEFAULT_REMINDER_PREFERENCES);
+    });
+    return () => { mounted = false; };
+  }, [storage]);
+
+  const save = async (patch: Partial<ReminderPreferences>, message: string) => {
+    try {
+      const next = await updateReminderPreferences(patch, storage);
+      setPreferences(next);
+      setStatus(message);
+    } catch {
+      setStatus('Could not save reminder settings. Please try again.');
+    }
+  };
+
+  if (!preferences) {
+    return <p className="text-sm text-ink-muted">Loading reminder settings…</p>;
+  }
+
+  const toggleOffset = (kind: string, offset: ReminderOffset, enabled: boolean) => {
+    const fallback = preferences.offsets.other ?? DEFAULT_REMINDER_PREFERENCES.offsets.other;
+    if (!fallback) return;
+    const current = preferences.offsets[kind] ?? fallback;
+    void save({
+      offsets: {
+        ...preferences.offsets,
+        [kind]: {
+          '2d': current['2d'] ?? false,
+          morning: current.morning ?? false,
+          '2h': current['2h'] ?? false,
+          [offset]: enabled,
+        },
+      },
+    }, 'Reminder settings saved.');
+  };
+
+  const updateQuietHour = (field: 'start' | 'end', value: string) => {
+    void save({ quietHours: { ...preferences.quietHours, [field]: value } }, 'Quiet hours saved.');
+  };
+
+  const sendTestReminder = async () => {
+    if (!chrome.notifications?.create) {
+      setStatus('Notifications are not available in this browser.');
+      return;
+    }
+    try {
+      await chrome.notifications.create(`motion-test-reminder-${Date.now()}`, {
+        type: 'basic',
+        iconUrl: 'src/assets/icons/icon-128.png',
+        title: 'Motion test reminder',
+        message: 'Reminders are enabled and ready to notify you.',
+      });
+      setStatus('Test reminder sent.');
+    } catch {
+      setStatus('Could not send a test reminder. Please try again.');
+    }
+  };
+
+  return (
+    <section aria-labelledby="reminders-heading">
+      <h2 id="reminders-heading" className="font-serif text-lg">Reminders</h2>
+      <p className="mt-1 text-sm text-ink-muted">
+        Reminders are off until you opt in. Motion reads only the deadlines already found in this
+        browser and never scans or reminds inside a graded, timed or proctored attempt.
+      </p>
+      <div className={`${card} mt-4 grid gap-5`}>
+        <label className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            aria-label="Send deadline reminders"
+            checked={preferences.enabled}
+            onChange={(event) => void save({ enabled: event.target.checked }, event.target.checked ? 'Reminders enabled.' : 'Reminders disabled.')}
+          />
+          <span className="text-sm">
+            <span className="font-medium">Send deadline reminders</span>
+            <span className="block text-ink-muted">You can change these settings at any time.</span>
+          </span>
+        </label>
+
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[30rem] text-left text-sm">
+            <caption className="mb-2 text-left font-medium">Reminder timing by item type</caption>
+            <thead>
+              <tr className="border-b border-rule text-ink-muted">
+                <th scope="col" className="py-2 pr-4 font-medium">Item type</th>
+                {REMINDER_OFFSETS.map((offset) => (
+                  <th key={offset} scope="col" className="px-2 py-2 text-center font-medium">{REMINDER_LABELS[offset]}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {REMINDER_KINDS.map((kind) => {
+                const fallback = preferences.offsets.other ?? DEFAULT_REMINDER_PREFERENCES.offsets.other;
+                if (!fallback) return null;
+                const settings = preferences.offsets[kind] ?? fallback;
+                return (
+                  <tr key={kind} className="border-b border-rule last:border-0">
+                    <th scope="row" className="py-2 pr-4 font-medium">{REMINDER_KIND_LABELS[kind]}</th>
+                    {REMINDER_OFFSETS.map((offset) => {
+                      const id = `reminder-${kind}-${offset}`;
+                      return (
+                        <td key={offset} className="px-2 py-2 text-center">
+                          <input
+                            id={id}
+                            type="checkbox"
+                            checked={settings[offset]}
+                            aria-label={`${REMINDER_KIND_LABELS[kind]}: ${REMINDER_LABELS[offset]}`}
+                            onChange={(event) => toggleOffset(kind, offset, event.target.checked)}
+                          />
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <fieldset className="grid gap-3">
+          <legend className="text-sm font-medium">Quiet hours</legend>
+          <p className="text-sm text-ink-muted">A reminder that lands during quiet hours moves to the end of quiet hours. If that is after the due time, it is skipped.</p>
+          <div className="flex flex-wrap gap-4">
+            <label className="grid gap-1 text-sm" htmlFor="quiet-hours-start">
+              <span>Start</span>
+              <input id="quiet-hours-start" type="time" value={preferences.quietHours.start} onChange={(event) => updateQuietHour('start', event.target.value)} className={`min-h-6 rounded-sm border border-edge bg-surface px-2 py-1 ${focus}`} />
+            </label>
+            <label className="grid gap-1 text-sm" htmlFor="quiet-hours-end">
+              <span>End</span>
+              <input id="quiet-hours-end" type="time" value={preferences.quietHours.end} onChange={(event) => updateQuietHour('end', event.target.value)} className={`min-h-6 rounded-sm border border-edge bg-surface px-2 py-1 ${focus}`} />
+            </label>
+          </div>
+        </fieldset>
+
+        <button type="button" onClick={() => void sendTestReminder()} className={`w-fit min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}>
+          Send a test reminder
+        </button>
+      </div>
+    </section>
   );
 }
 

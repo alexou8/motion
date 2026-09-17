@@ -23,6 +23,7 @@ import { explainAvailability, type LanguageModelCapability } from '@/platform/la
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
+import { updateTask, upsertExtractedTask } from '@/core/storage/repositories';
 import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
@@ -39,6 +40,8 @@ import { handleSessionMessage } from './sessions';
 import { buildPanelState as buildAgentPanelState } from './panelState';
 import { handleAiMessage } from './aiHandlers';
 import { resolveSessionProvider } from './providers';
+import { discoveryRunResultSchema } from '@/core/adapters/d2lDiscovery';
+import { reconcileReminders } from './reminders';
 
 /**
  * Handles an already-authorized message.
@@ -112,6 +115,11 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     }
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
+    case 'scan-all-courses':
+      return message.tabId === undefined ? { kind: 'error', message: 'Open Learn before scanning your courses.' } : scanAllCourses(message.tabId);
+    case 'set-deadline-discovery-opt-in':
+      await chrome.storage.local.set({ [`motion.discovery:${new URL(message.host).origin}`]: { optedIn: message.enabled } });
+      return { updated: true };
     case 'prepare-workspace':
       return handlePrepareWorkspace(message.tabId);
     case 'ask-about-page':
@@ -192,7 +200,37 @@ async function handlePageObserved(
       };
 
   await chrome.storage.session.set({ [observationKey(tabId)]: observation });
+  if (!message.restricted) void maybeAutomaticCourseScan(tabId, message.url);
   return { stored: !message.restricted };
+}
+
+const AUTOMATIC_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const DISCOVERY_BUSY_LEASE_MS = 5 * 60 * 1_000;
+type DiscoverySettings = {
+  optedIn?: unknown;
+  busy?: unknown;
+  busyUntil?: unknown;
+  busyRunId?: unknown;
+  lastAutomaticAt?: unknown;
+  blocker?: unknown;
+  result?: unknown;
+};
+
+export function discoveryBusy(settings: DiscoverySettings | undefined, now: Date): boolean {
+  return settings?.busy === true && typeof settings.busyUntil === 'string' && new Date(settings.busyUntil).getTime() > now.getTime();
+}
+export function automaticDiscoveryDue(lastAutomaticAt: unknown, now: Date): boolean {
+  const last = typeof lastAutomaticAt === 'string' ? new Date(lastAutomaticAt).getTime() : 0;
+  return !Number.isFinite(last) || now.getTime() - last >= AUTOMATIC_SCAN_INTERVAL_MS;
+}
+async function maybeAutomaticCourseScan(tabId: number, url: string): Promise<void> {
+  if (!chrome.storage.local) return;
+  const key = `motion.discovery:${new URL(url).origin}`;
+  const stored = await chrome.storage.local.get(key);
+  const settings = stored[key] as DiscoverySettings | undefined;
+  if (settings?.optedIn !== true || discoveryBusy(settings, new Date()) || !automaticDiscoveryDue(settings?.lastAutomaticAt, new Date())) return;
+  await chrome.storage.local.set({ [key]: { ...settings, lastAutomaticAt: new Date().toISOString() } });
+  await scanAllCourses(tabId);
 }
 
 /**
@@ -210,44 +248,68 @@ export async function forgetTab(tabId: number): Promise<void> {
 async function handleExtraction(
   message: Extract<Message, { type: 'extraction-result' }>,
 ): Promise<{ courses: number; tasks: number }> {
+  return upsertExtractedRecords(message.course ? [message.course] : [], message.tasks);
+}
+
+/** Shared W1 upsert path for page extraction and all-course discovery. */
+export async function upsertExtractedRecords(incomingCourses: Course[], incomingTasks: CourseTask[]): Promise<{ courses: number; tasks: number }> {
   const db = await openDatabase();
   const courses = new Repository(db, STORE.courses, courseSchema);
-  const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
+  for (const course of incomingCourses) await courses.put(course);
 
-  if (message.course) await courses.put(message.course);
-
-  // A rescan must never overwrite a value the student corrected.
   let written = 0;
-  for (const task of message.tasks) {
-    const existing = await tasks.get(task.id);
-    if (existing?.studentEdited) continue;
-
-    const legacy = existing ? null : await findLegacyTask(tasks, task);
-    if (legacy) {
-      await tasks.put({
-        ...task,
-        ...(legacy.studentEdited
-          ? {
-              title: legacy.title,
-              due: legacy.due,
-              weight: legacy.weight,
-              status: legacy.status,
-            }
-          : {}),
-        corrections: legacy.corrections,
-        studentEdited: legacy.studentEdited,
-        createdAt: legacy.createdAt,
-      });
-      await tasks.put({ ...legacy, archived: true, updatedAt: task.updatedAt });
-      written += 1;
-      continue;
-    }
-
-    await tasks.put({ ...task, createdAt: existing?.createdAt ?? task.createdAt });
+  for (const task of incomingTasks) {
+    await upsertExtractedTask(db, task, legacyTaskMatches);
     written += 1;
   }
 
-  return { courses: message.course ? 1 : 0, tasks: written };
+  return { courses: incomingCourses.length, tasks: written };
+}
+
+async function scanAllCourses(tabId: number): Promise<unknown> {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.url || !resolveAdapter(tab.url)) return { kind: 'error', message: 'Open Learn before scanning your courses.' };
+  const stored = await chrome.storage.local.get(`motion.discovery:${new URL(tab.url).origin}`);
+  const key = `motion.discovery:${new URL(tab.url).origin}`;
+  const settings = stored[key] as DiscoverySettings | undefined;
+  if (settings?.optedIn !== true) return { kind: 'refused', message: 'Enable course scanning first.' };
+  const runId = crypto.randomUUID();
+  const startedAt = new Date();
+  await chrome.storage.local.set({ [key]: { ...settings, busy: true, busyRunId: runId, busyUntil: new Date(startedAt.getTime() + DISCOVERY_BUSY_LEASE_MS).toISOString(), blocker: null } });
+  const finish = async (patch: Omit<DiscoverySettings, 'optedIn'>): Promise<boolean> => {
+    const current = (await chrome.storage.local.get(key))[key] as DiscoverySettings | undefined;
+    // A scan must never revive consent or store material gathered after the
+    // student opted out. A stale worker only clears the lease it owns.
+    if (current?.optedIn !== true || current.busyRunId !== runId) return false;
+    await chrome.storage.local.set({ [key]: { ...current, ...patch, busy: false, busyRunId: null, busyUntil: null } });
+    return true;
+  };
+  try {
+    const raw = await sendToContentScript(tabId, { type: 'motion:discover-deadlines' });
+    const result = discoveryRunResultSchema.safeParse(raw);
+    if (!result.success) throw new Error('Invalid discovery response.');
+    if (result.data.kind === 'success') {
+      const current = (await chrome.storage.local.get(key))[key] as DiscoverySettings | undefined;
+      if (current?.optedIn !== true || current.busyRunId !== runId) {
+        // Consent was revoked (or another run took over) while this scan's
+        // network calls were in flight. Drop the freshly gathered result
+        // instead of storing it, but still release the lease this run owns
+        // so the UI doesn't stay stuck on "Scanning courses…" until it expires.
+        if (current?.busyRunId === runId) {
+          await chrome.storage.local.set({ [key]: { ...current, busy: false, busyRunId: null, busyUntil: null } });
+        }
+        return { kind: 'refused', message: 'Course scanning was turned off before this scan finished.' };
+      }
+      await upsertExtractedRecords(result.data.courses, result.data.tasks);
+      await reconcileReminders().catch(() => undefined);
+      await finish({ result: { deadlines: result.data.tasks.length, courses: result.data.courses.length, updatedAt: result.data.scannedAt }, blocker: null });
+    } else await finish({ result: null, blocker: result.data.message });
+    return result.data;
+  } catch {
+    const message = 'Motion could not scan Learn right now. Try again while you are signed in.';
+    await finish({ result: null, blocker: message });
+    return { kind: 'error', message };
+  }
 }
 
 function normalizedTaskTitle(title: string): string {
@@ -265,21 +327,18 @@ function legacyTitleMatches(legacy: CourseTask, incoming: CourseTask): boolean {
   );
 }
 
-async function findLegacyTask(
-  tasks: Repository<typeof courseTaskSchema>,
+function legacyTaskMatches(
+  candidate: CourseTask,
   incoming: CourseTask,
-): Promise<CourseTask | null> {
-  const candidates = (await tasks.byIndex('byCourse', incoming.courseId)).records.filter(
-    (candidate) =>
-      !candidate.archived &&
-      candidate.kind === incoming.kind &&
-      (
-        adapterById(candidate.provenance.platformId) ??
-        resolveAdapter(incoming.provenance.sourceUrl)
-      )?.isLegacyTaskId(candidate.id, incoming.courseId) === true &&
-      legacyTitleMatches(candidate, incoming),
-  );
-  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+): boolean {
+  const adapter = adapterById(candidate.provenance.platformId) ?? resolveAdapter(incoming.provenance.sourceUrl);
+  // A tombstone (already folded once) is never a legacy-match candidate: its
+  // dependents were re-pointed at the canonical row when it was archived, and
+  // matching it again here would only recreate the duplicate D-ID exists to
+  // remove. See upsertExtractedTask's own tombstone-redirect for exact-id hits.
+  return !candidate.archived && candidate.kind === incoming.kind &&
+    adapter?.isLegacyTaskId(candidate.id, incoming.courseId) === true &&
+    legacyTitleMatches(candidate, incoming);
 }
 
 /**
@@ -290,66 +349,29 @@ async function handleCorrection(
   message: Extract<Message, { type: 'correct-task' }>,
 ): Promise<{ updated: boolean }> {
   const db = await openDatabase();
-  const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
-  const task = await tasks.get(message.taskId);
-  if (!task) return { updated: false };
-
   const now = new Date().toISOString();
-  const next = { ...task, studentEdited: true, updatedAt: now };
-
-  switch (message.field) {
-    case 'title':
-      if (typeof message.value !== 'string') return { updated: false };
-      next.corrections = [
-        ...task.corrections,
-        {
-          field: 'title',
-          originalValue: task.title,
-          correctedValue: message.value,
-          correctedAt: now,
-        },
-      ];
-      next.title = message.value;
-      break;
-    case 'dueIso': {
-      const value = typeof message.value === 'string' ? message.value : null;
-      next.corrections = [
-        ...task.corrections,
-        { field: 'due.iso', originalValue: task.due.iso, correctedValue: value, correctedAt: now },
-      ];
-      // A student-supplied date is authoritative, so confidence becomes
-      // 'confirmed' while the original parse stays in `corrections`.
-      next.due = { ...task.due, iso: value, confidence: 'confirmed' };
-      break;
+  const updated = await updateTask(db, message.taskId, (task) => {
+    const next = { ...task, studentEdited: true, updatedAt: now };
+    switch (message.field) {
+      case 'title':
+        if (typeof message.value !== 'string') return null;
+        return { ...next, title: message.value, corrections: [...task.corrections, { field: 'title', originalValue: task.title, correctedValue: message.value, correctedAt: now }] };
+      case 'dueIso': {
+        const value = typeof message.value === 'string' ? message.value : null;
+        return { ...next, due: { ...task.due, iso: value, confidence: 'confirmed' as const }, corrections: [...task.corrections, { field: 'due.iso', originalValue: task.due.iso, correctedValue: value, correctedAt: now }] };
+      }
+      case 'weight': {
+        if (typeof message.value !== 'number' && message.value !== null) return null;
+        return { ...next, weight: message.value, corrections: [...task.corrections, { field: 'weight', originalValue: task.weight, correctedValue: message.value, correctedAt: now }] };
+      }
+      case 'status': {
+        const parsed = courseTaskSchema.shape.status.safeParse(message.value);
+        if (!parsed.success) return null;
+        return { ...next, status: parsed.data, corrections: [...task.corrections, { field: 'status', originalValue: task.status, correctedValue: parsed.data, correctedAt: now }] };
+      }
     }
-    case 'weight': {
-      const value = typeof message.value === 'number' ? message.value : null;
-      next.corrections = [
-        ...task.corrections,
-        { field: 'weight', originalValue: task.weight, correctedValue: value, correctedAt: now },
-      ];
-      next.weight = value;
-      break;
-    }
-    case 'status': {
-      const parsed = courseTaskSchema.shape.status.safeParse(message.value);
-      if (!parsed.success) return { updated: false };
-      next.corrections = [
-        ...task.corrections,
-        {
-          field: 'status',
-          originalValue: task.status,
-          correctedValue: parsed.data,
-          correctedAt: now,
-        },
-      ];
-      next.status = parsed.data;
-      break;
-    }
-  }
-
-  await tasks.put(next);
-  return { updated: true };
+  });
+  return { updated: updated !== null };
 }
 
 /**

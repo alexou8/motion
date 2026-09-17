@@ -67,6 +67,7 @@ async function toWorkerMessage(
       return { type: 'session-tab', sessionId: command.sessionId, tabId: tab.id, op: 'adopt' };
     }
     case 'session-command':
+    case 'set-deadline-discovery-opt-in':
     case 'session-select':
     case 'session-source':
     case 'session-tab':
@@ -82,6 +83,10 @@ async function toWorkerMessage(
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (tab?.id === undefined) return null;
       return { type: 'build-checklist', tabId: tab.id, taskId: null };
+    }
+    case 'scan-all-courses': {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      return tab?.id === undefined ? null : { type: 'scan-all-courses', tabId: tab.id };
     }
     case 'toggle-requirement':
       return {
@@ -327,6 +332,7 @@ export function createRuntimeBridge(): MotionBridge {
         case 'session-source':
         case 'session-tab':
         case 'session-adopt-current-tab':
+        case 'set-deadline-discovery-opt-in':
         case 'set-provider-key':
         case 'forget-provider-key':
         case 'set-ai-preferences':

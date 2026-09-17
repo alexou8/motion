@@ -2,13 +2,7 @@ import { z } from 'zod';
 import { courseSchema, courseTaskSchema, pageContentSchema, pageTypeSchema } from '../domain';
 import { SESSION_MESSAGE_SCHEMAS } from './sessionContracts';
 import {
-  clickActionSchema,
-  fillActionSchema,
-  focusActionSchema,
-  scrollToActionSchema,
-  selectActionSchema,
   snapshotRequestSchema,
-  toggleActionSchema,
 } from '../actor/contracts';
 
 /**
@@ -63,6 +57,8 @@ export const requestExtractionSchema = z.object({
   type: z.literal('request-extraction'),
   tabId: z.number().int().nonnegative(),
 });
+export const scanAllCoursesSchema = z.object({ type: z.literal('scan-all-courses'), tabId: z.number().int().nonnegative().optional() });
+export const setDeadlineDiscoveryOptInSchema = z.object({ type: z.literal('set-deadline-discovery-opt-in'), host: z.string().url(), enabled: z.boolean() });
 export const prepareWorkspaceSchema = z.object({ type: z.literal('prepare-workspace'), tabId: z.number().int().nonnegative() });
 export const askAboutPageSchema = z.object({
   type: z.literal('ask-about-page'),
@@ -166,6 +162,8 @@ export const messageSchema = z.discriminatedUnion('type', [
   pageObservedSchema,
   extractionResultSchema,
   requestExtractionSchema,
+  scanAllCoursesSchema,
+  setDeadlineDiscoveryOptInSchema,
   prepareWorkspaceSchema,
   askAboutPageSchema,
   closeWorkspaceSchema,
@@ -194,6 +192,8 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'page-observed': ['content-script'],
   'extraction-result': ['content-script'],
   'request-extraction': ['extension-ui'],
+  'scan-all-courses': ['extension-ui'],
+  'set-deadline-discovery-opt-in': ['extension-ui'],
   'prepare-workspace': ['extension-ui'],
   'ask-about-page': ['extension-ui'],
   'close-workspace': ['extension-ui'],
@@ -234,23 +234,18 @@ export function maySend(type: MessageType, role: SenderRole): boolean {
  * a hand-rolled cast: the content script rejects anything that does not match,
  * and neither message carries page data inward.
  */
-export const contentRequestSchema = z.discriminatedUnion('type', [
+export const contentRequestSchema = z.union([
   // A UUID, because the result that comes back carries it under the same
   // contract (extractionResult above). Two spellings of the same id would let
   // a request produce a result the schema then rejects.
   z.object({ type: z.literal('motion:extract'), requestId: z.string().uuid().optional() }),
   z.object({ type: z.literal('motion:extract-content') }),
+  z.object({ type: z.literal('motion:discover-deadlines') }),
   // Browser actor (ARCH D7): the worker asks for a snapshot of the page's
   // interactive elements, then acts only against handles from that snapshot.
   // These are content-bound requests, validated the same way as the two
   // above — the schemas themselves (see core/actor/contracts.ts) are strict,
   // so a forged extra field never reaches the content script's actor.
   snapshotRequestSchema,
-  clickActionSchema,
-  fillActionSchema,
-  selectActionSchema,
-  toggleActionSchema,
-  scrollToActionSchema,
-  focusActionSchema,
 ]);
 export type ContentRequest = z.infer<typeof contentRequestSchema>;

@@ -96,10 +96,24 @@ type at all; that content messages carry `sender.tab` with an expected HTTPS
 origin; and that any claimed tab, window or URL is derived from `sender` rather
 than trusted from the payload. The content-script inward listener separately
 accepts only `sender.id === chrome.runtime.id` with `sender.tab === undefined`.
-The actor's `confirmedConsequential` check remains defense in depth; a
-compromised extension page already has approval authority because it is the
-approval UI, so CSP and the no-remote-code policy are the residual controls.
-— *Mitigated for the content listener; residual extension-page risk accepted*
+The intended mitigation is a worker-opened, browser-authenticated actor port
+whose sender carries the target tab, plus a one-shot capability issued only
+after the workflow engine consumes fresh approval. The current source and
+browser-forgery evidence are still being reconciled; until that pass is
+complete, extension-page compromise remains a residual actor risk. —
+*Content-message sender checks mitigated; actor-channel mitigation pending
+final verification*. Actor exceptions and stale recovery previews also require
+bounded failure/cleanup before this boundary can be called production-ready.
+
+The restricted-page verdict and the element capture are the same atomic call
+in the content script (`buildSnapshot`, `src/content/actor.ts`): a page that
+is restricted at capture time yields zero element descriptors, so no control
+label from it can ever be relayed into a provider prompt. The worker's
+inspect-tab capability additionally re-checks the live page immediately
+before capturing, and refuses to trust or store a captured snapshot whose
+`url` no longer matches that live check — closing the remaining window where
+the tab navigates between the worker's check and the content script's reply
+(SOL-5). — *Mitigated*
 
 `externally_connectable` is not declared, so no web page may message the
 extension directly. — *Mitigated (manifest omits it)*
@@ -137,8 +151,9 @@ boundary would be bypassed without ever naming a prohibited action.
 The prohibition is enforced again at the lowest capability-dispatch layer, and
 workflows are given a **closed allowlist of concrete, parameter-validated
 actions** — never generic page mutation or script execution. The content actor
-receives only Motion-issued handles and typed actions. — *Mitigated in policy;
-actor defense-in-depth is in progress*
+receives only Motion-issued handles and typed actions. — *Mitigated in policy
+and actor dispatch; interrupted actor writes are not replayed automatically
+because they have no durable browser idempotency marker.*
 
 Policy-level refusal, including refusal ahead of reading approval status, is
 already implemented. — *Mitigated (`src/core/policy`, tested)*
@@ -370,8 +385,19 @@ Provider turns carry a persisted `pendingModelRequest` recovery record; recovery
 does not blindly resend an uncertain request. POST network failures, timeouts
 after headers, and ambiguous 500/502/504 responses surface `outcome-unknown`
 with an explicit retry choice. The student must choose whether to re-run the
-model turn when its outcome cannot be established. — *Mitigated in design;
-provider-specific idempotency is not claimed*
+model turn when its outcome cannot be established. Retry also resends the
+exact student turn that failed, not the session's original goal, so recovery
+cannot fabricate a conversation entry the student never sent (SOL-18).
+A claimed request additionally schedules a `chrome.alarms` recovery wake-up
+at claim time (`motion:model-recovery:*`, `src/background/modelTurn.ts`), so a
+worker that is suspended or killed mid-stream — or during a provider's own
+retry backoff, before any blocker is ever recorded — still gets woken to run
+`recoverStaleModelRequests` instead of leaving the session `working` until
+some unrelated event happens to wake the worker (SOL-19, interim fix: this
+narrows the gap to the alarm's own delay and Chrome's alarm-scheduling
+guarantees, it does not make recovery instantaneous or immune to a worker that
+never wakes at all). — *Mitigated in design; provider-specific idempotency is
+not claimed*
 
 ## T21 — Cloud disclosure or silent fallback
 

@@ -56,7 +56,7 @@ describe('sessionProjector', () => {
 
     const readDb = await openDatabase();
     const stored = await sessionRepository(readDb).get('session-1');
-    expect(stored?.status).toBe('completed');
+    expect(stored?.status).toBe('waiting');
     expect(stored?.plan).toEqual({
       steps: [{ id: 't1-0', title: 'Read the synthetic page', status: 'done' }],
       currentStepId: null,
@@ -65,5 +65,23 @@ describe('sessionProjector', () => {
     expect(stored?.activity[0]?.summary).toContain('Completed');
     expect(stored?.blockers).toHaveLength(0);
     readDb.close();
+  });
+
+  it('does not let an old running workflow revive or replace a paused newer turn', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(agentSessionSchema.parse({
+      id: 'session-1', title: 'Synthetic session', goal: 'Read a page', status: 'paused',
+      createdAt: NOW, updatedAt: NOW, modelTurnGeneration: 2,
+      plan: { steps: [{ id: 'new-step', title: 'New plan', status: 'pending' }], currentStepId: 'new-step' },
+    }));
+    db.close();
+    const old = workflow('running');
+    old.params = { ...old.params, modelTurnGeneration: 1 };
+
+    await projectWorkflow(old);
+
+    const stored = await sessionRepository(await openDatabase()).get('session-1');
+    expect(stored?.status).toBe('paused');
+    expect(stored?.plan.steps).toEqual([{ id: 'new-step', title: 'New plan', status: 'pending' }]);
   });
 });

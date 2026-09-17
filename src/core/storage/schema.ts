@@ -10,7 +10,7 @@
 export const DB_NAME = 'motion';
 
 /** Bump when adding a migration step. Must equal `MIGRATIONS.length`. */
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 
 export const STORE = {
   courses: 'courses',
@@ -106,6 +106,14 @@ export const MIGRATIONS: readonly MigrationStep[] = [
       const courseLinks = ensureStore(db, STORE.courseLinks, { keyPath: 'id' }, transaction);
       ensureIndex(courseLinks, 'byCourse', 'courseId');
       ensureIndex(courseLinks, 'byTask', 'taskId');
+    },
+  },
+  {
+    version: 3,
+    describe: 'Sessions byTask index, for the canonical task-id migration (D-ID) to re-point session.taskId without a full scan.',
+    apply(db, transaction) {
+      const sessions = ensureStore(db, STORE.sessions, { keyPath: 'id' }, transaction);
+      ensureIndex(sessions, 'byTask', 'taskId');
     },
   },
 ];

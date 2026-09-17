@@ -44,9 +44,10 @@ change and why it was made, and stop there.
   may proceed; configurable work requires the student's setting; consequential
   work requires a fresh target-bound single-use approval; forbidden work is
   refused. No always-allow setting exists for consequential or forbidden work.
-- Motion never acts inside a graded/timed/proctored attempt, submits assessed
-  work, or modifies remote course data. This graded-attempt boundary lives in
-  `src/core/policy` and is covered by tests; do not weaken it.
+- Motion never acts inside a graded/timed/proctored attempt. Consequential
+  submissions, posts, uploads, and other remote-course mutations require a
+  fresh, target-bound, single-use approval; this boundary lives in
+  `src/core/policy` and is covered by tests.
 - Content is an observer plus typed actor. It may perform only validated,
   handle-based actions authorized by the worker; it never receives selectors,
   scripts or arbitrary URLs. Actor and policy defenses are both required.

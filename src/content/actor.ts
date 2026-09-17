@@ -200,6 +200,22 @@ export function buildSnapshot(): SnapshotResult {
   const handles = new Map<string, WeakRef<Element>>();
   const elements: ElementDescriptor[] = [];
 
+  // The restriction verdict is computed, and enforced, in the same
+  // synchronous call that would otherwise capture the page — there is no
+  // window between "checked" and "captured" for a navigation into a quiz
+  // attempt to slip through (SOL-5). A restricted page yields no element
+  // descriptors at all: no label, name, or handle from it is ever produced
+  // for the worker to store or relay into a provider prompt. This is
+  // necessarily stricter than plain act()-time refusal below (which still
+  // guards click/fill against handles resolved from an older, pre-restriction
+  // snapshot), since scrollTo/focus on a live restricted page now also have
+  // nothing to target.
+  if (isRestricted().restricted) {
+    currentSnapshotId = snapshotId;
+    currentHandles = new Map();
+    return { snapshotId, url: currentUrl(), elements: [], restricted: true };
+  }
+
   const candidates = Array.from(document.querySelectorAll(INTERACTIVE_SELECTOR));
   for (const element of candidates) {
     if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
@@ -254,7 +270,7 @@ function dispatchInputChange(element: Element): void {
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-export function act(request: ActRequest): ActResult {
+export function act(request: ActRequest, options: { consequentialCapability?: boolean } = {}): ActResult {
   const resolved = resolveHandle(request.snapshotId, request.handle);
   if (!(resolved instanceof Element)) return resolved.error;
   const element = resolved;
@@ -319,7 +335,7 @@ export function act(request: ActRequest): ActResult {
       return { ok: true, evidence: { descriptor, before, after, urlAfter: currentUrl() } };
     }
     case 'click': {
-      if (isSubmitLike(descriptor) && !request.confirmedConsequential) {
+      if (isSubmitLike(descriptor) && !options.consequentialCapability) {
         return {
           ok: false,
           error: 'refused-consequential',

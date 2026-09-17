@@ -7,28 +7,15 @@
  */
 
 import { z } from 'zod';
+import {
+  CONFIGURABLE_ACTION_IDS,
+  configurableActionIdSchema,
+  type ConfigurableActionId,
+} from '../policy/actions';
 
 export const PROVIDER_IDS = ['chrome-local', 'openai', 'anthropic'] as const;
 
-/**
- * The configurable-tier action ids a student can flip to "automatic" (ARCH
- * D5). Policy owns the canonical list; this is declared locally so this
- * schema doesn't reach across worker boundaries. Keep in sync by hand.
- */
-export const CONFIGURABLE_ACTION_IDS = [
-  'edit-draft',
-  'fill-form-field',
-  'select-option',
-  'toggle-control',
-  'save-remote-draft',
-  'prepare-upload',
-  'prepare-discussion-response',
-  'add-calendar-event',
-  'prepare-message',
-  'click-element',
-] as const;
-
-export type ConfigurableActionId = (typeof CONFIGURABLE_ACTION_IDS)[number];
+export { CONFIGURABLE_ACTION_IDS, type ConfigurableActionId };
 
 export const aiPreferencesSchema = z.object({
   providerId: z.enum(PROVIDER_IDS),
@@ -36,7 +23,7 @@ export const aiPreferencesSchema = z.object({
   /** Providers whose cloud-processing disclosure the student has accepted. */
   cloudDisclosureAccepted: z.array(z.enum(PROVIDER_IDS)).default([]),
   autoOpenRelatedTabs: z.boolean().default(false),
-  allowedConfigurableActions: z.array(z.enum(CONFIGURABLE_ACTION_IDS)).default([]),
+  allowedConfigurableActions: z.array(configurableActionIdSchema).default([]),
 });
 
 export type AIPreferences = z.infer<typeof aiPreferencesSchema>;

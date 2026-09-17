@@ -2,11 +2,15 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from './App';
+import { DEFAULT_REMINDER_PREFERENCES, REMINDER_PREFERENCES_KEY } from '@/core/reminders';
 
 let origins: string[];
 const sessionClear = vi.fn(async () => undefined);
 const localClear = vi.fn(async () => undefined);
 const permissionsRequest = vi.fn(async () => true);
+const reminderStorageGet = vi.fn(async (key: string) => ({ [key]: { ...DEFAULT_REMINDER_PREFERENCES } }));
+const reminderStorageSet = vi.fn(async () => undefined);
+const notificationCreate = vi.fn(async () => 'test-notification');
 let sendMessage: (message: unknown) => Promise<unknown>;
 
 const aiStatus = {
@@ -55,6 +59,9 @@ beforeEach(() => {
   sessionClear.mockClear();
   localClear.mockClear();
   permissionsRequest.mockClear();
+  reminderStorageGet.mockClear();
+  reminderStorageSet.mockClear();
+  notificationCreate.mockClear();
   let status = structuredClone(aiStatus);
   sendMessage = vi.fn(async (message: unknown) => {
     const msg = message as { type: string; [key: string]: unknown };
@@ -110,7 +117,11 @@ beforeEach(() => {
         }),
         request: permissionsRequest,
       },
-      storage: { session: { clear: sessionClear }, local: { clear: localClear } },
+      storage: {
+        session: { clear: sessionClear },
+        local: { clear: localClear, get: reminderStorageGet, set: reminderStorageSet },
+      },
+      notifications: { create: notificationCreate },
       runtime: { getManifest: () => ({ version: '0.1.1' }), sendMessage: (m: unknown) => sendMessage(m) },
     },
   });
@@ -216,6 +227,28 @@ describe('navigation', () => {
     expect(window.location.hash).toBe('#privacy');
     window.location.hash = '#about';
     await waitFor(() => expect(screen.getByRole('heading', { name: 'About' })).toBeInTheDocument());
+  });
+});
+
+describe('reminders', () => {
+  it('renders an opt-in semantic timing matrix and saves changes locally', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Reminders' }));
+    expect(screen.getByRole('heading', { name: 'Reminders' })).toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Reminder timing by item type' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Send deadline reminders' })).not.toBeChecked();
+    await user.click(screen.getByRole('checkbox', { name: 'Send deadline reminders' }));
+    await waitFor(() => expect(reminderStorageSet).toHaveBeenCalledWith(expect.objectContaining({ [REMINDER_PREFERENCES_KEY]: expect.objectContaining({ enabled: true }) })));
+  });
+
+  it('sends a test notification through the native notification API', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Reminders' }));
+    await user.click(screen.getByRole('button', { name: 'Send a test reminder' }));
+    expect(notificationCreate).toHaveBeenCalledWith(expect.stringContaining('motion-test-reminder-'), expect.objectContaining({ type: 'basic' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Test reminder sent.');
   });
 });
 

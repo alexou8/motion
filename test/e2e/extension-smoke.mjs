@@ -40,6 +40,7 @@ function check(name, passed, detail = '') {
 }
 
 const fixture = (name) => readFileSync(join(fixtureDir, `${name}.html`), 'utf8');
+const jsonFixture = (name) => readFileSync(join(fixtureDir, `${name}.json`), 'utf8');
 
 /** Route shapes served to the browser. Every page is synthetic. */
 const ROUTES = [
@@ -137,6 +138,15 @@ try {
   // Serve synthetic markup for the matched host. Nothing leaves the machine.
   await context.route(`${ORIGIN}/**`, (route) => {
     const requestUrl = new URL(route.request().url());
+    if (requestUrl.pathname === '/d2l/api/versions/') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ Items: [{ ProductCode: 'lp', LatestVersion: '1.48' }, { ProductCode: 'le', LatestVersion: '1.48' }] }) });
+    }
+    if (requestUrl.pathname.includes('/enrollments/myenrollments/')) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-enrollments') });
+    }
+    if (requestUrl.pathname.includes('/calendar/events/myEvents/')) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-calendar-events') });
+    }
     const match = ALL_ROUTES.find((candidate) => {
       const candidateUrl = new URL(candidate.path, ORIGIN);
       return candidateUrl.pathname === requestUrl.pathname &&
@@ -402,7 +412,7 @@ try {
     await settings.getByRole('heading', { name: 'Privacy & data' }).isVisible(),
   );
   const sectionNames = await settings.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').allInnerTexts();
-  check('the settings page lists every rendered section', sectionNames.join('|') === 'AI|Browser access|Agent behaviour|Privacy & data|About', sectionNames.join('|'));
+  check('the settings page lists every rendered section', sectionNames.join('|') === 'AI|Browser access|Agent behaviour|Reminders|Privacy & data|About', sectionNames.join('|'));
   const serif = await settings.evaluate(async () => {
     const faces = await document.fonts.load('600 28px "Source Serif 4"');
     return {
@@ -411,12 +421,46 @@ try {
     };
   });
   check('the bundled serif loads and titles the settings page', serif.loaded && serif.title.includes('Source Serif 4'), JSON.stringify(serif));
+  await settings.getByRole('button', { name: 'Reminders' }).click();
+  const reminderOptIn = settings.getByRole('checkbox', { name: 'Send deadline reminders' });
+  if (!(await reminderOptIn.isChecked())) {
+    await reminderOptIn.click();
+    await settings.waitForTimeout(800);
+  }
+  check('reminder opt-in toggle responds in the settings UI', await reminderOptIn.isChecked());
+  await settings.reload({ waitUntil: 'load' });
+  await settings.getByRole('heading', { name: 'Reminders' }).waitFor();
+  check('reminder opt-in persists through the settings reload', await settings.getByRole('checkbox', { name: 'Send deadline reminders' }).isChecked());
   await settings.close();
 
   await page.bringToFront();
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
   check('the composer is offered on a readable course page', (await panel.locator('textarea').count()) === 1);
+  const discoveryState = await getState();
+  if (discoveryState?.result?.discovery?.optedIn === null) {
+    await panel.getByRole('button', { name: 'Enable scanning' }).first().click();
+    await panel.waitForTimeout(600);
+  }
+  const enabledDiscovery = await getState();
+  check('deadline discovery requires and records explicit opt-in', enabledDiscovery?.result?.discovery?.optedIn === true);
+  await panel.getByRole('button', { name: 'Scan all courses' }).first().click();
+  let discovered = await getState();
+  for (let attempt = 0; attempt < 60 && (discovered?.result?.discovery?.result?.deadlines ?? 0) < 2; attempt += 1) {
+    await panel.waitForTimeout(250);
+    discovered = await getState();
+  }
+  const discoveredTasks = discovered?.result?.tasks ?? [];
+  check(
+    'synthetic course discovery stores canonical high-confidence deadlines',
+    discovered?.result?.discovery?.result?.courses === 1 &&
+      discoveredTasks.some((task) => task.title === 'Chapter 1 Quiz' && task.courseId === 'd2l:101' && task.due?.confidence === 'high' && task.provenance?.strategy === 'lms-api') &&
+      discoveredTasks.some((task) => task.title === 'Discussion 1' && task.courseId === 'd2l:101'),
+    `${discovered?.result?.discovery?.result?.courses ?? 0} course(s), ${discoveredTasks.length} task(s)`,
+  );
+  await panel.getByRole('button', { name: 'Week' }).first().click();
+  const weekText = await panel.innerText('body');
+  check('deadline week view shows this week and later without uncertainty labels', /This week/i.test(weekText) && /Later/i.test(weekText) && !/Needs review/i.test(weekText));
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
   const restrictedBody = await panel.innerText('body');

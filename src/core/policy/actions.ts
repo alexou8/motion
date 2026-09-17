@@ -66,7 +66,12 @@ export type RiskLevel = z.infer<typeof riskLevelSchema>;
 export const policyTierSchema = z.enum(['automatic', 'configurable', 'fresh-confirmation', 'forbidden']);
 export type PolicyTier = z.infer<typeof policyTierSchema>;
 
-const TIER: Record<ActionType, PolicyTier> = {
+/**
+ * Canonical policy classification for every executable action. Consumers that
+ * need a tier subset (for example Settings' ongoing configurable consent)
+ * derive it here rather than maintaining a second hand-written action list.
+ */
+export const ACTIONS = {
   'read-page': 'automatic',
   'inspect-tab': 'automatic',
   'create-note': 'automatic',
@@ -105,10 +110,22 @@ const TIER: Record<ActionType, PolicyTier> = {
   'modify-course-data': 'fresh-confirmation',
 
   'act-in-graded-quiz': 'forbidden',
-};
+} as const satisfies Record<ActionType, PolicyTier>;
+
+export type ConfigurableActionId = {
+  [Action in keyof typeof ACTIONS]: (typeof ACTIONS)[Action] extends 'configurable' ? Action : never;
+}[keyof typeof ACTIONS];
+
+/** The only ids a persistent configurable-consent preference may contain. */
+export const CONFIGURABLE_ACTION_IDS = actionTypeSchema.options.filter(
+  (action): action is ConfigurableActionId => ACTIONS[action] === 'configurable',
+) as [ConfigurableActionId, ...ConfigurableActionId[]];
+
+/** Strict runtime schema paired with the policy-derived configurable subset. */
+export const configurableActionIdSchema = z.enum(CONFIGURABLE_ACTION_IDS);
 
 export function tierOf(action: ActionType): PolicyTier {
-  return TIER[action];
+  return ACTIONS[action];
 }
 
 /**

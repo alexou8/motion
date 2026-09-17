@@ -15,6 +15,7 @@ import {
   classifyHttpError,
   DEFAULT_GENERATE_TIMEOUT_MS,
   DEFAULT_HEALTH_TIMEOUT_MS,
+  E2E_PROVIDER_BASE_URL,
   HttpProviderError,
   isOutcomeUnknownStatus,
   parseSSEStream,
@@ -22,8 +23,12 @@ import {
   type FetchLike,
 } from './http';
 
-const RESPONSES_URL = 'https://api.openai.com/v1/responses';
-const MODELS_URL = 'https://api.openai.com/v1/models';
+// See `E2E_PROVIDER_BASE_URL` in ./http for what this is and why it is always
+// `''` (falling through to the real endpoints) outside the
+// `MOTION_E2E_PROVIDER_HOSTS=1` test build.
+const OPENAI_BASE_URL = E2E_PROVIDER_BASE_URL || 'https://api.openai.com';
+const RESPONSES_URL = `${OPENAI_BASE_URL}/v1/responses`;
+const MODELS_URL = `${OPENAI_BASE_URL}/v1/models`;
 
 export interface OpenAIProviderDeps {
   secrets: SecretStore;
@@ -63,7 +68,14 @@ export class OpenAIProvider implements AIProvider {
 
   constructor(deps: OpenAIProviderDeps) {
     this.secrets = deps.secrets;
-    this.fetchImpl = deps.fetchImpl ?? fetch;
+    // `fetch` must be bound before it is stored as `this.fetchImpl` and later
+    // invoked as `options.fetchImpl(...)` in requestWithRetry — an unbound
+    // reference is called with the wrong receiver there, and a service
+    // worker's stricter WorkerGlobalScope binding (unlike Window) throws
+    // "Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal invocation"
+    // for that receiver mismatch. Confirmed with a real MV3 service worker:
+    // this was a real bug, not just a test artifact.
+    this.fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
   }
 
   async capabilities(): Promise<ProviderCapabilities> {

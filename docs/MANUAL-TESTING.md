@@ -154,6 +154,10 @@ into diagnostics or a test fixture.
    goes directly to the selected fixed provider endpoint, not a Motion server;
    switch providers and confirm keys remain independent. Restart Chrome and
    confirm the key is gone.
+   Use the [OpenAI model catalogue](https://developers.openai.com/api/docs/models)
+   and [Anthropic model overview](https://platform.claude.com/docs/en/models/overview)
+   as references only; account-specific model access and quota remain
+   unverified until this smoke test is performed.
 3. **Approval and policy.** Exercise automatic, configurable, consequential,
    and forbidden actions. Confirm consequential actions require a fresh
    target-bound single-use approval that expires after two minutes, with no
@@ -163,6 +167,8 @@ into diagnostics or a test fixture.
    worker-`LanguageModel`, and `needs-document-context` states. Confirm
    unavailable inference reports an honest blocker and does not silently use a
    cloud provider. Inference itself is not currently exercised by the harness.
+   Gemini Nano generation and long-prompt behavior after worker suspension
+   remain manual checks.
 5. **Redaction.** Trigger success, failure, cancellation, and recovery paths.
    Diagnostics may identify a provider and status, but must not include keys,
    goals, prompts, page text, notes, drafts, URLs, grades, or identifiers.

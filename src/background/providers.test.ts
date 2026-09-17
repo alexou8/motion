@@ -73,12 +73,13 @@ describe('resolveSessionProvider', () => {
       fetchImpl: vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })),
     });
 
-    expect(result.kind).toBe('ready');
-    if (result.kind === 'ready') {
-      expect(result.providerId).toBe('openai');
-      expect(result.cloud).toBe(true);
-      expect(result.model).toBe('gpt-5');
-    }
+    expect(result).toEqual({
+      kind: 'blocked',
+      blocker: expect.objectContaining({
+        kind: 'provider',
+        message: expect.stringContaining('No supported general-purpose OpenAI model'),
+      }),
+    });
   });
 
   it('fails closed when Chrome local availability does not answer in time', async () => {

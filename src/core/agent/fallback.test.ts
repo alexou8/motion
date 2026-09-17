@@ -12,6 +12,8 @@ function task(overrides: Partial<CourseTask> = {}): CourseTask {
     title: 'Assignment 2',
     kind: 'assignment',
     due: { iso: '2026-03-10T23:59:00.000Z', raw: 'Mar 10', zoneEvidence: 'explicit', timeAssumed: false, confidence: 'high' },
+    dueHistory: [],
+    dueConflict: null,
     status: 'todo',
     weight: null,
     provenance: { sourceUrl: 'https://lms.example.edu/a2', pageTitle: '', platformId: 'd2l', pageType: 'assignment', capturedAt: NOW, extractionVersion: 1 },

@@ -62,7 +62,10 @@ export class AnthropicProvider implements AIProvider {
 
   constructor(deps: AnthropicProviderDeps) {
     this.secrets = deps.secrets;
-    this.fetchImpl = deps.fetchImpl ?? fetch;
+    // See the identical fix + comment in openai.ts: an unbound `fetch`
+    // invoked as `options.fetchImpl(...)` throws "Illegal invocation" in a
+    // real MV3 service worker.
+    this.fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
   }
 
   async capabilities(): Promise<ProviderCapabilities> {

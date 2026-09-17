@@ -44,7 +44,7 @@ function startOfDayInZone(date: Date, timeZone: string): Date {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-function needsReview(task: CourseTask): boolean {
+export function taskNeedsReview(task: CourseTask): boolean {
   const { due } = task;
   if (due.iso === null) return true;
   if (due.confidence === 'medium' || due.confidence === 'low') return true;
@@ -73,7 +73,7 @@ export function deadlineBuckets(
   for (const task of tasks) {
     if (INACTIVE_STATUSES.has(task.status)) continue;
 
-    if (needsReview(task)) {
+    if (taskNeedsReview(task)) {
       buckets.needsReview.push(task);
       continue;
     }

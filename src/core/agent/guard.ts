@@ -10,6 +10,7 @@ import { actionForTool, type ToolCall } from './tools';
 import type { RefTables } from './refs';
 import { resolveCourseNav } from '../adapters';
 import { validateDestination, type DestinationProvenance } from './destination';
+import type { CourseLinkRelation } from '../graph';
 
 /**
  * Resolves a model tool call to a concrete, policy-checked step (VISION §8,
@@ -65,8 +66,9 @@ function destination(
   url: string,
   ctx: GuardContext,
   provenance: DestinationProvenance,
+  observedRelation?: CourseLinkRelation,
 ): { ok: true } | { ok: false; reason: string } {
-  return validateDestination(url, ctx.lmsOrigins, provenance);
+  return validateDestination(url, ctx.lmsOrigins, provenance, observedRelation);
 }
 
 function resourceUrls(refs: RefTables, taskId: string | undefined, kinds: readonly string[]): string[] {
@@ -166,13 +168,18 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
         taskId = task.id;
       }
       const urls = resourceUrls(refs, taskId, ['has-instructions', 'has-rubric', 'has-reading', 'has-module']);
-      const safeUrls = urls.filter((url) => destination(url, ctx, 'observed-link').ok);
+      const relationByUrl = new Map([...refs.linkByRef.values()].map((link) => [link.to.url, link.relation]));
+      const safeUrls = urls.filter((url) => destination(url, ctx, 'observed-link', relationByUrl.get(url)).ok);
       if (safeUrls.length === 0)
         return { kind: 'rejected', reason: 'no safe observed instruction, rubric, or reading links are available for this assignment' };
       const action = actionForTool(call.tool);
       return {
         kind: 'ok',
-        step: { id, title, action, input: { urls: safeUrls, destinationProvenance: 'observed-link' } },
+        step: { id, title, action, input: {
+          urls: safeUrls,
+          destinationProvenance: 'observed-link',
+          observedRelations: Object.fromEntries(safeUrls.map((url) => [url, relationByUrl.get(url)])),
+        } },
         decision: decide(action, ctx, false),
       };
     }
@@ -198,12 +205,12 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
       if (!link) return { kind: 'rejected', reason: `unknown linkRef "${call.linkRef}"` };
       const url = link.to.url;
       if (!url) return { kind: 'rejected', reason: 'link has no resolvable URL' };
-      const checked = destination(url, ctx, 'observed-link');
+      const checked = destination(url, ctx, 'observed-link', link.relation);
       if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       const action = actionForTool(call.tool);
       return {
         kind: 'ok',
-        step: { id, title, action, input: { url, destinationProvenance: 'observed-link' } },
+        step: { id, title, action, input: { url, destinationProvenance: 'observed-link', observedRelation: link.relation } },
         decision: decide(action, ctx, false),
       };
     }
@@ -232,14 +239,14 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
         ? resourceUrls(refs, ctx.activeTaskId ?? undefined, ['has-instructions'])[0] ?? sourceUrl(refs, 'instructions')
         : undefined;
       if (url) {
-        const checked = destination(url, ctx, 'observed-link');
+        const checked = destination(url, ctx, 'observed-link', 'has-instructions');
         if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       }
       if (tabId === undefined && !url)
         return { kind: 'rejected', reason: 'no observed assignment instructions are available to read' };
       return {
         kind: 'ok',
-        step: { id, title, action, input: tabId === undefined ? { url, destinationProvenance: 'observed-link' } : { tabId } },
+        step: { id, title, action, input: tabId === undefined ? { url, destinationProvenance: 'observed-link', observedRelation: 'has-instructions' } : { tabId } },
         decision: decide(action, ctx, call.tabRef ? restrictedFor(call.tabRef) : false),
       };
     }
@@ -253,22 +260,22 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
       }
       if (!url) url = resourceUrls(refs, undefined, ['has-rubric'])[0];
       if (!url) return { kind: 'rejected', reason: 'no observed rubric is available to read' };
-      const checked = destination(url, ctx, 'observed-link');
+      const checked = destination(url, ctx, 'observed-link', 'has-rubric');
       if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       const action = actionForTool(call.tool);
-      return { kind: 'ok', step: { id, title, action, input: { url, destinationProvenance: 'observed-link' } }, decision: decide(action, ctx, false) };
+      return { kind: 'ok', step: { id, title, action, input: { url, destinationProvenance: 'observed-link', observedRelation: 'has-rubric' } }, decision: decide(action, ctx, false) };
     }
 
     case 'build_checklist': {
       const action = actionForTool(call.tool);
       const url = resourceUrls(refs, ctx.activeTaskId ?? undefined, ['has-instructions'])[0] ?? sourceUrl(refs, 'instructions');
       if (url) {
-        const checked = destination(url, ctx, 'observed-link');
+        const checked = destination(url, ctx, 'observed-link', 'has-instructions');
         if (!checked.ok) return { kind: 'rejected', reason: checked.reason };
       }
       return {
         kind: 'ok',
-        step: { id, title, action, input: url ? { url, destinationProvenance: 'observed-link' } : {} },
+        step: { id, title, action, input: url ? { url, destinationProvenance: 'observed-link', observedRelation: 'has-instructions' } : {} },
         decision: decide(action, ctx, false),
       };
     }

@@ -1,12 +1,35 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
+  ALLOWED_ENDPOINTS,
   assertAllowlisted,
   classifyHttpError,
+  E2E_PROVIDER_BASE_URL,
   EndpointNotAllowedError,
   parseSSEStream,
   requestWithRetry,
   type FetchLike,
 } from './http';
+
+// vitest.config.ts pins `__MOTION_PROVIDER_BASE_URL__` to '' unconditionally,
+// so unit tests always exercise the production allowlist regardless of what
+// MOTION_E2E_PROVIDER_HOSTS is set to in the shell running them — the e2e
+// override is a build-time `define`, not something a test can toggle at
+// runtime. This is what keeps the production build's endpoints byte-identical
+// to the fixed api.openai.com / api.anthropic.com hosts (SOL requirement).
+describe('production keeps the fixed OpenAI endpoints', () => {
+  it('never applies the E2E provider-hosts base URL override in a normal test run', () => {
+    expect(E2E_PROVIDER_BASE_URL).toBe('');
+  });
+
+  it('ALLOWED_ENDPOINTS is exactly the fixed https api.openai.com / api.anthropic.com endpoints', () => {
+    expect(ALLOWED_ENDPOINTS).toEqual([
+      'https://api.openai.com/v1/responses',
+      'https://api.openai.com/v1/models',
+      'https://api.anthropic.com/v1/messages',
+      'https://api.anthropic.com/v1/models',
+    ]);
+  });
+});
 
 function jsonResponse(body: unknown, init: { status?: number; headers?: Record<string, string> } = {}): Response {
   return new Response(JSON.stringify(body), { status: init.status ?? 200, headers: { 'content-type': 'application/json', ...init.headers } });
@@ -150,7 +173,11 @@ describe('requestWithRetry', () => {
 
   it('keeps the timeout active while a response body is stalled', async () => {
     vi.useFakeTimers();
-    const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 })) as unknown as FetchLike;
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn(async (_url, init) => {
+      requestSignal = (init as RequestInit).signal ?? undefined;
+      return new Response(new ReadableStream<Uint8Array>({ start() {} }), { status: 200 });
+    }) as unknown as FetchLike;
     const pending = requestWithRetry({
       url: 'https://api.openai.com/v1/responses',
       init: { method: 'POST', body: '{}' },
@@ -164,6 +191,7 @@ describe('requestWithRetry', () => {
     );
     await vi.advanceTimersByTimeAsync(1_000);
     await expect(bodyRead).resolves.toMatchObject({ outcomeUnknown: true });
+    expect(requestSignal?.aborted).toBe(true);
     vi.useRealTimers();
   });
 });

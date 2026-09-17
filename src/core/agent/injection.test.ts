@@ -35,6 +35,7 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     conversation: [],
     activity: [],
     workflowIds: [],
+    modelTurnGeneration: 0,
     pendingModelRequest: null,
     ...overrides,
     revision: overrides.revision ?? 0,

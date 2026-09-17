@@ -352,6 +352,34 @@ describe('durable intents for side effects', () => {
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(1);
   });
+
+  it('does not replay an actor write after an interrupted worker step', async () => {
+    const time = clock();
+    const store = new InMemoryWorkflowStore();
+    const execute = vi.fn(async () => ({ kind: 'done' as const, result: 'filled field' }));
+    const engine = new WorkflowEngine({
+      store,
+      approvals: new MemoryApprovals(),
+      capabilities: [{
+        action: 'fill-form-field', execute,
+        reconcile: async () => ({ kind: 'blocked' as const, reason: 'Review before retrying.' }),
+      }],
+      definitions: [{ id: 'actor', version: 1, title: 'Actor', description: '', plan: () => [{ id: 'fill', title: 'Fill', action: 'fill-form-field' }] }],
+      now: time.now,
+      newId,
+      ownerId: 'worker-a',
+      policyContext: async () => ({ assessmentRestricted: false, allowedConfigurable: new Set(['fill-form-field' as const]) }),
+    });
+    const created = await engine.create('actor');
+    await store.update(created.id, (current) => ({
+      ...current,
+      status: 'running',
+      steps: current.steps.map((step) => ({ ...step, status: 'running', attempt: 1, intent: { key: 'k', state: 'prepared', evidence: {}, updatedAt: START.toISOString() } })),
+    }));
+    const recovered = await engine.recoverInterrupted();
+    expect(recovered[0]?.status).toBe('blocked');
+    expect(execute).not.toHaveBeenCalled();
+  });
 });
 
 describe('approval gate', () => {

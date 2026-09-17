@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-e2e-provider/
 coverage/
 *.log
 .DS_Store
@@ -11,3 +12,8 @@ playwright-report/
 
 # Packaged extension builds
 motion-extension-*.zip
+.motion-local/
+.vscode/
+.claude/
+*.code-workspace
+docs/development/

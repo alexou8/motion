@@ -68,6 +68,14 @@ export const snapshotResultSchema = z
     snapshotId: z.string().min(1),
     url: z.string().url(),
     elements: z.array(elementDescriptorSchema).max(MAX_SNAPSHOT_ELEMENTS),
+    /**
+     * Set by the content script itself when the page is a restricted
+     * assessment at capture time. `elements` is always empty in that case —
+     * the verdict and the capture are the same atomic call, so no control
+     * label from a restricted page is ever produced for the worker to relay
+     * into a provider prompt.
+     */
+    restricted: z.boolean().optional(),
   })
   .strict();
 export type SnapshotResult = z.infer<typeof snapshotResultSchema>;
@@ -90,12 +98,6 @@ export const clickActionSchema = z
   .object({
     type: z.literal('click'),
     ...targetFields,
-    /**
-     * The worker sets this only after a usable fresh approval. The actor
-     * additionally refuses a submit-like click without it — defense in depth,
-     * not a substitute for the policy engine's classification.
-     */
-    confirmedConsequential: z.boolean().default(false),
   })
   .strict();
 
@@ -148,6 +150,25 @@ export const actRequestSchema = z.discriminatedUnion('type', [
 export type ActRequest = z.infer<typeof actRequestSchema>;
 export type ActActionType = ActRequest['type'];
 
+export const ACTOR_PORT_NAME = 'motion-actor';
+
+/** A target-bound, one-shot capability issued by the worker for page actions. */
+export const actorAuthorizationSchema = z.object({
+  nonce: z.string().uuid(),
+  consequentialCapability: z.string().uuid().optional(),
+}).strict();
+export type ActorAuthorization = z.infer<typeof actorAuthorizationSchema>;
+
+export const authorizedActorRequestSchema = z.discriminatedUnion('type', [
+  clickActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  fillActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  selectActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  toggleActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  scrollToActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  focusActionSchema.extend({ authorization: actorAuthorizationSchema }),
+]);
+export type AuthorizedActorRequest = z.infer<typeof authorizedActorRequestSchema>;
+
 /* ---------------- act result ---------------- */
 
 export const actErrorCodeSchema = z.enum([
@@ -196,4 +217,16 @@ export const actResultSchema = z
       })
       .strict(),
   ]);
+
+export const actorPortRequestSchema = z.object({
+  type: z.literal('motion:act'),
+  requestId: z.string().uuid(),
+  request: authorizedActorRequestSchema,
+}).strict();
+
+export const actorPortResponseSchema = z.object({
+  type: z.literal('motion:act-result'),
+  requestId: z.string().uuid(),
+  result: actResultSchema,
+}).strict();
 export type ActResult = z.infer<typeof actResultSchema>;

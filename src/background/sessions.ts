@@ -4,7 +4,7 @@ import { appendMessage, excludeSource, restartFromStep, resolveTaskForGoal, sess
 import { detectIntent } from '@/core/agent/intents';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
-import { sessionRepository, updateSession } from '@/core/storage/repositories';
+import { courseLinkRepository, sessionRepository, updateSession } from '@/core/storage/repositories';
 import { STORE } from '@/core/storage/schema';
 import { ChromeTabs } from '@/platform/tabs';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
@@ -63,8 +63,9 @@ async function activeTabId(tabId: number | null): Promise<number | null> {
 export function sessionCreateBehavior(
   pageType: PageType | undefined,
   autoOpenRelatedTabs: boolean,
+  hasRelatedResources = false,
 ): 'open-related' | 'suggest-related' | 'model-turn' {
-  if (pageType !== 'assignment') return 'model-turn';
+  if (!hasRelatedResources && pageType !== 'assignment') return 'model-turn';
   return autoOpenRelatedTabs ? 'open-related' : 'suggest-related';
 }
 
@@ -79,13 +80,18 @@ async function createSession(message: Extract<SessionMessage, { type: 'session-c
   const matching = course ? tasks.records.filter((task) => task.courseId === course.id) : tasks.records;
   const resolved = resolveTaskForGoal(message.goal, matching, course ? [course] : courses.records);
   const task = resolved.task;
+  const relatedResources = task
+    ? (await courseLinkRepository(db).byIndex('byTask', task.id)).records.some((link) =>
+        ['has-instructions', 'has-rubric', 'has-reading', 'has-module'].includes(link.relation) && Boolean(link.to.url),
+      )
+    : false;
   const now = new Date().toISOString();
   const session: AgentSession = {
     id: crypto.randomUUID(), revision: 0, title: sessionTitle(course?.code, task?.title ?? message.goal), goal: message.goal,
     courseId: task?.courseId ?? course?.id ?? null, taskId: task?.id ?? null, status: 'active', createdAt: now, updatedAt: now,
     workspace: { groupId: null, groupTitle: `Motion · ${sessionTitle(course?.code, task?.title ?? message.goal)}`, sessionKey: null, ownedTabIds: [], adoptedTabIds: [], releasedTabIds: [] },
     plan: { steps: [], currentStepId: null }, blockers: [], context: { sources: [] }, artifacts: [], agent: { providerId: null, model: null },
-    conversation: [{ id: crypto.randomUUID(), role: 'student', text: message.goal, at: now }], activity: [], workflowIds: [], pendingModelRequest: null,
+    conversation: [{ id: crypto.randomUUID(), role: 'student', text: message.goal, at: now }], activity: [], workflowIds: [], modelTurnGeneration: 0, pendingModelRequest: null,
   };
   await sessionRepository(db).put(session);
   db.close();
@@ -93,6 +99,7 @@ async function createSession(message: Extract<SessionMessage, { type: 'session-c
   const behavior = sessionCreateBehavior(
     typeof observation?.pageType === 'string' ? observation.pageType as PageType : undefined,
     (await new ChromePreferencesStore().get()).autoOpenRelatedTabs,
+    relatedResources,
   );
   if (behavior === 'open-related')
     return (await runFallbackPlan(session.id, 'Motion is opening the related assignment resources.')) ?? session;
@@ -121,6 +128,7 @@ async function applyIntent(session: AgentSession, text: string): Promise<AgentSe
   const current = await getSession(session.id);
   if (!current || terminalRefusal(current)) return current ?? session;
   if (intent.type === 'pause' || intent.type === 'stop') {
+    await stopGeneration(session.id);
     for (const id of current.workflowIds) await (intent.type === 'pause' ? engine.pause(id) : engine.cancel(id));
   }
   if (intent.type === 'resume') {
@@ -203,14 +211,35 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
       const refusal = terminalRefusal(session);
       if (refusal) return { session, refusal };
       if (message.command === 'stop-generation') { await stopGeneration(session.id); return { stopped: true }; }
-      if (message.command === 'retry-model') return { session: await runModelTurn(session.id, session.goal) };
+      if (message.command === 'retry-model') {
+        // SOL-18: retry must resend the student's actual failed turn, not the
+        // session's original goal — otherwise a failed follow-up ("Summarize
+        // the rubric") is silently replaced by the goal ("Work on
+        // Assignment 2"), fabricating a message the student never sent.
+        // `runModelTurn` de-dupes when the last conversation entry already
+        // matches, so replaying it here creates no duplicate turn.
+        const lastStudentTurn = [...session.conversation].reverse().find((entry) => entry.role === 'student');
+        return { session: await runModelTurn(session.id, lastStudentTurn?.text ?? session.goal, {}, true) };
+      }
+      if (message.command === 'pause' || message.command === 'cancel') await stopGeneration(session.id);
+      // Resume the session before advancing the workflow. `engine.resume()`
+      // can synchronously claim and project a running step; leaving the
+      // session paused until afterwards makes that legitimate projection look
+      // stale and leaves the panel falsely idle until another event arrives.
+      const resumed = message.command === 'resume'
+        ? await updateExistingSession(session.id, (current) => terminalRefusal(current)
+          ? null
+          : transitionSession(current, 'active', new Date().toISOString()))
+        : null;
       const engine = await createEngine();
       for (const id of session.workflowIds) await (message.command === 'pause' ? engine.pause(id) : message.command === 'resume' ? engine.resume(id) : engine.cancel(id));
       if (message.command === 'archive') await closeSessionWorkspace(session, new ChromeTabs());
       const status = message.command === 'pause' ? 'paused' : message.command === 'archive' ? 'archived' : 'active';
-      const next = await updateExistingSession(session.id, (current) => terminalRefusal(current)
-        ? null
-        : transitionSession(current, status, new Date().toISOString()));
+      const next = message.command === 'resume'
+        ? resumed
+        : await updateExistingSession(session.id, (current) => terminalRefusal(current)
+          ? null
+          : transitionSession(current, status, new Date().toISOString()));
       return { session: next };
     }
   }

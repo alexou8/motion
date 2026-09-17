@@ -27,6 +27,7 @@ function session(overrides: Partial<AgentSession> = {}): AgentSession {
     conversation: [],
     activity: [],
     workflowIds: [],
+    modelTurnGeneration: 0,
     pendingModelRequest: null,
     ...overrides,
     revision: overrides.revision ?? 0,
@@ -96,13 +97,20 @@ describe('guardToolCall', () => {
     expect(result).toEqual(expect.objectContaining({ kind: 'rejected', reason: expect.stringMatching(/assessment/i) }));
   });
 
+  // D-DEST-2 (SOL-10): authority now comes only from the adapter's own URL
+  // classification, which matches on a real D2L/Brightspace host — not from
+  // the "safe" observed relation these links carry. These two resources use
+  // a real classified LMS host so the adapter recognizes the routes as
+  // readable (`assignment` / `content-topic`) on their own merits.
+  const CLASSIFIED_ORIGIN = 'https://school.brightspace.com';
+
   it('resolves assignment resources into workspace open steps instead of a metadata lookup', () => {
     const resources = [
-      link({ relation: 'has-instructions', to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=1`, title: 'Instructions' } }),
-      link({ id: 'rubric', relation: 'has-rubric', to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } }),
+      link({ relation: 'has-instructions', to: { kind: 'page', url: `${CLASSIFIED_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=1`, title: 'Instructions' } }),
+      link({ id: 'rubric', relation: 'has-rubric', to: { kind: 'page', url: `${CLASSIFIED_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } }),
     ];
     const refs = buildTrustedRefs(session(), { links: resources, tabs: [], tasks: [], notes: [] });
-    const result = guardToolCall({ tool: 'open_assignment_resources' }, refs, baseCtx());
+    const result = guardToolCall({ tool: 'open_assignment_resources' }, refs, baseCtx({ lmsOrigins: [CLASSIFIED_ORIGIN] }));
     expect(result).toEqual(expect.objectContaining({
       kind: 'ok',
       step: expect.objectContaining({ action: 'open-tab', input: expect.objectContaining({ urls: expect.arrayContaining([resources[0]!.to.url, resources[1]!.to.url]) }) }),
@@ -110,13 +118,27 @@ describe('guardToolCall', () => {
   });
 
   it('makes rubric reads a page read with its resolved URL, never a provider analysis', () => {
-    const rubric = link({ to: { kind: 'page', url: `${LMS_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } });
+    const rubric = link({ to: { kind: 'page', url: `${CLASSIFIED_ORIGIN}/d2l/le/content/1/viewContent/2/View`, title: 'Rubric' } });
     const refs = buildTrustedRefs(session(), { links: [rubric], tabs: [], tasks: [], notes: [] });
-    const result = guardToolCall({ tool: 'read_rubric', linkRef: 'L1' }, refs, baseCtx());
+    const result = guardToolCall({ tool: 'read_rubric', linkRef: 'L1' }, refs, baseCtx({ lmsOrigins: [CLASSIFIED_ORIGIN] }));
     expect(result).toEqual(expect.objectContaining({
       kind: 'ok',
       step: expect.objectContaining({ action: 'read-page', input: expect.objectContaining({ url: rubric.to.url }) }),
     }));
+  });
+
+  it('rejects a rubric link labeled "Rubric" whose route the adapter does not classify as readable (SOL-10)', () => {
+    // The exact forgery scenario from the review: an anchor's *label* says
+    // "Rubric" (so derive.ts tags the relation has-rubric), but the href is
+    // an unclassified/unsafe same-origin route. Label text must never be
+    // authority.
+    const forged = link({
+      relation: 'has-rubric',
+      to: { kind: 'page', url: `${CLASSIFIED_ORIGIN}/d2l/logout`, title: 'Rubric' },
+    });
+    const refs = buildTrustedRefs(session(), { links: [forged], tabs: [], tasks: [], notes: [] });
+    const result = guardToolCall({ tool: 'read_rubric', linkRef: 'L1' }, refs, baseCtx({ lmsOrigins: [CLASSIFIED_ORIGIN] }));
+    expect(result.kind).toBe('rejected');
   });
 
   it('resolves a course navigation request to an open-tab URL', () => {

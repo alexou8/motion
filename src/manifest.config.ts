@@ -6,6 +6,21 @@ import type { ManifestV3Export } from '@crxjs/vite-plugin';
  * Chrome Web Store review. A permission should only ever appear here because a
  * person added it, visibly, in a diff. See docs/adr/0001-build-tooling.md.
  */
+/**
+ * Test-only: adds a declared (not optional) host permission for the OpenAI
+ * API, used ONLY by `npm run build:e2e-provider-hosts` to produce a separate
+ * `dist-e2e-provider/` build for the provider stream/stop browser check
+ * (`test/e2e/provider-stream.mjs`). Headless Chromium cannot grant an
+ * optional host permission without a user gesture Playwright can drive, so
+ * this variant declares the host up front instead. `npm run build` (the
+ * production build) never sets this env var, and
+ * `src/manifest.config.test.ts` asserts the shipped manifest never contains
+ * this host.
+ */
+const E2E_PROVIDER_BASE_URL = process.env.MOTION_E2E_PROVIDER_BASE_URL ?? 'http://127.0.0.1:8934';
+const E2E_PROVIDER_HOST_PERMISSIONS =
+  process.env.MOTION_E2E_PROVIDER_HOSTS === '1' ? ([`${E2E_PROVIDER_BASE_URL}/*`] as const) : ([] as const);
+
 const manifest: ManifestV3Export = {
   manifest_version: 3,
   name: 'Motion — From Coursework to Completion',
@@ -44,13 +59,14 @@ const manifest: ManifestV3Export = {
    * direct user gesture and does not work from a side panel, so depending on it
    * would be a defect wearing a permission's clothes.
    */
-  permissions: ['storage', 'sidePanel', 'tabs', 'tabGroups', 'scripting', 'alarms'],
+  permissions: ['storage', 'sidePanel', 'tabs', 'tabGroups', 'scripting', 'alarms', 'notifications'],
 
   /** Built-in access is limited to D2L Brightspace hosts and nothing else. */
   host_permissions: [
     'https://*.brightspace.com/*',
     'https://*.desire2learn.com/*',
     'https://mylearningspace.wlu.ca/*',
+    ...E2E_PROVIDER_HOST_PERMISSIONS,
   ],
 
   /**

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { aiPreferencesSchema, parseAIPreferences, DEFAULT_AI_PREFERENCES } from './preferences';
+import { aiPreferencesSchema, parseAIPreferences, DEFAULT_AI_PREFERENCES, CONFIGURABLE_ACTION_IDS } from './preferences';
+import { ACTIONS, actionTypeSchema, tierOf } from '../policy/actions';
 
 describe('aiPreferencesSchema', () => {
   it('accepts a full valid preferences object', () => {
@@ -24,6 +25,20 @@ describe('aiPreferencesSchema', () => {
     });
     expect(result.success).toBe(false);
   });
+
+  it('derives configurable consent ids exactly from canonical policy actions', () => {
+    expect(CONFIGURABLE_ACTION_IDS).toEqual(
+      actionTypeSchema.options.filter((action) => tierOf(action) === 'configurable'),
+    );
+    for (const action of CONFIGURABLE_ACTION_IDS) expect(ACTIONS[action]).toBe('configurable');
+  });
+
+  it.each(['submit-assignment', 'post-discussion', 'act-in-graded-quiz'] as const)(
+    'rejects non-configurable %s from persistent consent',
+    (action) => {
+      expect(aiPreferencesSchema.safeParse({ providerId: 'chrome-local', allowedConfigurableActions: [action] }).success).toBe(false);
+    },
+  );
 
   it('defaults optional fields', () => {
     const result = aiPreferencesSchema.parse({ providerId: 'chrome-local' });

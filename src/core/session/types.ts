@@ -181,11 +181,23 @@ export const agentSessionSchema = z.object({
   conversation: z.array(conversationEntrySchema).max(CONVERSATION_CAP).default([]),
   activity: z.array(activityEntrySchema).max(ACTIVITY_CAP).default([]),
   workflowIds: z.array(z.string().min(1)).default([]),
+  /** Bumps whenever a model turn is claimed or invalidated. */
+  modelTurnGeneration: z.number().int().nonnegative().default(0),
   pendingModelRequest: z
     .object({
       key: z.string().min(1),
       providerId: z.string().min(1),
       startedAt: z.string().datetime(),
+      generation: z.number().int().nonnegative().default(0),
+      /**
+       * Refreshed while the request is genuinely alive — during provider
+       * retry waits and while streaming deltas arrive — so recovery (N5) can
+       * tell a slow-but-live request from an abandoned one instead of only
+       * looking at `startedAt`. Optional/additive: absent on rows written
+       * before this field existed, in which case recovery falls back to
+       * `startedAt`.
+       */
+      heartbeatAt: z.string().datetime().optional(),
     })
     .nullable()
     .default(null),

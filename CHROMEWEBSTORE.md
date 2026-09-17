@@ -21,6 +21,7 @@ FEATURES
 • Keeps each extracted item linked to the page and text it came from.
 • Creates source-linked notes and assignment checklists.
 • Helps draft and review coursework using Chrome's on-device model or a provider the student selects.
+• Offers opt-in local deadline reminders for assignments, quizzes, discussions, and other coursework, with quiet hours and automatic suppression after submission.
 • Shows progress and asks for a fresh, target-specific confirmation before each consequential browser action.
 • Never acts inside detected graded, timed or proctored attempts.
 
@@ -70,6 +71,7 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 | `tabGroups` | permissions | Groups tabs opened for an approved coursework workflow so the student can find and control them. |
 | `scripting` | permissions | Currently unused. Remove this permission before Web Store submission unless a user-facing feature is implemented that requires it. |
 | `alarms` | permissions | Resumes or retries opted-in background workflows after the extension has been suspended. |
+| `notifications` | permissions | Delivers deadline reminders only after the student enables them; reminders are planned from locally stored tasks and respect quiet hours and submission status. |
 | `https://*.brightspace.com/*` | host_permissions | Reads supported D2L Brightspace course pages to extract user-requested coursework information. |
 | `https://*.desire2learn.com/*` | host_permissions | Reads supported legacy D2L course pages to extract user-requested coursework information. |
 | `https://mylearningspace.wlu.ca/*` | host_permissions | Reads Wilfrid Laurier University MyLearningSpace course pages to extract user-requested coursework information. |
@@ -88,7 +90,7 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 | Authentication info | No | No | Not accessed or stored | No |
 | Personal communications | No | No | Not accessed or stored | No |
 | Web history | Limited | No | Stores source URLs only for supported course content the student asks Motion to organize | No |
-| User activity | Limited | No | Stores workflow state and approval decisions inside the browser profile | No |
+| User activity | Limited | No | Stores workflow state, approval decisions, and opt-in reminder state inside the browser profile | No |
 | Website content | Yes | Yes, BYOK only | Extracts course names, instructions, tasks, deadlines, and relevant excerpts for the selected model turn | Selected AI provider only, after disclosure |
 | User-provided AI provider credentials | Yes | No | Held in session memory for the selected provider | Selected AI provider only when used |
 

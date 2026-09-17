@@ -11,10 +11,12 @@ import {
   type CourseTask,
   type PageType,
 } from '@/core/domain';
+import { agentSessionSchema } from '@/core/session';
+import { courseLinkSchema } from '@/core/graph';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
-import { buildPanelState, forgetTab, handleMessage } from './router';
+import { automaticDiscoveryDue, buildPanelState, forgetTab, handleMessage } from './router';
 
 /**
  * Exercises the worker's data handling through the same entry point the real
@@ -57,10 +59,14 @@ function task(overrides: Partial<CourseTask> = {}): CourseTask {
 }
 
 let sessionStore: Record<string, unknown> = {};
+let localStore: Record<string, unknown> = {};
+let activeTabUrl = 'https://mylearningspace.wlu.ca/d2l/home/363';
 
 beforeEach(async () => {
   await deleteDatabase('motion');
   sessionStore = {};
+  localStore = {};
+  activeTabUrl = 'https://mylearningspace.wlu.ca/d2l/home/363';
   vi.stubGlobal('chrome', {
     storage: {
       session: {
@@ -75,9 +81,18 @@ beforeEach(async () => {
           sessionStore = {};
         }),
       },
-      local: { get: vi.fn(async () => ({})), clear: vi.fn(async () => undefined) },
+      local: {
+        get: vi.fn(async (key: string) => ({ [key]: localStore[key] })),
+        set: vi.fn(async (values: Record<string, unknown>) => {
+          Object.assign(localStore, values);
+        }),
+        clear: vi.fn(async () => {
+          localStore = {};
+        }),
+      },
     },
     tabs: {
+      get: vi.fn(async () => ({ id: ACTIVE_TAB, url: activeTabUrl })),
       sendMessage: vi.fn(async () => undefined),
       // The panel describes the active tab, so state building asks for it.
       query: vi.fn(async () => [{ id: ACTIVE_TAB, active: true }]),
@@ -229,6 +244,46 @@ describe('storing an extraction', () => {
     expect(await repo.get('d2l:363:title:relational algebra worksheet')).toMatchObject({ archived: false });
   });
 
+  it('does not un-archive the tombstone on a later DOM sighting of the old id (N3: DOM -> API -> DOM)', async () => {
+    const repo = await tasksRepo();
+    const legacyId = 'd2l:https://mylearningspace.wlu.ca/d2l/le/363/discussions/topics/501/View?ou=363';
+    const canonicalId = 'd2l:363:discussion:501';
+
+    // 1. An earlier DOM scan, before path-based discussion ids existed, wrote
+    //    the URL-shaped id.
+    await repo.put(task({ id: legacyId, kind: 'discussion', title: 'Week 3 discussion' }));
+    const db = await openDatabase();
+    await new Repository(db, STORE.notes, noteSchema).put({ id: 'note-1', courseId: 'd2l:363', taskId: legacyId, title: 'Note', blocks: [], tags: [], createdAt: NOW, updatedAt: NOW });
+    await new Repository(db, STORE.checklists, checklistSchema).put({ id: 'check-1', courseId: 'd2l:363', taskId: legacyId, title: 'Checklist', items: [], createdAt: NOW, updatedAt: NOW });
+    await new Repository(db, STORE.courseLinks, courseLinkSchema).put({ id: 'link-1', courseId: 'd2l:363', taskId: null, from: { kind: 'task', id: legacyId }, relation: 'related', to: { kind: 'page', url: 'https://mylearningspace.wlu.ca/d2l/home/363' }, confidence: 'high', provenance: task().provenance, userOverride: null });
+    await new Repository(db, STORE.sessions, agentSessionSchema).put(agentSessionSchema.parse({ id: 'session-1', title: 'Session', goal: 'Goal', courseId: 'd2l:363', taskId: legacyId, createdAt: NOW, updatedAt: NOW }));
+
+    // 2. Calendar/API discovery reports the same item under its canonical id
+    //    and folds the legacy row into a tombstone.
+    await extract([task({ id: canonicalId, kind: 'discussion', title: 'Week 3 discussion' })]);
+    expect(await repo.get(canonicalId)).toMatchObject({ archived: false });
+    expect(await repo.get(legacyId)).toMatchObject({ archived: true, migratedTo: canonicalId });
+    expect((await new Repository(db, STORE.notes, noteSchema).get('note-1'))?.taskId).toBe(canonicalId);
+    expect((await new Repository(db, STORE.checklists, checklistSchema).get('check-1'))?.taskId).toBe(canonicalId);
+    const migratedLink = await new Repository(db, STORE.courseLinks, courseLinkSchema).get('link-1');
+    expect(migratedLink?.taskId).toBeNull();
+    expect(migratedLink?.from.id).toBe(canonicalId);
+    const migratedSession = await new Repository(db, STORE.sessions, agentSessionSchema).get('session-1');
+    expect(migratedSession?.taskId).toBe(canonicalId);
+    expect(migratedSession?.revision).toBe(1);
+
+    // 3. The student revisits the discussion page. Its own DOM extraction now
+    //    also produces the canonical id (the fix), but even an old id
+    //    resurfacing (a stale cached extractor, or any other legacy source)
+    //    must redirect onto the canonical row rather than un-archive the
+    //    tombstone.
+    await extract([task({ id: legacyId, kind: 'discussion', title: 'Week 3 discussion' })]);
+
+    expect(await repo.get(legacyId)).toMatchObject({ archived: true });
+    expect(await repo.get(canonicalId)).toMatchObject({ archived: false });
+    expect((await repo.all()).records.filter((record) => !record.archived)).toHaveLength(1);
+  });
+
   it('leaves legacy rows alone for an empty restricted or no-course extraction', async () => {
     const repo = await tasksRepo();
     await repo.put(task({ id: 'd2l:title:relational algebra worksheet' }));
@@ -245,6 +300,85 @@ describe('storing an extraction', () => {
     await extract([]);
 
     expect(await repo.get('d2l:title:relational algebra worksheet')).toMatchObject({ archived: false });
+  });
+});
+
+describe('automatic course scanning cadence', () => {
+  it('uses an injected clock to wait six hours between automatic scans', () => {
+    const now = new Date('2026-09-16T12:00:00.000Z');
+    expect(automaticDiscoveryDue('2026-09-16T06:00:01.000Z', now)).toBe(false);
+    expect(automaticDiscoveryDue('2026-09-16T06:00:00.000Z', now)).toBe(true);
+  });
+});
+
+describe('scan-all-courses opt-in and busy lease (SOL-9)', () => {
+  const DISCOVERY_KEY = 'motion.discovery:https://mylearningspace.wlu.ca';
+
+  function discoverySuccess(overrides: Partial<{ courses: unknown[]; tasks: unknown[] }> = {}) {
+    return {
+      kind: 'success' as const,
+      courses: overrides.courses ?? [],
+      tasks: overrides.tasks ?? [],
+      scannedAt: '2026-09-16T12:00:00.000Z',
+    };
+  }
+
+  it('refuses to scan when the host has not opted in', async () => {
+    const result = await handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+    expect(result).toMatchObject({ kind: 'refused' });
+    expect((chrome.tabs.sendMessage as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
+  });
+
+  it('drops a completed scan and releases its lease if discovery was opted out mid-flight', async () => {
+    localStore[DISCOVERY_KEY] = { optedIn: true };
+    (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      // Simulate the student unticking discovery while the network calls the
+      // scan kicked off are still in flight.
+      const current = localStore[DISCOVERY_KEY] as Record<string, unknown>;
+      localStore[DISCOVERY_KEY] = { ...current, optedIn: false };
+      return discoverySuccess({ tasks: [task()] });
+    });
+
+    const result = await handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+    expect(result).toMatchObject({ kind: 'refused' });
+
+    // Without the fix, the scan would write its result and/or re-enable
+    // optedIn from its stale pre-scan snapshot.
+    const settings = localStore[DISCOVERY_KEY] as Record<string, unknown>;
+    expect(settings.optedIn).toBe(false);
+    expect(settings.result).toBeUndefined();
+    // The lease this run owned must not be left stuck for its full duration.
+    expect(settings.busy).toBe(false);
+
+    const repo = await tasksRepo();
+    expect((await repo.all()).records).toHaveLength(0);
+  });
+
+  it('treats a busy flag as expired once its lease passes, so a dead worker cannot block scanning forever', async () => {
+    // A worker death after `busy: true` was written leaves no code path that
+    // ever clears it directly; an expiring lease is the only recovery.
+    const { discoveryBusy } = await import('./router');
+    const now = new Date('2026-09-16T12:00:00.000Z');
+    expect(discoveryBusy({ busy: true, busyUntil: '2026-09-16T11:55:00.000Z' }, now)).toBe(false);
+    expect(discoveryBusy({ busy: true, busyUntil: '2026-09-16T12:05:00.000Z' }, now)).toBe(true);
+    expect(discoveryBusy({ busy: false, busyUntil: '2026-09-16T12:05:00.000Z' }, now)).toBe(false);
+  });
+
+  it('allows a fresh scan once a stale busy lease has expired', async () => {
+    localStore[DISCOVERY_KEY] = {
+      optedIn: true,
+      busy: true,
+      busyRunId: 'stale-run-from-a-dead-worker',
+      busyUntil: '2020-01-01T00:00:00.000Z',
+    };
+    (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => discoverySuccess());
+
+    const result = await handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+
+    expect(result).toMatchObject({ kind: 'success' });
+    expect((chrome.tabs.sendMessage as ReturnType<typeof vi.fn>)).toHaveBeenCalled();
+    const settings = localStore[DISCOVERY_KEY] as Record<string, unknown>;
+    expect(settings.busy).toBe(false);
   });
 });
 

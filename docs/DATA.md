@@ -5,6 +5,21 @@ the extension's origin. There is no Motion server. In local mode, model turns
 use Chrome's local runtime. In BYOK cloud mode, only the selected provider is
 contacted after disclosure and just-in-time permission; see [ADR 0005](adr/0005-ai-provider-abstraction-and-byok.md).
 
+Deadline reminder preferences (`motion.reminderPreferences`) and the
+deterministic IDs of reminders already sent (`motion.reminders.sent`) are also
+stored in `chrome.storage.local`. Reminders are off by default and are only
+created after the student opts in. Notification text is generated from the
+locally stored task title and due date; it is not uploaded. A reminder that
+lands in overnight quiet hours (default 11:00 pm–8:00 am) moves to the end of
+quiet hours. If that would be after the due time, it is skipped.
+
+When the student explicitly enables course deadline scanning for a Learn host,
+`chrome.storage.local` also keeps that host-level preference and the last local
+scan summary. While the student is on that host, the content script makes
+credentialed same-origin **GET** requests to Learn's documented enrollment and
+calendar endpoints. Responses become local course/task records through the
+normal merge path; no response, cookie, token, or deadline data is uploaded.
+
 ## Stores
 
 | Store | Holds | Key | Indexes |

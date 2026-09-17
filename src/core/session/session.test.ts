@@ -209,6 +209,8 @@ describe('resolveTaskForGoal', () => {
       title: overrides.title ?? 'Assignment 1',
       kind: 'assignment',
       due: { iso: null, raw: '', zoneEvidence: 'none', timeAssumed: false, confidence: 'low' },
+      dueHistory: [],
+      dueConflict: null,
       status: 'todo',
       weight: null,
       provenance: {

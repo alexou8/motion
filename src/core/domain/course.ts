@@ -73,12 +73,39 @@ export const dueDateSchema = z.object({
 });
 export type DueDate = z.infer<typeof dueDateSchema>;
 
+/** A previous LMS observation retained when Learn moves a due date. */
+export const dueHistoryEntrySchema = z.object({
+  iso: z.string().datetime().nullable(),
+  raw: z.string(),
+  observedAt: z.string().datetime(),
+  provenance: provenanceSchema,
+  /** Confidence at the time Learn supplied this observation. */
+  confidence: confidenceSchema.optional(),
+});
+export type DueHistoryEntry = z.infer<typeof dueHistoryEntrySchema>;
+
+/**
+ * The newest LMS date that conflicts with a student's effective due date.
+ * Keeping it separate avoids replacing the correction while making the change
+ * reviewable in the panel.
+ */
+export const dueConflictSchema = z.object({
+  observed: dueHistoryEntrySchema,
+}).nullable().default(null);
+export type DueConflict = z.infer<typeof dueConflictSchema>;
+
 export const courseTaskSchema = z.object({
   id: z.string().min(1),
   courseId: z.string().min(1),
   title: z.string().min(1),
   kind: taskKindSchema,
   due: dueDateSchema,
+  /** Previous LMS due-date observations, oldest first and capped during merge. */
+  dueHistory: z.array(dueHistoryEntrySchema).max(10).default([]),
+  /** When Learn last changed the effective due date, used for the short-lived moved cue. */
+  dueChangedAt: z.string().datetime().optional(),
+  /** A rescan disagreed with a student-set effective due date. */
+  dueConflict: dueConflictSchema,
   status: taskStatusSchema.default('todo'),
   /** Percentage of the final grade, when the page stated one. */
   weight: z.number().min(0).max(100).nullable().default(null),
@@ -90,6 +117,12 @@ export const courseTaskSchema = z.object({
   /** Manually added by the student rather than extracted. */
   manual: z.boolean().default(false),
   archived: z.boolean().default(false),
+  /**
+   * Set only on a tombstone: the canonical id this row was folded into by the
+   * legacy-id migration. Once set, a later exact-id hit on this row must be
+   * redirected to the canonical row rather than un-archiving this one.
+   */
+  migratedTo: z.string().min(1).nullable().optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
 });

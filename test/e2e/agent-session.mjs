@@ -317,6 +317,32 @@ try {
   const submit = snapshot?.elements?.find((element) => element.type === 'submit' || /submit/i.test(element.label));
   check('actor snapshot is typed, bounded, and available to the session', Boolean(snapshot?.snapshotId) && Boolean(field) && Boolean(submit), `${snapshot?.elements?.length ?? 0} element(s)`);
 
+  // A tabs.connect opened by this extension page is delivered to the content
+  // script too, but its browser-provided sender URL is the page URL rather
+  // than the service-worker URL. Send a fully valid consequential request
+  // over that forged port and assert it is disconnected before the synthetic
+  // submit handler can run.
+  const forgedActorResult = await panel.evaluate(async ({ tabId, snapshotId, handle }) => new Promise((resolve) => {
+    const port = chrome.tabs.connect(tabId, { name: 'motion-actor' });
+    let replies = 0;
+    let settled = false;
+    const finish = (disconnected) => { if (!settled) { settled = true; resolve({ disconnected, replies }); } };
+    port.onMessage.addListener(() => { replies += 1; });
+    port.onDisconnect.addListener(() => setTimeout(() => finish(true), 0));
+    port.postMessage({
+      type: 'motion:act',
+      requestId: crypto.randomUUID(),
+      request: {
+        type: 'click',
+        snapshotId,
+        handle,
+        authorization: { nonce: crypto.randomUUID(), consequentialCapability: crypto.randomUUID() },
+      },
+    });
+    setTimeout(() => finish(false), 1_000);
+  }), { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: submit?.handle ?? '' });
+  check('forged extension-page actor request is denied before submit', forgedActorResult?.disconnected === true && forgedActorResult?.replies === 0 && (await actorPage.locator('#form-result').textContent()) !== 'SUBMITTED');
+
   await seedWorkflow({ id: 'e2e-fill-workflow', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill the draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', value: 'student draft', target: 'Draft field' } });
   await send({ type: 'workflow-command', workflowId: 'e2e-fill-workflow', command: 'resume' });
   await refreshPanel();
@@ -334,6 +360,14 @@ try {
   await panel.getByRole('button', { name: 'Review' }).click();
   const dialog = panel.getByRole('dialog');
   check('approval dialog explains target/effect and has no always-allow option', await dialog.isVisible() && (await dialog.innerText()).includes('Effect:') && !(await dialog.innerText()).toLowerCase().includes('always')); 
+  await panel.keyboard.press('Tab');
+  const approvalFocusTrapped = await panel.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')));
+  check('approval dialog keeps keyboard focus inside the dialog', approvalFocusTrapped);
+  await panel.keyboard.press('Escape');
+  await dialog.waitFor({ state: 'hidden', timeout: 3_000 });
+  const focusRestored = await panel.evaluate(() => document.activeElement instanceof HTMLElement && /Review|Allow once/.test(document.activeElement.innerText));
+  check('Escape cancels approval and restores focus to its action', focusRestored);
+  await panel.getByRole('button', { name: 'Review' }).click();
   await dialog.getByRole('button', { name: 'Confirm' }).click();
   await waitFor(async () => (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED', 10_000);
   check('confirmed synthetic Submit is the only path that submits', (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED');

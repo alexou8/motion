@@ -248,6 +248,14 @@ const TASK_ROUTE_PATTERNS: readonly { pattern: RegExp; route: RouteTask }[] = [
     pattern: /\/viewContent\//i,
     route: { kind: 'content', strategy: 'route:content' },
   },
+  // A closed or already-submitted dropbox item drops its submit link and
+  // leaves only the submission-history route. That is still the same dropbox
+  // folder, identified by the same `db` query parameter, and must resolve to
+  // the same canonical assignment id as `folder_submit_files`.
+  {
+    pattern: /\/d2l\/lms\/dropbox\/user\/folders_history(?:\.d2l)?(?:[/?]|$)/i,
+    route: { kind: 'assignment', strategy: 'route:assignment-history' },
+  },
 ];
 
 function pathnameOf(url: string): string | null {
@@ -289,6 +297,38 @@ function canonicalTaskIdentity(href: string, courseId: string): string | null {
     return `${parsed.origin}${parsed.pathname}${search}`;
   } catch {
     return null;
+  }
+}
+
+/**
+ * Stable identity shared by D2L's rendered routes and its calendar API.
+ * A URL is only a transport detail: the org unit, entity kind and entity id
+ * are what continue to identify the coursework item across either source.
+ */
+export function d2lTaskId(courseExternalId: string, kind: TaskKind, entityId: string): string {
+  return `d2l:${courseExternalId}:${kind}:${entityId}`;
+}
+
+/**
+ * D2L states a discussion topic or content topic's identity in the path, not
+ * in a query parameter: `/d2l/le/<ou>/discussions/topics/<id>/View` and
+ * `/d2l/le/content/<ou>/viewContent/<id>/View`. A query alias is tried second,
+ * for any deployment that does carry one.
+ */
+function entityIdFromPath(href: string, pattern: RegExp): string | null {
+  const pathname = pathnameOf(href);
+  return pathname?.match(pattern)?.[1] ?? null;
+}
+
+function entityIdFromHref(href: string, kind: TaskKind): string | null {
+  switch (kind) {
+    case 'assignment': return queryValue(href, ['db', 'folderId']);
+    case 'quiz': return queryValue(href, ['qi', 'quizId']);
+    case 'discussion':
+      return entityIdFromPath(href, /\/discussions\/topics\/(\d+)/i) ?? queryValue(href, ['topicId', 'tid']);
+    case 'content':
+      return entityIdFromPath(href, /\/viewContent\/(\d+)/i) ?? queryValue(href, ['topicId', 'tid']);
+    default: return null;
   }
 }
 
@@ -549,10 +589,11 @@ function courseIdForTask(candidate: TaskCandidate, courseId: string | null): str
 }
 
 function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageType, courseId: string | null): CourseTask | null {
+  const capturedAt = input.now.toISOString();
   const title = taskTitle(candidate);
   const resolvedCourseId = courseIdForTask(candidate, courseId);
   const dueRaw = dueText(candidate.row);
-  const parsedDue = parseDueDate(dueRaw, input.now, input.timeZone);
+  const parsedDue = { ...parseDueDate(dueRaw, input.now, input.timeZone), lastObservedAt: capturedAt };
   // Brightspace uses the same date wrapper for an availability window. An end
   // is useful as a review hint, but it is not the assignment's due date unless
   // the row explicitly says due/submit by.
@@ -567,12 +608,12 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
   const hasDateEvidence = due.iso !== null;
   if ((!hasRouteEvidence && !hasDateEvidence) || !title || !resolvedCourseId) return null;
 
-  const capturedAt = input.now.toISOString();
   const normalizedTitle = title.toLowerCase().replace(/\s+/g, ' ').trim();
   const taskCourseId = resolvedCourseId.replace(/^d2l:/, '');
   const quizId = candidate.anchor && pageType === 'quiz-list' ? quizIdFromAnchor(candidate.anchor) : null;
-  const id = quizId
-    ? `d2l:${taskCourseId}:quiz:${quizId}`
+  const entityId = quizId ?? (candidate.href && candidate.route ? entityIdFromHref(candidate.href, candidate.route.kind) : null);
+  const id = entityId && candidate.route
+    ? d2lTaskId(taskCourseId, candidate.route.kind, entityId)
     : candidate.href
       ? `d2l:${canonicalTaskIdentity(candidate.href, taskCourseId) ?? `${taskCourseId}:title:${normalizedTitle}`}`
       : `d2l:${taskCourseId}:title:${normalizedTitle}`;
@@ -582,6 +623,8 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
     title,
     kind: candidate.route?.kind ?? taskKindForPage(pageType),
     due,
+    dueHistory: [],
+    dueConflict: null,
     status: statusFor(candidate.row),
     weight: extractWeight(normalizedText(candidate.row)),
     provenance: {
@@ -643,12 +686,14 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
     return courseExternalId(url);
   }
 
-  isLegacyTaskId(id: string, courseId: string): boolean {
-    if (/^d2l:(?:title:|javascript:\/\/)/i.test(id)) return true;
-    if (!/^d2l:https?:\/\//i.test(id)) return false;
-    const href = id.slice('d2l:'.length);
-    const canonical = canonicalTaskIdentity(href, courseId.replace(/^d2l:/, ''));
-    return canonical === null || `d2l:${canonical}` !== id;
+  /**
+   * Whether `id` predates the canonical `d2l:<orgUnit>:<kind>:<entityId>`
+   * scheme (D-ID). Every id this adapter mints today matches that scheme, so
+   * anything else — a bare URL, a title fallback, a `javascript:` href — is
+   * legacy and eligible for the one-time fold into the canonical row.
+   */
+  isLegacyTaskId(id: string, _courseId: string): boolean {
+    return !/^d2l:[^:]+:(?:assignment|quiz|discussion|content|other):[^:]+$/i.test(id);
   }
 
   detectPage(input: AdapterInput): PageDetection | null {

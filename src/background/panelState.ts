@@ -71,6 +71,10 @@ export async function buildPanelState(): Promise<PanelState> {
     : null;
   const activeSession = activeId ? allSessions.records.find((session) => session.id === activeId) ?? null : null;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const origin = observation?.url ? new URL(observation.url).origin : null;
+  const discoveryKey = origin ? `motion.discovery:${origin}` : null;
+  const discoveryStored = discoveryKey ? (await chrome.storage.local.get(discoveryKey))[discoveryKey] : null;
+  const discovery = typeof discoveryStored === 'object' && discoveryStored !== null ? discoveryStored as { optedIn?: unknown; busy?: unknown; result?: unknown; blocker?: unknown } : {};
   const buckets = deadlineBuckets(tasks.records, new Date(), timeZone);
   const resolution = await resolveSessionProvider().catch(() => null);
   const selected = preferences.providerId;
@@ -89,6 +93,7 @@ export async function buildPanelState(): Promise<PanelState> {
       ? (({ restricted: _restricted, ...page }) => page)(observation)
       : EMPTY_PANEL_STATE.page,
     course: await courseForUrl(observation?.url),
+    courses: allCourses.records.filter((course) => !course.archived),
     tasks: tasks.records.filter((task) => !task.archived).sort((a, b) => {
       if (a.due.iso && b.due.iso) return a.due.iso.localeCompare(b.due.iso);
       if (a.due.iso) return -1;
@@ -125,5 +130,6 @@ export async function buildPanelState(): Promise<PanelState> {
       message: provider ? `${provider.displayName} is ready.` : resolution?.kind === 'blocked' ? resolution.blocker.message : '',
     },
     streaming: streaming?.sessionId === activeSession?.id ? streaming : null,
+    discovery: { host: origin, optedIn: typeof discovery.optedIn === 'boolean' ? discovery.optedIn : null, busy: discovery.busy === true, result: discovery.result as PanelState['discovery']['result'], blocker: typeof discovery.blocker === 'string' ? discovery.blocker : null },
   };
 }

@@ -22,6 +22,8 @@ const task: CourseTask = {
   title: 'Assignment 2',
   kind: 'assignment',
   due: { iso: null, raw: '', zoneEvidence: 'none', timeAssumed: false, confidence: 'low' },
+  dueHistory: [],
+  dueConflict: null,
   status: 'todo',
   weight: null,
   provenance: {

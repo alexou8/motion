@@ -52,44 +52,36 @@ export interface BuildAgentPromptInput {
 
 function summarizeTrustedState(input: BuildAgentPromptInput): string {
   const lines: string[] = [];
-  lines.push(`Session: ${input.session.title} (status: ${input.session.status})`);
+  lines.push(`Session id: ${input.session.id} (status: ${input.session.status})`);
   if (input.session.plan.steps.length > 0) {
     lines.push('Plan:');
-    for (const step of input.session.plan.steps) {
-      lines.push(`  - [${step.status}] ${step.title}${step.rationale ? ` — ${step.rationale}` : ''}`);
-    }
+    for (const step of input.session.plan.steps) lines.push(`  - ${step.id}: [${step.status}]`);
   }
   if (input.session.blockers.length > 0) {
     lines.push('Blockers:');
-    for (const blocker of input.session.blockers) lines.push(`  - (${blocker.kind}) ${blocker.message}`);
+    for (const blocker of input.session.blockers) lines.push(`  - ${blocker.id}: (${blocker.kind})`);
   }
 
   if (input.refs.linkByRef.size > 0) {
-    lines.push('Known links (linkRef: kind — title):');
-    for (const [ref, link] of input.refs.linkByRef) {
-      lines.push(`  - ${ref}: ${link.relation} — ${link.to.title ?? link.to.url ?? ''}`);
-    }
+    lines.push('Known links (linkRef):');
+    for (const [ref] of input.refs.linkByRef) lines.push(`  - ${ref}`);
   }
   if (input.refs.tabByRef.size > 0) {
     lines.push('Open tabs (tabRef):');
     for (const [ref] of input.refs.tabByRef) lines.push(`  - ${ref}`);
   }
   if (input.refs.taskByRef.size > 0) {
-    lines.push('Known tasks (taskRef: title — due):');
-    for (const [ref, task] of input.refs.taskByRef) {
-      lines.push(`  - ${ref}: ${task.title} — ${task.due.iso ?? 'unknown date'} (${task.due.confidence})`);
-    }
+    lines.push('Known tasks (taskRef):');
+    for (const [ref] of input.refs.taskByRef) lines.push(`  - ${ref}`);
   }
   const includedSources = [...input.refs.sourceByRef.entries()].filter(([, source]) => !source.excluded);
   if (includedSources.length > 0) {
-    lines.push('Known sources (sourceRef: kind — title):');
-    for (const [ref, source] of includedSources) {
-      lines.push(`  - ${ref}: ${source.kind} — ${source.title}`);
-    }
+    lines.push('Known sources (sourceRef):');
+    for (const [ref] of includedSources) lines.push(`  - ${ref}`);
   }
   if (input.refs.noteByRef.size > 0) {
-    lines.push('Known notes (noteRef: title):');
-    for (const [ref, note] of input.refs.noteByRef) lines.push(`  - ${ref}: ${note.title}`);
+    lines.push('Known notes (noteRef):');
+    for (const [ref] of input.refs.noteByRef) lines.push(`  - ${ref}`);
   }
 
   if (input.deadlines) {
@@ -136,18 +128,42 @@ function buildUntrustedItems(input: BuildAgentPromptInput): UntrustedItem[] {
     if (titles.length > 0) items.push({ label: 'source titles', text: titles.join('\n') });
   }
 
+  for (const [ref, task] of input.refs.taskByRef) {
+    items.push({ label: `task metadata (${ref})`, text: `${task.title}\n${task.due.iso ?? 'unknown date'} (${task.due.confidence})` });
+  }
+  for (const [ref, blocker] of input.session.blockers.map((item) => [item.id, item] as const)) {
+    items.push({ label: `blocker detail (${ref})`, text: blocker.message });
+  }
+  for (const [ref, note] of input.refs.noteByRef) {
+    items.push({ label: `note metadata (${ref})`, text: note.title });
+  }
+
   return items;
 }
 
 /** Builds the full four-section agent prompt for one turn. */
 export function buildAgentPrompt(input: BuildAgentPromptInput): string {
-  const prompt = buildLayeredPrompt({
+  const untrusted = buildUntrustedItems(input);
+  const build = (items: UntrustedItem[]) => buildLayeredPrompt({
     systemPolicy: SYSTEM_POLICY,
     userGoal: input.goalText,
     trustedState: summarizeTrustedState(input),
-    untrusted: buildUntrustedItems(input),
+    untrusted: items,
   });
-  return truncate(prompt, MAX_PROMPT_CHARS);
+  let prompt = build(untrusted);
+  if (prompt.length <= MAX_PROMPT_CHARS) return prompt;
+
+  // Truncate content before assembly. Truncating the finished string can cut a
+  // closing fence and turn hostile text into trusted-looking prompt material.
+  const baseLength = build([]).length;
+  const available = Math.max(0, MAX_PROMPT_CHARS - baseLength);
+  const perItem = untrusted.length > 0 ? Math.floor(available / untrusted.length) : 0;
+  const fitted = untrusted.map((item) => ({
+    ...item,
+    text: truncate(item.text, Math.max(0, perItem - item.label.length - 80)),
+  }));
+  prompt = build(fitted);
+  return prompt.length <= MAX_PROMPT_CHARS ? prompt : build([]);
 }
 
 /**

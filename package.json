@@ -20,6 +20,8 @@
     "test:extension": "node test/e2e/extension-smoke.mjs",
     "test:agent": "node test/e2e/agent-session.mjs",
     "test:chrome": "node test/e2e/chrome-branded.mjs",
+    "build:e2e-provider-hosts": "MOTION_E2E_PROVIDER_HOSTS=1 MOTION_BUILD_OUTDIR=dist-e2e-provider vite build",
+    "test:provider-stream": "node test/e2e/provider-stream.mjs",
     "verify:extension": "node scripts/verify-extension-build.mjs",
     "format": "prettier --write \"src/**/*.{ts,tsx,css}\" \"docs/**/*.md\"",
     "package": "node scripts/package.mjs",

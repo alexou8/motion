@@ -22,17 +22,28 @@ function projectedStepStatus(step: WorkflowStep): AgentSession['plan']['steps'][
   }
 }
 
-function sessionStatusFor(workflow: Workflow): AgentSession['status'] {
+/**
+ * `null` means "this workflow status carries no signal about session
+ * status" — the projector must not touch it. D-TURN/SOL-4: a merely queued
+ * or a cancelled workflow used to force the session to `active`, which could
+ * undo a student's explicit Pause the instant a (redundant, already-doomed)
+ * workflow was created or torn down. Queued and cancelled are exactly the
+ * two statuses a workflow can be in without ever having done anything the
+ * session should react to.
+ */
+function sessionStatusFor(workflow: Workflow): AgentSession['status'] | null {
   switch (workflow.status) {
-    case 'completed': return 'completed';
+    // A workflow is one plan/turn, not the student's whole command centre.
+    // Keep the session resumable until the student explicitly archives it.
+    case 'completed': return 'waiting';
     case 'failed':
     case 'blocked':
     case 'awaiting-approval':
     case 'awaiting-permission':
     case 'retry-scheduled': return 'waiting';
     case 'paused': return 'paused';
-    case 'cancelled': return 'active';
-    case 'queued': return 'active';
+    case 'cancelled': return null;
+    case 'queued': return null;
     case 'running': return 'working';
   }
 }
@@ -136,6 +147,17 @@ export async function projectWorkflow(workflow: Workflow): Promise<AgentSession 
     }
 
     return await updateSession(db, sessionId, (current) => {
+      const workflowGeneration = latestWorkflow.params['modelTurnGeneration'];
+      // A model plan is attached only after its result has committed. If a
+      // newer turn claimed the session in between, this workflow is cancelled
+      // and must not project its old plan/status over that newer turn.
+      if (typeof workflowGeneration === 'number' && current.modelTurnGeneration !== workflowGeneration)
+        return null;
+      // `engine.pause()` is deliberately asynchronous. A running callback
+      // already queued before the pause must not revive the explicit paused
+      // session while the durable workflow update catches up.
+      if (current.status === 'paused' && latestWorkflow.status !== 'paused')
+        return null;
       const previousById = new Map(current.plan.steps.map((step) => [step.id, step]));
       const plan = {
         steps: latestWorkflow.steps.map((step) => {
@@ -168,7 +190,7 @@ export async function projectWorkflow(workflow: Workflow): Promise<AgentSession 
       };
       const at = latestWorkflow.updatedAt > current.updatedAt ? latestWorkflow.updatedAt : current.updatedAt;
       const targetStatus = sessionStatusFor(latestWorkflow);
-      if (current.status !== 'completed' && current.status !== 'archived' && canTransitionSession(current.status, targetStatus)) {
+      if (targetStatus && current.status !== 'completed' && current.status !== 'archived' && canTransitionSession(current.status, targetStatus)) {
         next = transitionSession(next, targetStatus, at);
       }
 

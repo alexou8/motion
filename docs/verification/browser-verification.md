@@ -1,5 +1,11 @@
 # Browser verification
 
+Latest verification run: 2026-09-16. `npm run test:extension` passed 62/62,
+`npm run test:agent` passed 29/29 (provider stream/cancel skipped because
+headless Chromium did not grant the optional OpenAI host permission), and
+`npm run test:chrome` passed 5/5. Logs: `.motion-local/final-extension.log`,
+`.motion-local/final-agent.log`, and `.motion-local/final-chrome.log`.
+
 Verification for VISION §31 was run against synthetic D2L fixtures only. The
 Playwright run used Chrome for Testing 153.0.8010.12; the branded run used
 Google Chrome 152.0.7977.83. The final output is preserved in
@@ -20,7 +26,7 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
 | 10. Stale approval replay | Automated | Pass for single-use replay and for an expired target-bound approval after a CDP worker restart: resume created a replacement confirmation and the synthetic form remained unsubmitted. |
 | 11. Worker interruption recovery | Automated | Pass; CDP-terminated service worker recovered the persisted AgentSession and workspace. |
 | 12. Malicious page | Automated | Pass for the synthetic attacker text and consequence path; no submit or attacker navigation occurred without fresh approval. Model streaming against a live provider was not used. |
-| 13. Provider stream/cancel | Attempted; not verified | `test:agent` now installs a context route for the OpenAI Responses SSE endpoint and checks stream accumulation plus request failure after Stop. Chromium headless did not grant the optional OpenAI host permission, so the route-backed browser checks were skipped. Provider SSE parsing, abort, timeout and retry behavior remain covered by focused unit tests. |
+| 13. Provider stream/cancel | Verified | `test:agent` installs a context route for the OpenAI Responses SSE endpoint and checks stream accumulation plus request failure after Stop, but headless Chromium does not grant the optional OpenAI host permission from a scripted click, so that route-backed check is skipped there. `npm run test:provider-stream` (`test/e2e/provider-stream.mjs`) covers the same path against a separate `dist-e2e-provider` build (`npm run build:e2e-provider-hosts`) that declares a host permission as required rather than optional. Root cause of the earlier failure was two-fold: (1) Playwright's `context.route` cannot intercept a fetch made from the MV3 service worker (confirmed with request logging and by reading the SW console via CDP — `PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS=1` only adds requestfinished/requestfailed *observability* for the SW, not routing, and `newCDPSession` only accepts a Page/Frame, never a ServiceWorker), so `test/e2e/local-openai-server.mjs` (a real Node HTTP server on 127.0.0.1) now stands in for `api.openai.com`, and the `MOTION_E2E_PROVIDER_HOSTS=1` build points OpenAI's base URL and required host permission there (`E2E_PROVIDER_BASE_URL` in `src/platform/ai/http.ts`, `src/manifest.config.ts`, `src/background/providers.ts`) — the production build is unaffected (`E2E_PROVIDER_BASE_URL` is always `''` there; see the "production keeps the fixed OpenAI endpoints" tests in `src/platform/ai/http.test.ts` and `src/manifest.config.test.ts`). (2) A genuine, previously-undetected production bug: `OpenAIProvider`/`AnthropicProvider` stored the default `fetch` unbound (`deps.fetchImpl ?? fetch`), and `requestWithRetry` calls it as `options.fetchImpl(...)`, which a real MV3 service worker's stricter `WorkerGlobalScope` rejects with `TypeError: Failed to execute 'fetch' on 'WorkerGlobalScope': Illegal invocation` — fixed in both providers by binding to `globalThis` (`fetch.bind(globalThis)`). All 5 checks in `test/e2e/provider-stream.mjs` pass, confirmed stable across 3 consecutive runs; deltas genuinely accumulate across ≥2 real SSE events and Stop genuinely aborts the in-flight request on the network side (observed via the local server's `req.on('aborted')`). |
 | 14. Invalid key feedback | Automated | Pass; mocked 401 displayed “API key is no longer valid” with redacted, student-readable feedback. |
 | 15. Key absent persistence | Automated | Pass; canary was absent from `chrome.storage.local`, all IndexedDB stores, panel state, and captured logs. |
 | 16. Key absent logs | Automated | Pass; worker, panel, options, and content-page captures contained no canary. |
@@ -38,8 +44,11 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
 - Preserved abort cancellation after response headers by passing the request
   signal through SSE parsing and mapping provider aborts to a user-readable
   cancellation error. Focused provider tests pass.
-- Authenticated content-script requests by extension id and sender-tab absence;
-  foreign and tab-bearing requests are rejected before actor dispatch.
+- Actor-channel authentication and consequential-capability forgery resistance
+  remain pending final source/browser verification; do not treat the prior
+  worker-issued-capability claim as browser evidence.
+- Rechecked restricted pages live immediately before snapshot/read operations,
+  so a stale session observation cannot authorize page access.
 - Made chargeable provider POST failures outcome-unknown on network loss,
   timeout and ambiguous 500/502/504 responses, with bounded retries only for
   explicit rate-limit/overload responses. The response timeout remains active
@@ -50,4 +59,5 @@ contacted, and the canary key was synthetic: `sk-test-CANARY1234567890`.
 
 Run evidence: `test:extension` 62/62, `test:agent` 29/29 (provider stream/cancel
 skipped because headless Chromium did not grant the optional host permission),
-and `test:chrome` 5/5. Logs are in `.motion-local/e2e-*.log`.
+and `test:chrome` 5/5. Logs are in `.motion-local/final-extension.log`,
+`.motion-local/final-agent.log`, and `.motion-local/final-chrome.log`.

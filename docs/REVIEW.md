@@ -28,9 +28,10 @@ A change that weakens any of these is rejected, however it is framed:
   target-bound, single-use approval; forbidden work is refused. There is no
   always-allow setting for consequential or forbidden work.
 - **Assessment boundary.** Motion never acts inside a graded, timed, or
-  proctored attempt, submits assessed work, or modifies remote course data.
-  `src/core/policy/assessment.ts` is an absolute boundary; no setting,
-  consent, or approval may route around it.
+  proctored attempt. Consequential submissions and other remote-course
+  mutations require a fresh, target-bound, single-use approval. The boundary
+  in `src/core/policy/assessment.ts` is absolute; no setting, consent, or
+  approval may route around it.
 - **Observer/actor split.** Content observes pages and may perform only
   validated, handle-based actions authorized by the worker. It never receives
   selectors, scripts, arbitrary URLs, or policy authority.

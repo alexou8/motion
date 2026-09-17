@@ -21,8 +21,9 @@ import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX, LEASE_ALARM_P
 import { registerInferencePort } from './inferencePort';
 import { onTabRemoved, onTabUpdated } from './workspaceEvents';
 import { warn } from './log';
-import { MODEL_RETRY_ALARM_PREFIX } from './modelTurn';
+import { MODEL_RETRY_ALARM_PREFIX, MODEL_RECOVERY_ALARM_PREFIX } from './modelTurn';
 import { recoverStaleModelRequests } from './sessions';
+import { reconcileReminders, registerReminderListeners } from './reminders';
 
 // --- Registered synchronously. Do not move these into an async function. ---
 
@@ -34,6 +35,9 @@ chrome.runtime.onInstalled.addListener((details) => {
     // whether an in-flight workflow is upgraded or cancelled.
     void recoverWorkflows();
   }
+  void reconcileReminders().catch((error) => {
+    void warn('Motion: reminder reconciliation failed', error);
+  });
 });
 
 // Register the action directly instead of relying on setPanelBehavior state
@@ -55,6 +59,9 @@ chrome.action.onClicked.addListener((tab) => {
 chrome.runtime.onStartup.addListener(() => {
   void recoverWorkflows();
   void recoverStaleModelRequests();
+  void reconcileReminders().catch((error) => {
+    void warn('Motion: reminder reconciliation failed', error);
+  });
 });
 
 chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
@@ -83,6 +90,15 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
     try {
       const result = await handleMessage(authorized.message, authorized.tabId);
       sendResponse({ ok: true, result });
+      if (
+        authorized.message.type === 'extraction-result' ||
+        authorized.message.type === 'correct-task' ||
+        authorized.message.type === 'scan-all-courses'
+      ) {
+        void reconcileReminders().catch((error) => {
+          void warn('Motion: reminder reconciliation after task change failed', error);
+        });
+      }
     } catch (error) {
       void warn('Motion: message handling failed', error);
       sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Unexpected error' });
@@ -115,9 +131,15 @@ export function handleAlarm(
     // new chargeable provider request without a fresh student retry gesture.
     void recoverStaleModelRequests();
   }
+  if (alarm.name.startsWith(MODEL_RECOVERY_ALARM_PREFIX)) {
+    // SOL-19 (interim): wakes a suspended worker so a claimed request that
+    // died mid-stream or mid-backoff is not stuck as "working" forever.
+    void recoverStaleModelRequests();
+  }
 }
 
 chrome.alarms.onAlarm.addListener(handleAlarm);
+registerReminderListeners();
 
 /** A closed tab has no page for the panel to describe. */
 chrome.tabs.onRemoved.addListener((tabId) => {

@@ -1,6 +1,6 @@
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest } from '../core/policy';
 import type { CourseTask, Course } from '../core/domain';
 import type { AgentSession } from '../core/session/types';
@@ -31,6 +31,8 @@ const task: CourseTask = {
     timeAssumed: true,
     confidence: 'low',
   },
+  dueHistory: [],
+  dueConflict: null,
   status: 'todo',
   weight: 10,
   provenance: {
@@ -77,6 +79,7 @@ const session: AgentSession = {
   ],
   activity: [{ id: 'a1', at: NOW.toISOString(), kind: 'plan', summary: 'Read the rubric.', sourceUrl: 'https://lms.example.test/course/1/rubric' }],
   workflowIds: ['workflow-1'],
+  modelTurnGeneration: 0,
   pendingModelRequest: null,
 };
 
@@ -168,6 +171,45 @@ describe('Home', () => {
     expect(screen.getByRole('link', { name: /Synthetic assignments.*lms\.example\.test/ })).toHaveAttribute('href', task.provenance.sourceUrl);
     expect(screen.getByText('CP363 · Assignment 2')).toBeInTheDocument();
     expect(screen.getByText('Needs you · 1')).toBeInTheDocument();
+  });
+
+  it('renders a moved date with visible and accessible text', () => {
+    const moved = {
+      ...task,
+      due: { ...task.due, iso: '2026-09-24T16:00:00.000Z', zoneEvidence: 'explicit' as const, timeAssumed: false, confidence: 'high' as const },
+      dueHistory: [{
+        iso: '2026-09-17T16:00:00.000Z', raw: 'Due Sep 17', observedAt: NOW.toISOString(), provenance: task.provenance,
+      }],
+      dueChangedAt: NOW.toISOString(),
+    };
+    render(<App bridge={bridgeFor(state({ tasks: [moved], deadlines: { today: [], upcoming: [moved.id], overdue: [], needsReview: [] } }))} now={NOW} />);
+
+    expect(screen.getByText('Moved')).toBeInTheDocument();
+    expect(screen.getByText('Moved from')).toBeInTheDocument();
+    expect(screen.getByText('Thu, Sep 17')).toHaveAccessibleName('Previously due Thu, Sep 17');
+  });
+
+  it('remembers a deadline view selection in local storage', async () => {
+    const user = userEvent.setup();
+    const set = vi.fn(async () => undefined);
+    vi.stubGlobal('chrome', { storage: { local: { get: vi.fn(async () => ({})), set } } });
+    try {
+      render(<App bridge={bridgeFor(state({ tasks: [task], deadlines: { today: [], upcoming: [task.id], overdue: [], needsReview: [] } }))} now={NOW} />);
+      await user.click(screen.getByRole('button', { name: 'Week' }));
+      expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
+      expect(set).toHaveBeenCalledWith({ 'motion.deadlines.view': 'week' });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not label a high-confidence later deadline as needing review in Week view', async () => {
+    const user = userEvent.setup();
+    const laterTask = { ...task, id: 'later-task', due: { ...task.due, iso: '2026-10-20T12:00:00.000Z', confidence: 'high' as const, zoneEvidence: 'explicit' as const } };
+    render(<App bridge={bridgeFor(state({ tasks: [laterTask], deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] } }))} now={NOW} />);
+    await user.click(screen.getByRole('button', { name: 'Week' }));
+    expect(screen.getByText(/Later/)).toBeInTheDocument();
+    expect(screen.queryByText('Motion is not confident in this date.')).not.toBeInTheDocument();
   });
 
   it('sends session-create from the composer', async () => {

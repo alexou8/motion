@@ -15,6 +15,7 @@ import { explainProviderError, explainProviderStatus } from '@/core/ai/explain';
 import { resolveModel } from '@/core/ai/models';
 import type { AIPreferences } from '@/core/ai/preferences';
 import { createProvider, type RegistryDeps } from '@/platform/ai/registry';
+import { E2E_PROVIDER_BASE_URL } from '@/platform/ai/http';
 import { ChromePreferencesStore, type PreferencesStore } from '@/platform/ai/preferencesStore';
 import { SessionSecretStore, type SecretStore } from '@/platform/ai/secrets';
 import { getInferencePort } from './inferencePort';
@@ -25,9 +26,16 @@ const DISPLAY_NAMES: Record<ProviderId, string> = {
   anthropic: 'Anthropic',
 };
 
-/** The origin Motion needs host permission for, per cloud provider. */
+/**
+ * The origin Motion needs host permission for, per cloud provider. The
+ * OpenAI origin follows `E2E_PROVIDER_BASE_URL` (see src/platform/ai/http.ts)
+ * so this permission check matches the host the e2e provider-hosts build
+ * (`MOTION_E2E_PROVIDER_HOSTS=1`) actually declares and calls — a local
+ * `http://127.0.0.1` origin — instead of the real OpenAI host, while every
+ * other build (including production) keeps the fixed `api.openai.com` origin.
+ */
 const PROVIDER_ORIGINS: Partial<Record<ProviderId, string>> = {
-  openai: 'https://api.openai.com/*',
+  openai: `${E2E_PROVIDER_BASE_URL || 'https://api.openai.com'}/*`,
   anthropic: 'https://api.anthropic.com/*',
 };
 
@@ -193,6 +201,15 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
     ? await (provider as unknown as { listModels(): Promise<string[]> }).listModels().catch(() => undefined)
     : undefined;
   const resolved = resolveModel(providerId, preferences.model, listedIds);
+  if (resolved.unavailable) {
+    return {
+      kind: 'blocked',
+      blocker: {
+        kind: 'provider',
+        message: resolved.fallbackNotice ?? `No supported ${displayName} model is available for this account.`,
+      },
+    };
+  }
 
   return {
     kind: 'ready',

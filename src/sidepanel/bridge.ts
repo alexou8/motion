@@ -15,6 +15,7 @@ import {
   acceptCloudDisclosureSchema,
   deleteLocalDataSchema,
 } from '../core/messaging/sessionContracts';
+import { scanAllCoursesSchema, setDeadlineDiscoveryOptInSchema } from '../core/messaging/contracts';
 
 export const motionCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open-settings') }),
@@ -44,6 +45,8 @@ export const motionCommandSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('review-draft'), checklistId: z.string().min(1), draft: z.string() }),
   z.object({ type: z.literal('get-checklist'), checklistId: z.string().min(1) }),
+  scanAllCoursesSchema,
+  setDeadlineDiscoveryOptInSchema,
   // Session vocabulary — these already match the worker message shape 1:1
   // (`src/core/messaging/sessionContracts.ts`), so the runtime bridge mostly
   // passes them through rather than translating.

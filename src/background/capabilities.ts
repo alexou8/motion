@@ -38,7 +38,7 @@ export interface CapabilityServices {
   tabs: TabsCapability;
   askContent: (tabId: number) => Promise<PageContent | null>;
   snapshot: (tabId: number) => Promise<SnapshotResult | null>;
-  act: (tabId: number, request: ActRequest) => Promise<{ ok: boolean; message?: string } | null>;
+  act: (tabId: number, request: ActRequest, consequentialCapability?: boolean) => Promise<{ ok: boolean; message?: string } | null>;
   resolveProvider: () => Promise<ProviderResolution>;
   now: () => Date;
 }
@@ -112,11 +112,21 @@ function destinationProvenance(input: Input): DestinationProvenance | undefined 
   return value === 'observed-link' || value === 'd2l-route' ? value : undefined;
 }
 
+function observedRelation(input: Input, url: string): import('@/core/graph').CourseLinkRelation | undefined {
+  const single = input['observedRelation'];
+  if (typeof single === 'string') return single as import('@/core/graph').CourseLinkRelation;
+  const many = input['observedRelations'];
+  if (typeof many === 'object' && many !== null && typeof (many as Record<string, unknown>)[url] === 'string')
+    return (many as Record<string, unknown>)[url] as import('@/core/graph').CourseLinkRelation;
+  return undefined;
+}
+
 function sessionDestinationAllowed(url: string, input: Input): boolean {
   return validateDestination(
     url,
     supportedHosts,
     destinationProvenance(input),
+    observedRelation(input, url),
   ).ok;
 }
 
@@ -245,7 +255,7 @@ function createTabGroupCapability(services: CapabilityServices): StepCapability 
 }
 
 function navigateOwnedTabCapability(services: CapabilityServices): StepCapability {
-  return {
+  const capability: StepCapability = {
     action: 'navigate-owned-tab',
     async execute(context) {
       const tabId = requireTabId(context.step.input);
@@ -268,7 +278,16 @@ function navigateOwnedTabCapability(services: CapabilityServices): StepCapabilit
         sourcesVisited: [url],
       };
     },
+    async reconcile(context) {
+      const tabId = requireTabId(context.step.input);
+      const url = requireString(context.step.input, 'url');
+      const tab = await services.tabs.get(tabId);
+      return tab?.url === url
+        ? { kind: 'done', result: 'The Motion-owned tab is already at the requested page.', sourcesVisited: [url] }
+        : null;
+    },
   };
+  return capability;
 }
 
 function readPageCapability(services: CapabilityServices): StepCapability {
@@ -320,13 +339,15 @@ function readPageCapability(services: CapabilityServices): StepCapability {
           }));
         }
       }
-      if (await isRestricted(tabId))
+      const liveContent = await services.askContent(tabId);
+      if (!liveContent)
+        return { kind: 'blocked', reason: 'Motion could not verify that the current page is outside a restricted assessment.' };
+      if (await isRestricted(tabId, liveContent))
         return {
           kind: 'skipped',
           reason: 'Motion did not store anything from this restricted assessment page.',
         };
-      const content = await services.askContent(tabId);
-      if (!content) return { kind: 'blocked', reason: 'Motion could not read that page.' };
+      const content = liveContent;
       if (await isRestricted(tabId, content))
         return {
           kind: 'skipped',
@@ -379,13 +400,29 @@ function snapshotCapability(services: CapabilityServices): StepCapability {
       const { value: session } = await sessionFor(context);
       if (!workspaceHas(session, tabId))
         return { kind: 'blocked', reason: 'That tab is outside this Motion workspace.' };
-      if (await isRestricted(tabId))
+      // Storage is only a hint. Re-read the live page immediately before
+      // capturing controls so a navigation race cannot persist an attempt.
+      const liveContent = await services.askContent(tabId);
+      if (!liveContent)
+        return { kind: 'blocked', reason: 'Motion could not verify that the current page is outside a restricted assessment.' };
+      if (await isRestricted(tabId, liveContent))
         return {
           kind: 'skipped',
           reason: 'Motion does not inspect controls in a restricted assessment.',
         };
       const snapshot = await services.snapshot(tabId);
       if (!snapshot) return { kind: 'blocked', reason: 'Motion could not inspect page controls.' };
+      // The content script's verdict and capture are atomic, but the tab may
+      // still have navigated between our live-content read above and this
+      // snapshot call. Require the snapshot to name the page we just
+      // verified before trusting (or storing) anything it captured.
+      if (snapshot.url !== liveContent.url)
+        return { kind: 'blocked', reason: 'The page changed while Motion was inspecting it. Try again.' };
+      if (snapshot.restricted)
+        return {
+          kind: 'skipped',
+          reason: 'Motion does not inspect controls in a restricted assessment.',
+        };
       const stored = (await chrome.storage.session.get(SNAPSHOTS_KEY))[SNAPSHOTS_KEY];
       const snapshots =
         typeof stored === 'object' && stored !== null ? (stored as Record<string, unknown>) : {};
@@ -423,8 +460,11 @@ function actorCapability(action: ActorAction, services: CapabilityServices): Ste
         return { kind: 'blocked', reason: 'Motion only acts inside this session’s workspace.' };
       if (await isRestricted(tabId))
         return { kind: 'blocked', reason: 'Motion will not act in a restricted assessment.' };
-      const confirmedConsequential =
-        tierOf(action) === 'fresh-confirmation' && Boolean(context.step.consumedApprovalId);
+      // The page/approval checks above await browser state. The workflow can
+      // be paused or cancelled during either wait, so re-check ownership at
+      // the last possible point before the remote DOM effect.
+      if (!(await context.stillCurrent()))
+        return { kind: 'skipped', reason: 'Stopped before acting on the page.' };
       const request: ActRequest =
         action === 'fill-form-field' ||
         (action === 'prepare-discussion-response' && typeof context.step.input['text'] === 'string')
@@ -451,14 +491,20 @@ function actorCapability(action: ActorAction, services: CapabilityServices): Ste
                   handle,
                   checked: context.step.input['checked'] === true,
                 }
-              : { type: 'click', snapshotId, handle, confirmedConsequential };
-      const result = await services.act(tabId, request);
+              : { type: 'click', snapshotId, handle };
+      const result = await services.act(tabId, request, tierOf(action) === 'fresh-confirmation' && Boolean(context.step.consumedApprovalId));
       if (!result?.ok)
         return {
           kind: 'blocked',
           reason: result?.message ?? 'Motion could not complete that page action.',
         };
       return { kind: 'done', result: 'Completed the approved page action.' };
+    },
+    async reconcile() {
+      // DOM writes and clicks have no durable, target-bound browser marker.
+      // Never replay them after a worker restart; the student can explicitly
+      // retry after inspecting the page.
+      return { kind: 'blocked', reason: 'Motion will not replay an interrupted page action automatically. Review the page and retry it.' };
     },
   };
 }
@@ -483,8 +529,14 @@ function providerCapability(
       const prompt = buildLayeredPrompt({
         systemPolicy: 'You are Motion. Help the student understand and prepare coursework. Do not claim to have completed work the student has not reviewed.',
         userGoal: request,
-        trustedState: `Session: ${session.title}`,
-        untrusted: buildStepContext(session, notes),
+        // A session title/goal can originate on an LMS page. Trusted state is
+        // deliberately limited to Motion-issued identity and state; all
+        // student/page-derived metadata stays inside the fenced context.
+        trustedState: `Session id: ${session.id} (status: ${session.status})`,
+        untrusted: [
+          ...buildStepContext(session, notes),
+          { label: 'session metadata', text: `Title: ${session.title}\nGoal: ${session.goal}` },
+        ],
       });
       const resolved = await services.resolveProvider();
       if (resolved.kind === 'blocked') return { kind: 'blocked', reason: resolved.blocker.message };

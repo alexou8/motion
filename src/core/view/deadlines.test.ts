@@ -23,6 +23,8 @@ function task(id: string, overrides: Partial<CourseTask> = {}): CourseTask {
     title: id,
     kind: 'assignment',
     due: due({}),
+    dueHistory: [],
+    dueConflict: null,
     status: 'todo',
     weight: null,
     provenance: {

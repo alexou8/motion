@@ -26,12 +26,12 @@ export const ANTHROPIC_MODELS: CuratedModel[] = [
 export const ANTHROPIC_RECOMMENDED = 'claude-sonnet-5';
 
 /** Preference order for resolving OpenAI's "recommended" from `/v1/models`. */
-export const OPENAI_RECOMMENDED_PREFERENCE = ['gpt-5.6', 'gpt-5.5', 'gpt-5', 'gpt-4.1'];
+export const OPENAI_RECOMMENDED_PREFERENCE = ['gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.6-sol', 'gpt-5.6', 'gpt-5.5', 'gpt-5', 'gpt-4.1'];
 export const OPENAI_RECOMMENDED_FALLBACK = 'gpt-5';
 
 export const OPENAI_MODELS: CuratedModel[] = [
-  { id: 'gpt-5.6', label: 'Balanced' },
-  { id: 'gpt-5.6-mini', label: 'Fastest' },
+  { id: 'gpt-5.6-terra', label: 'Balanced' },
+  { id: 'gpt-5.6-luna', label: 'Fastest' },
 ];
 
 export function curatedModelsFor(providerId: ProviderId): CuratedModel[] {
@@ -59,17 +59,17 @@ function recommendedFor(providerId: ProviderId): string {
 /**
  * Picks the exact family id to use for a `recommended` OpenAI request:
  * first entry in `OPENAI_RECOMMENDED_PREFERENCE` present in `listedIds`
- * (prefix match on the exact family, excluding `-mini`/`-nano` variants),
- * falling back to `OPENAI_RECOMMENDED_FALLBACK` when none match or no list
- * was supplied.
+ * (exact matches only, so specialized variants such as cyber/pro/mini/nano
+ * cannot become the default by sharing a prefix), falling back to a known
+ * general-purpose id when none match or no list was supplied.
  */
 export function resolveOpenAIRecommended(listedIds?: string[]): string {
   if (!listedIds || listedIds.length === 0) return OPENAI_RECOMMENDED_FALLBACK;
-  const usable = listedIds.filter((id) => !/-mini$|-nano$/i.test(id));
   for (const family of OPENAI_RECOMMENDED_PREFERENCE) {
-    const match = usable.find((id) => id === family || id.startsWith(`${family}-`));
-    if (match) return match;
+    if (listedIds.includes(family)) return family;
   }
+  const accountFallback = listedIds.find(isAccessibleGeneralPurposeOpenAIModel);
+  if (accountFallback) return accountFallback;
   return OPENAI_RECOMMENDED_FALLBACK;
 }
 
@@ -77,6 +77,17 @@ export interface ResolvedModel {
   id: string;
   /** Set when the requested/saved model wasn't usable and Motion fell back. */
   fallbackNotice?: string;
+  /** Set when a successful account model listing contains no supported model. */
+  unavailable?: boolean;
+}
+
+function isAccessibleGeneralPurposeOpenAIModel(id: string): boolean {
+  if (OPENAI_RECOMMENDED_PREFERENCE.includes(id)) return true;
+  return /^(?:gpt-5\.6-(?:terra|luna|sol)|gpt-5\.6|gpt-5\.5|gpt-5|gpt-4\.1)-\d{4}-\d{2}-\d{2}$/.test(id);
+}
+
+function accountHasSupportedOpenAIModel(listedIds: string[]): boolean {
+  return listedIds.some((id) => OPENAI_RECOMMENDED_PREFERENCE.includes(id) || isAccessibleGeneralPurposeOpenAIModel(id));
 }
 
 /**
@@ -89,11 +100,26 @@ export function resolveModel(providerId: ProviderId, preference: string, listedI
   const recommended =
     providerId === 'openai' ? resolveOpenAIRecommended(listedIds) : recommendedFor(providerId);
 
-  if (preference === 'recommended') return { id: recommended };
-
   const curated = curatedModelsFor(providerId);
-  const known = curated.some((m) => m.id === preference) || (listedIds?.includes(preference) ?? false);
+  // When `/v1/models` was available, treat it as the account's source of
+  // truth. This prevents a curated id that the account cannot access from
+  // being sent merely because it remains in the UI catalogue. The historical
+  // gpt-5.6 alias remains valid when no account list was available.
+  const known = listedIds !== undefined
+    ? listedIds.includes(preference) || (preference === 'gpt-5.6' && listedIds.includes('gpt-5.6-sol'))
+    : curated.some((m) => m.id === preference) || preference === 'gpt-5.6';
   if (known) return { id: preference };
+
+  if (preference === 'recommended') {
+    if (providerId === 'openai' && listedIds !== undefined && !accountHasSupportedOpenAIModel(listedIds)) {
+      return { id: '', unavailable: true, fallbackNotice: 'No supported general-purpose OpenAI model is available for this account.' };
+    }
+    return { id: recommended };
+  }
+
+  if (providerId === 'openai' && listedIds !== undefined && !accountHasSupportedOpenAIModel(listedIds)) {
+    return { id: '', unavailable: true, fallbackNotice: 'No supported general-purpose OpenAI model is available for this account.' };
+  }
 
   return {
     id: recommended,

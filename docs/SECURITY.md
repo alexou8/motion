@@ -19,13 +19,21 @@ untrusted until validated.
 2. **The content script is page-adjacent.** It shares a DOM with hostile content.
    It observes and may execute only worker-authorized, typed, handle-based
    actor operations; it receives no selectors, scripts, arbitrary URLs, or
-   policy authority. Its inward listener accepts requests only when the browser
-   reports Motion's extension id and no sender tab; the actor's consequential
-   confirmation field remains defense in depth.
+   policy authority. Actor-channel authentication and browser-level forgery
+   coverage remain under active review; until that evidence is complete,
+   extension-page compromise remains a residual risk.
+   Actor exceptions must also resolve to a typed failure or bounded disconnect;
+   the current error-to-hang path remains a review follow-up.
 3. **The service worker is the only privileged context.** All orchestration —
    tabs, tab groups, permissions, storage writes, approvals — happens here.
 4. **The side panel renders, and asks.** It owns no Chrome orchestration and
    performs no scraping.
+
+For opt-in all-course deadline discovery, the flow remains local:
+`Learn (same-origin credentialed GET) → content script → service worker → IndexedDB`.
+The content script is never given a cross-origin URL or an LMS write operation;
+401/403 stops the scan and asks the student to sign in. Discovery refuses on a
+restricted assessment page.
 
 ## Rules
 
@@ -57,6 +65,14 @@ never acts inside a graded, timed or proctored attempt.
 
 ### Permissions
 - Request the narrowest scope the current feature needs.
+- The `notifications` permission is used only for deadline reminders that the
+  student explicitly enables in Settings. Reminder plans and the sent-record
+  are local; Motion does not send notification data to a server. Reminders are
+  suppressed for submitted, graded, archived, overdue, low-confidence and
+  active-assessment items.
+- All-course deadline scanning needs no additional Chrome permission: it uses
+  the existing D2L host access and same-origin, credentialed GET requests only,
+  after a host-specific first-run opt-in. It never uploads LMS responses.
 - Host access beyond the built-in D2L hosts is an *optional* permission,
   requested just-in-time and revocable.
 - `activeTab` is deliberately not used: it only grants access on a direct user
