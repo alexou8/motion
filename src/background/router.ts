@@ -266,7 +266,36 @@ export async function upsertExtractedRecords(incomingCourses: Course[], incoming
   return { courses: incomingCourses.length, tasks: written };
 }
 
+/**
+ * Scans in flight in this worker, keyed by LMS origin.
+ *
+ * The stored `busyRunId` lease is a read-then-write, so an automatic scan
+ * firing as the student presses "Scan all courses" can pass the busy check
+ * twice before either writes. Both would then hit the LMS, and whichever
+ * finished second would find a lease it no longer owns and silently drop the
+ * results it had just gathered. Joining the scan already running is both
+ * cheaper and what the student meant. The map is in-memory on purpose: a
+ * suspended worker has no scan in flight to join, and the stored lease still
+ * covers that case.
+ */
+const scansInFlight = new Map<string, Promise<unknown>>();
+
 async function scanAllCourses(tabId: number): Promise<unknown> {
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url && resolveAdapter(tab.url)) {
+    const origin = new URL(tab.url).origin;
+    const running = scansInFlight.get(origin);
+    if (running) return running;
+    const scan = runCourseScan(tabId).finally(() => {
+      scansInFlight.delete(origin);
+    });
+    scansInFlight.set(origin, scan);
+    return scan;
+  }
+  return runCourseScan(tabId);
+}
+
+async function runCourseScan(tabId: number): Promise<unknown> {
   const tab = await chrome.tabs.get(tabId);
   if (!tab.url || !resolveAdapter(tab.url)) {
     const message = 'Open Learn before scanning your courses.';

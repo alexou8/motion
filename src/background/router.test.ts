@@ -341,6 +341,30 @@ describe('scan-all-courses opt-in and busy lease (SOL-9)', () => {
     expect(settings.busy).toBe(false);
   });
 
+  it('joins a scan already running for the origin instead of starting a second one', async () => {
+    localStore[DISCOVERY_KEY] = { optedIn: true };
+    let release = (): void => {};
+    const held = new Promise<void>((resolve) => {
+      release = () => resolve();
+    });
+    (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      await held;
+      return discoverySuccess({ tasks: [task()] });
+    });
+
+    // An automatic scan and the student's button press land together: both
+    // read the lease before either writes it.
+    const first = handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+    const second = handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    // One trip to the LMS, and neither caller is handed a dropped scan.
+    expect((chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(1);
+    expect(secondResult).toStrictEqual(firstResult);
+    expect(firstResult).toMatchObject({ kind: 'success' });
+  });
+
   it('drops a completed scan and releases its lease if discovery was opted out mid-flight', async () => {
     localStore[DISCOVERY_KEY] = { optedIn: true };
     (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => {
