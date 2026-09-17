@@ -1,4 +1,5 @@
 import type { Note, Requirement } from '../domain';
+import { fenceUntrusted } from '../ai/prompt';
 
 /**
  * Builds the instruction Motion gives the model when drafting coursework.
@@ -107,21 +108,14 @@ export const GENERATED_LABEL =
 
 /**
  * Fences untrusted text so a page cannot smuggle an instruction into the
- * prompt. Delimiters appearing in the text itself are neutralised, because a
- * closing tag inside quoted content would otherwise end the fence early and
- * let the remainder be read as instruction.
- *
- * Lives in core, not in the model wrapper: it is pure string handling and the
- * defence is the part most worth testing without a model present.
+ * prompt. Delegates to the shared, nonce-boundary fencing in
+ * `src/core/ai/prompt.ts` — a closing marker (or anything resembling one)
+ * inside quoted content is neutralised there, because a page that could
+ * forge or close the fence early would have the remainder read as
+ * instruction instead of data.
  */
 export function fenceContext(blocks: { label: string; text: string }[]): string {
-  return blocks
-    .map((block) => {
-      const safeLabel = block.label.replace(/[<>"]/g, '');
-      const safeText = block.text.replace(/<\/?context[^>]*>/gi, '[removed]');
-      return `<context source="${safeLabel}">\n${safeText}\n</context>`;
-    })
-    .join('\n\n');
+  return fenceUntrusted(blocks);
 }
 
 /** Assembles the final prompt: fenced data first, Motion's instruction last. */

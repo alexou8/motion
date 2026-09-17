@@ -36,6 +36,8 @@ export class FakeTabs implements TabsCapability {
   private nextGroupId = 100;
   readonly adopted = new Map<number, AdoptionRecord>();
   readonly groupWindows = new Map<number, number>();
+  readonly closed: number[][] = [];
+  readonly navigations: { tabId: number; url: string; marker: string }[] = [];
 
   /** A tab the student opened themselves. */
   addStudentTab(url: string, groupId: number | null = null): number {
@@ -115,7 +117,17 @@ export class FakeTabs implements TabsCapability {
   }
 
   async close(tabIds: number[]): Promise<void> {
+    this.closed.push([...tabIds]);
     for (const id of tabIds) this.tabs.delete(id);
+  }
+
+  /** Simulates the owned-navigation helper while keeping tests browser-free. */
+  async navigateOwned(tabId: number, url: string, marker: string): Promise<chrome.tabs.Tab> {
+    const tab = this.tabs.get(tabId);
+    if (!tab) throw new Error('No tab with id');
+    this.navigations.push({ tabId, url, marker });
+    tab.url = url;
+    return { id: tabId, url, groupId: tab.groupId ?? -1 } as chrome.tabs.Tab;
   }
 
   async ungroup(tabIds: number[]): Promise<void> {

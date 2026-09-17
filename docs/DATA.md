@@ -1,7 +1,24 @@
 # Data
 
-Everything Motion stores lives in the browser, in IndexedDB, under the
-extension's origin. There is no server ([ADR 0002](adr/0002-local-first-no-backend.md)).
+Motion stores coursework and session state in the browser, in IndexedDB, under
+the extension's origin. There is no Motion server. In local mode, model turns
+use Chrome's local runtime. In BYOK cloud mode, only the selected provider is
+contacted after disclosure and just-in-time permission; see [ADR 0005](adr/0005-ai-provider-abstraction-and-byok.md).
+
+Deadline reminder preferences (`motion.reminderPreferences`) and the
+deterministic IDs of reminders already sent (`motion.reminders.sent`) are also
+stored in `chrome.storage.local`. Reminders are off by default and are only
+created after the student opts in. Notification text is generated from the
+locally stored task title and due date; it is not uploaded. A reminder that
+lands in overnight quiet hours (default 11:00 pm–8:00 am) moves to the end of
+quiet hours. If that would be after the due time, it is skipped.
+
+When the student explicitly enables course deadline scanning for a Learn host,
+`chrome.storage.local` also keeps that host-level preference and the last local
+scan summary. While the student is on that host, the content script makes
+credentialed same-origin **GET** requests to Learn's documented enrollment and
+calendar endpoints. Responses become local course/task records through the
+normal merge path; no response, cookie, token, or deadline data is uploaded.
 
 ## Stores
 
@@ -12,6 +29,7 @@ extension's origin. There is no server ([ADR 0002](adr/0002-local-first-no-backe
 | `notes` | Source-linked notes, block by block | `id` | `byCourse`, `byTask` |
 | `checklists` | Requirements extracted from instructions | `id` | `byTask` |
 | `workflows` | Workflow state and step history | `id` | `byStatus`, `byUpdatedAt` |
+| `sessions` | AgentSession goals, plans, blockers, context references, artifacts and activity | `id` | `byStatus`, `byUpdatedAt` |
 | `approvals` | Approval requests and their decisions | `id` | `byWorkflow`, `byStatus` |
 | `auditEvents` | Browser actions and consequential decisions | `seq` (auto) | `byAt`, `byWorkflow` |
 | `meta` | Schema and housekeeping values | `key` | — |
@@ -80,7 +98,16 @@ that a future screen might forget.
 
 Passwords. Session tokens or cookies copied from pages. Model API keys. Page
 HTML. Browsing history unrelated to a supported course page. Anything from a
-page detected as a graded attempt.
+page detected as a graded attempt. Provider keys are held only in
+`chrome.storage.session` in trusted extension contexts and disappear when the
+browser restarts; they are never persisted, logged, or fake-encrypted.
+
+## Cloud model turns
+
+After disclosure acceptance and just-in-time permission, Motion sends to the
+selected provider only the student's goal or message, trusted session state,
+and bounded excerpts of pages, notes, or sources relevant to that step. Motion
+does not proxy the request, silently fall back, or send telemetry.
 
 ## Retention and deletion
 

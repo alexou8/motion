@@ -1,16 +1,15 @@
-import { contentRequestSchema, type ContentRequest, type Message } from '@/core/messaging';
+import type { Message } from '@/core/messaging';
 import {
   checklistSchema,
   courseSchema,
   courseTaskSchema,
   noteSchema,
-  pageContentSchema,
   EXTRACTION_VERSION,
-  type PageContent,
   type CourseTask,
 } from '@/core/domain';
 import {
   composeDraftPrompt,
+  buildPrompt,
   composeChatPrompt,
   CHAT_LABEL,
   deriveRequirements,
@@ -20,14 +19,11 @@ import {
   toRequirements,
   unsupportedClaims,
 } from '@/core/assist';
-import {
-  ChromeLanguageModelCapability,
-  explainAvailability,
-  type LanguageModelCapability,
-} from '@/platform/languageModel';
+import { explainAvailability, type LanguageModelCapability } from '@/platform/languageModel';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
+import { updateTask, upsertExtractedTask } from '@/core/storage/repositories';
 import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
@@ -39,6 +35,13 @@ import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/
 import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
+import { askContentScript, sendToContentScript } from './contentBridge';
+import { handleSessionMessage } from './sessions';
+import { buildPanelState as buildAgentPanelState } from './panelState';
+import { handleAiMessage } from './aiHandlers';
+import { resolveSessionProvider } from './providers';
+import { discoveryRunResultSchema } from '@/core/adapters/d2lDiscovery';
+import { reconcileReminders } from './reminders';
 
 /**
  * Handles an already-authorized message.
@@ -55,7 +58,23 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     case 'extraction-result':
       return handleExtraction(message);
     case 'get-state':
-      return buildPanelState();
+      return buildAgentPanelState();
+    case 'session-create':
+    case 'session-message':
+    case 'session-command':
+    case 'session-select':
+    case 'session-source':
+    case 'session-tab':
+      return handleSessionMessage(message);
+    case 'ai-status':
+    case 'set-provider-key':
+    case 'forget-provider-key':
+    case 'test-provider':
+    case 'set-ai-preferences':
+    case 'accept-cloud-disclosure':
+    case 'delete-local-data': {
+      return handleAiMessage(message);
+    }
     case 'decide-approval': {
       const engine = await createEngine();
       const workflow = await engine.decideApproval(message.approvalId, message.approved);
@@ -96,9 +115,17 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     }
     case 'request-extraction':
       return requestExtraction(message.tabId ?? tabId);
-    case 'prepare-workspace': return handlePrepareWorkspace(message.tabId);
-    case 'ask-about-page': return handleAskAboutPage(message);
-    case 'close-workspace': return handleCloseWorkspace(message.workflowId);
+    case 'scan-all-courses':
+      return message.tabId === undefined ? { kind: 'error', message: 'Open Learn before scanning your courses.' } : scanAllCourses(message.tabId);
+    case 'set-deadline-discovery-opt-in':
+      await chrome.storage.local.set({ [`motion.discovery:${new URL(message.host).origin}`]: { optedIn: message.enabled } });
+      return { updated: true };
+    case 'prepare-workspace':
+      return handlePrepareWorkspace(message.tabId);
+    case 'ask-about-page':
+      return handleAskAboutPage(message);
+    case 'close-workspace':
+      return handleCloseWorkspace(message.workflowId);
   }
 }
 
@@ -173,7 +200,37 @@ async function handlePageObserved(
       };
 
   await chrome.storage.session.set({ [observationKey(tabId)]: observation });
+  if (!message.restricted) void maybeAutomaticCourseScan(tabId, message.url);
   return { stored: !message.restricted };
+}
+
+const AUTOMATIC_SCAN_INTERVAL_MS = 6 * 60 * 60 * 1_000;
+const DISCOVERY_BUSY_LEASE_MS = 5 * 60 * 1_000;
+type DiscoverySettings = {
+  optedIn?: unknown;
+  busy?: unknown;
+  busyUntil?: unknown;
+  busyRunId?: unknown;
+  lastAutomaticAt?: unknown;
+  blocker?: unknown;
+  result?: unknown;
+};
+
+export function discoveryBusy(settings: DiscoverySettings | undefined, now: Date): boolean {
+  return settings?.busy === true && typeof settings.busyUntil === 'string' && new Date(settings.busyUntil).getTime() > now.getTime();
+}
+export function automaticDiscoveryDue(lastAutomaticAt: unknown, now: Date): boolean {
+  const last = typeof lastAutomaticAt === 'string' ? new Date(lastAutomaticAt).getTime() : 0;
+  return !Number.isFinite(last) || now.getTime() - last >= AUTOMATIC_SCAN_INTERVAL_MS;
+}
+async function maybeAutomaticCourseScan(tabId: number, url: string): Promise<void> {
+  if (!chrome.storage.local) return;
+  const key = `motion.discovery:${new URL(url).origin}`;
+  const stored = await chrome.storage.local.get(key);
+  const settings = stored[key] as DiscoverySettings | undefined;
+  if (settings?.optedIn !== true || discoveryBusy(settings, new Date()) || !automaticDiscoveryDue(settings?.lastAutomaticAt, new Date())) return;
+  await chrome.storage.local.set({ [key]: { ...settings, lastAutomaticAt: new Date().toISOString() } });
+  await scanAllCourses(tabId);
 }
 
 /**
@@ -191,44 +248,108 @@ export async function forgetTab(tabId: number): Promise<void> {
 async function handleExtraction(
   message: Extract<Message, { type: 'extraction-result' }>,
 ): Promise<{ courses: number; tasks: number }> {
+  return upsertExtractedRecords(message.course ? [message.course] : [], message.tasks);
+}
+
+/** Shared W1 upsert path for page extraction and all-course discovery. */
+export async function upsertExtractedRecords(incomingCourses: Course[], incomingTasks: CourseTask[]): Promise<{ courses: number; tasks: number }> {
   const db = await openDatabase();
   const courses = new Repository(db, STORE.courses, courseSchema);
-  const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
+  for (const course of incomingCourses) await courses.put(course);
 
-  if (message.course) await courses.put(message.course);
-
-  // A rescan must never overwrite a value the student corrected.
   let written = 0;
-  for (const task of message.tasks) {
-    const existing = await tasks.get(task.id);
-    if (existing?.studentEdited) continue;
-
-    const legacy = existing ? null : await findLegacyTask(tasks, task);
-    if (legacy) {
-      await tasks.put({
-        ...task,
-        ...(legacy.studentEdited
-          ? {
-              title: legacy.title,
-              due: legacy.due,
-              weight: legacy.weight,
-              status: legacy.status,
-            }
-          : {}),
-        corrections: legacy.corrections,
-        studentEdited: legacy.studentEdited,
-        createdAt: legacy.createdAt,
-      });
-      await tasks.put({ ...legacy, archived: true, updatedAt: task.updatedAt });
-      written += 1;
-      continue;
-    }
-
-    await tasks.put({ ...task, createdAt: existing?.createdAt ?? task.createdAt });
+  for (const task of incomingTasks) {
+    await upsertExtractedTask(db, task, legacyTaskMatches);
     written += 1;
   }
 
-  return { courses: message.course ? 1 : 0, tasks: written };
+  return { courses: incomingCourses.length, tasks: written };
+}
+
+/**
+ * Scans in flight in this worker, keyed by LMS origin.
+ *
+ * The stored `busyRunId` lease is a read-then-write, so an automatic scan
+ * firing as the student presses "Scan all courses" can pass the busy check
+ * twice before either writes. Both would then hit the LMS, and whichever
+ * finished second would find a lease it no longer owns and silently drop the
+ * results it had just gathered. Joining the scan already running is both
+ * cheaper and what the student meant. The map is in-memory on purpose: a
+ * suspended worker has no scan in flight to join, and the stored lease still
+ * covers that case.
+ */
+const scansInFlight = new Map<string, Promise<unknown>>();
+
+async function scanAllCourses(tabId: number): Promise<unknown> {
+  const tab = await chrome.tabs.get(tabId);
+  if (tab.url && resolveAdapter(tab.url)) {
+    const origin = new URL(tab.url).origin;
+    const running = scansInFlight.get(origin);
+    if (running) return running;
+    const scan = runCourseScan(tabId).finally(() => {
+      scansInFlight.delete(origin);
+    });
+    scansInFlight.set(origin, scan);
+    return scan;
+  }
+  return runCourseScan(tabId);
+}
+
+async function runCourseScan(tabId: number): Promise<unknown> {
+  const tab = await chrome.tabs.get(tabId);
+  if (!tab.url || !resolveAdapter(tab.url)) {
+    const message = 'Open Learn before scanning your courses.';
+    if (tab.url) {
+      const origin = new URL(tab.url).origin;
+      const unsupportedKey = `motion.discovery:${origin}`;
+      const existing = (await chrome.storage.local.get(unsupportedKey))[unsupportedKey] as DiscoverySettings | undefined;
+      await chrome.storage.local.set({
+        [unsupportedKey]: { ...(existing ?? { optedIn: false }), busy: false, busyRunId: null, busyUntil: null, blocker: message },
+      });
+    }
+    return { kind: 'error', message };
+  }
+  const stored = await chrome.storage.local.get(`motion.discovery:${new URL(tab.url).origin}`);
+  const key = `motion.discovery:${new URL(tab.url).origin}`;
+  const settings = stored[key] as DiscoverySettings | undefined;
+  if (settings?.optedIn !== true) return { kind: 'refused', message: 'Enable course scanning first.' };
+  const runId = crypto.randomUUID();
+  const startedAt = new Date();
+  await chrome.storage.local.set({ [key]: { ...settings, busy: true, busyRunId: runId, busyUntil: new Date(startedAt.getTime() + DISCOVERY_BUSY_LEASE_MS).toISOString(), blocker: null } });
+  const finish = async (patch: Omit<DiscoverySettings, 'optedIn'>): Promise<boolean> => {
+    const current = (await chrome.storage.local.get(key))[key] as DiscoverySettings | undefined;
+    // A scan must never revive consent or store material gathered after the
+    // student opted out. A stale worker only clears the lease it owns.
+    if (current?.optedIn !== true || current.busyRunId !== runId) return false;
+    await chrome.storage.local.set({ [key]: { ...current, ...patch, busy: false, busyRunId: null, busyUntil: null } });
+    return true;
+  };
+  try {
+    const raw = await sendToContentScript(tabId, { type: 'motion:discover-deadlines' });
+    const result = discoveryRunResultSchema.safeParse(raw);
+    if (!result.success) throw new Error('Invalid discovery response.');
+    if (result.data.kind === 'success') {
+      const current = (await chrome.storage.local.get(key))[key] as DiscoverySettings | undefined;
+      if (current?.optedIn !== true || current.busyRunId !== runId) {
+        // Consent was revoked (or another run took over) while this scan's
+        // network calls were in flight. Drop the freshly gathered result
+        // instead of storing it, but still release the lease this run owns
+        // so the UI doesn't stay stuck on "Scanning courses…" until it expires.
+        if (current?.busyRunId === runId) {
+          await chrome.storage.local.set({ [key]: { ...current, busy: false, busyRunId: null, busyUntil: null } });
+        }
+        return { kind: 'refused', message: 'Course scanning was turned off before this scan finished.' };
+      }
+      await upsertExtractedRecords(result.data.courses, result.data.tasks);
+      await reconcileReminders().catch(() => undefined);
+      await finish({ result: { deadlines: result.data.tasks.length, courses: result.data.courses.length, updatedAt: result.data.scannedAt }, blocker: null });
+    } else await finish({ result: null, blocker: result.data.message });
+    return result.data;
+  } catch {
+    const message = 'Motion could not scan Learn right now. Try again while you are signed in.';
+    await finish({ result: null, blocker: message });
+    return { kind: 'error', message };
+  }
 }
 
 function normalizedTaskTitle(title: string): string {
@@ -239,24 +360,25 @@ function legacyTitleMatches(legacy: CourseTask, incoming: CourseTask): boolean {
   const incomingTitle = normalizedTaskTitle(incoming.title);
   if (normalizedTaskTitle(legacy.title) === incomingTitle) return true;
   return legacy.corrections.some(
-    (correction) => correction.field === 'title'
-      && typeof correction.originalValue === 'string'
-      && normalizedTaskTitle(correction.originalValue) === incomingTitle,
+    (correction) =>
+      correction.field === 'title' &&
+      typeof correction.originalValue === 'string' &&
+      normalizedTaskTitle(correction.originalValue) === incomingTitle,
   );
 }
 
-async function findLegacyTask(
-  tasks: Repository<typeof courseTaskSchema>,
+function legacyTaskMatches(
+  candidate: CourseTask,
   incoming: CourseTask,
-): Promise<CourseTask | null> {
-  const candidates = (await tasks.byIndex('byCourse', incoming.courseId)).records.filter(
-    (candidate) => !candidate.archived
-      && candidate.kind === incoming.kind
-      && (adapterById(candidate.provenance.platformId) ?? resolveAdapter(incoming.provenance.sourceUrl))
-        ?.isLegacyTaskId(candidate.id, incoming.courseId) === true
-      && legacyTitleMatches(candidate, incoming),
-  );
-  return candidates.length === 1 ? candidates[0] ?? null : null;
+): boolean {
+  const adapter = adapterById(candidate.provenance.platformId) ?? resolveAdapter(incoming.provenance.sourceUrl);
+  // A tombstone (already folded once) is never a legacy-match candidate: its
+  // dependents were re-pointed at the canonical row when it was archived, and
+  // matching it again here would only recreate the duplicate D-ID exists to
+  // remove. See upsertExtractedTask's own tombstone-redirect for exact-id hits.
+  return !candidate.archived && candidate.kind === incoming.kind &&
+    adapter?.isLegacyTaskId(candidate.id, incoming.courseId) === true &&
+    legacyTitleMatches(candidate, incoming);
 }
 
 /**
@@ -267,56 +389,29 @@ async function handleCorrection(
   message: Extract<Message, { type: 'correct-task' }>,
 ): Promise<{ updated: boolean }> {
   const db = await openDatabase();
-  const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
-  const task = await tasks.get(message.taskId);
-  if (!task) return { updated: false };
-
   const now = new Date().toISOString();
-  const next = { ...task, studentEdited: true, updatedAt: now };
-
-  switch (message.field) {
-    case 'title':
-      if (typeof message.value !== 'string') return { updated: false };
-      next.corrections = [
-        ...task.corrections,
-        { field: 'title', originalValue: task.title, correctedValue: message.value, correctedAt: now },
-      ];
-      next.title = message.value;
-      break;
-    case 'dueIso': {
-      const value = typeof message.value === 'string' ? message.value : null;
-      next.corrections = [
-        ...task.corrections,
-        { field: 'due.iso', originalValue: task.due.iso, correctedValue: value, correctedAt: now },
-      ];
-      // A student-supplied date is authoritative, so confidence becomes
-      // 'confirmed' while the original parse stays in `corrections`.
-      next.due = { ...task.due, iso: value, confidence: 'confirmed' };
-      break;
+  const updated = await updateTask(db, message.taskId, (task) => {
+    const next = { ...task, studentEdited: true, updatedAt: now };
+    switch (message.field) {
+      case 'title':
+        if (typeof message.value !== 'string') return null;
+        return { ...next, title: message.value, corrections: [...task.corrections, { field: 'title', originalValue: task.title, correctedValue: message.value, correctedAt: now }] };
+      case 'dueIso': {
+        const value = typeof message.value === 'string' ? message.value : null;
+        return { ...next, due: { ...task.due, iso: value, confidence: 'confirmed' as const }, corrections: [...task.corrections, { field: 'due.iso', originalValue: task.due.iso, correctedValue: value, correctedAt: now }] };
+      }
+      case 'weight': {
+        if (typeof message.value !== 'number' && message.value !== null) return null;
+        return { ...next, weight: message.value, corrections: [...task.corrections, { field: 'weight', originalValue: task.weight, correctedValue: message.value, correctedAt: now }] };
+      }
+      case 'status': {
+        const parsed = courseTaskSchema.shape.status.safeParse(message.value);
+        if (!parsed.success) return null;
+        return { ...next, status: parsed.data, corrections: [...task.corrections, { field: 'status', originalValue: task.status, correctedValue: parsed.data, correctedAt: now }] };
+      }
     }
-    case 'weight': {
-      const value = typeof message.value === 'number' ? message.value : null;
-      next.corrections = [
-        ...task.corrections,
-        { field: 'weight', originalValue: task.weight, correctedValue: value, correctedAt: now },
-      ];
-      next.weight = value;
-      break;
-    }
-    case 'status': {
-      const parsed = courseTaskSchema.shape.status.safeParse(message.value);
-      if (!parsed.success) return { updated: false };
-      next.corrections = [
-        ...task.corrections,
-        { field: 'status', originalValue: task.status, correctedValue: parsed.data, correctedAt: now },
-      ];
-      next.status = parsed.data;
-      break;
-    }
-  }
-
-  await tasks.put(next);
-  return { updated: true };
+  });
+  return { updated: updated !== null };
 }
 
 /**
@@ -471,24 +566,21 @@ async function handleToggleRequirement(
  * submits, or fills anything in — the draft lands in the student's workspace
  * and stops.
  */
-async function handleComposeDraft(
-  message: Extract<Message, { type: 'compose-draft' }>,
-): Promise<{
+async function handleComposeDraft(message: Extract<Message, { type: 'compose-draft' }>): Promise<{
   noteId: string | null;
   draft: string;
   label: string;
   unsupported: string[];
   reason?: string;
 }> {
-  const model = new ChromeLanguageModelCapability();
-  const availability = await model.availability();
-  if (availability !== 'available') {
+  const resolved = await resolveSessionProvider();
+  if (resolved.kind === 'blocked') {
     return {
       noteId: null,
       draft: '',
       label: '',
       unsupported: [],
-      reason: explainAvailability(availability),
+      reason: resolved.blocker.message,
     };
   }
 
@@ -513,10 +605,11 @@ async function handleComposeDraft(
 
   let draft: string;
   try {
-    draft = await model.generate({
-      instruction: composed.instruction,
-      context: composed.context,
-      ...(composed.targetWords ? { targetWords: composed.targetWords } : {}),
+    draft = await resolved.provider.generate({
+      system: composed.instruction,
+      messages: [{ role: 'user', content: buildPrompt(composed) }],
+      model: resolved.model,
+      ...(composed.targetWords ? { maxOutputTokens: composed.targetWords } : {}),
     });
   } catch (error) {
     return {
@@ -541,7 +634,7 @@ async function handleComposeDraft(
         id: crypto.randomUUID(),
         origin: 'generated',
         text: draft,
-        generatedBy: 'chrome-on-device',
+        generatedBy: resolved.providerId,
         createdAt: now,
       },
     ],
@@ -558,62 +651,10 @@ async function handleComposeDraft(
 }
 
 async function handleModelStatus(): Promise<{ availability: string; explanation: string }> {
-  const availability = await new ChromeLanguageModelCapability().availability();
-  return { availability, explanation: explainAvailability(availability) };
-}
-
-/** The only frame Motion reads: `all_frames` is false and stays false. */
-const MAIN_FRAME_ID = 0;
-
-/** Attempts, and the pause between them, when reaching the content script. */
-const CONTENT_SCRIPT_ATTEMPTS = 3;
-const CONTENT_SCRIPT_RETRY_MS = 150;
-
-/**
- * Sends one message to the content script in the tab's main frame.
- *
- * Two browser facts shape this:
- *
- *   1. The script is declared with `all_frames: false`, and the authorizer
- *      accepts observations from the main frame only. A tab-wide send is not
- *      reliably delivered to it -- in Chrome 141 it fails with "Receiving end
- *      does not exist" while the script is running -- so frame 0 is addressed
- *      explicitly.
- *   2. The bundled script registers its listener after an async import, so for
- *      a moment after a page loads there is no receiver. A page opened before
- *      the extension has none at all. Retrying a couple of times separates
- *      "not ready yet" from "not there", and the caller is told which.
- */
-async function sendToContentScript(tabId: number, message: ContentRequest): Promise<unknown> {
-  // Validated on the way out as well as on the way in, and it is the *parsed*
-  // value that travels: anything the schema does not describe is left behind
-  // rather than crossing the boundary unexamined.
-  const payload = contentRequestSchema.parse(message);
-  let lastError: unknown;
-  for (let attempt = 0; attempt < CONTENT_SCRIPT_ATTEMPTS; attempt += 1) {
-    try {
-      return await chrome.tabs.sendMessage(tabId, payload, { frameId: MAIN_FRAME_ID });
-    } catch (error) {
-      lastError = error;
-      if (attempt < CONTENT_SCRIPT_ATTEMPTS - 1) {
-        await new Promise((resolve) => setTimeout(resolve, CONTENT_SCRIPT_RETRY_MS));
-      }
-    }
-  }
-  throw lastError;
-}
-
-/** Asks the content script for the current page's content, once. */
-async function askContentScript(tabId: number): Promise<PageContent | null> {
-  try {
-    const response = (await sendToContentScript(tabId, { type: 'motion:extract-content' })) as
-      | { content?: unknown }
-      | undefined;
-    const parsed = pageContentSchema.safeParse(response?.content);
-    return parsed.success ? parsed.data : null;
-  } catch {
-    return null;
-  }
+  const resolved = await resolveSessionProvider();
+  return resolved.kind === 'ready'
+    ? { availability: 'available', explanation: `${resolved.displayName} is ready.` }
+    : { availability: resolved.blocker.kind, explanation: resolved.blocker.message };
 }
 
 const PREPARE_WORKSPACE = 'prepare-workspace';
@@ -637,21 +678,37 @@ export interface AskAboutPageResult {
  */
 export async function handleAskAboutPage(
   message: Extract<Message, { type: 'ask-about-page' }>,
-  model: LanguageModelCapability = new ChromeLanguageModelCapability(),
+  model?: LanguageModelCapability,
 ): Promise<AskAboutPageResult> {
   const observation = await readObservation(message.tabId);
   if (observation?.restricted) {
-    return { answer: null, reason: 'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.' };
+    return {
+      answer: null,
+      reason:
+        'Motion does not read or answer questions about a graded attempt. Nothing on this page was read.',
+    };
   }
   if (connectionFor(observation) !== 'supported') {
-    return { answer: null, reason: 'Motion can only answer questions about a course page it can read.' };
+    return {
+      answer: null,
+      reason: 'Motion can only answer questions about a course page it can read.',
+    };
   }
-  const availability = await model.availability();
-  if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  const resolution = model ? null : await resolveSessionProvider();
+  const provider = resolution?.kind === 'ready' ? resolution : null;
+  if (model) {
+    const availability = await model.availability();
+    if (availability !== 'available') return { answer: null, reason: explainAvailability(availability) };
+  } else if (resolution?.kind === 'blocked') {
+    return { answer: null, reason: resolution.blocker.message };
+  }
   const content = await askContentScript(message.tabId);
   if (!content) return { answer: null, reason: 'Motion could not read that page.' };
   if (!sameWorkspacePage(observation, content.url)) {
-    return { answer: null, reason: 'The page changed while Motion was reading it. Ask again once it has loaded.' };
+    return {
+      answer: null,
+      reason: 'The page changed while Motion was reading it. Ask again once it has loaded.',
+    };
   }
   try {
     const prompt = composeChatPrompt({
@@ -661,15 +718,28 @@ export async function handleAskAboutPage(
       question: message.question,
       history: message.history,
     });
-    const answer = await model.generate({ ...prompt, targetWords: 250 });
-    return { answer: answer.trim(), label: CHAT_LABEL };
+    const answer = model
+      ? await model.generate({ ...prompt, targetWords: 250 })
+      : await provider!.provider.generate({
+          system: prompt.instruction,
+          messages: [{ role: 'user', content: buildPrompt(prompt) }],
+          model: provider!.model,
+          maxOutputTokens: 250,
+        });
+    return {
+      answer: answer.trim(),
+      label: model ? CHAT_LABEL : 'Answered by Motion from this page. Check it against the page before relying on it.',
+    };
   } catch {
     console.warn('Motion on-device model generation failed.');
     return { answer: null, reason: 'The on-device model could not answer. Try again.' };
   }
 }
 
-function sameWorkspacePage(observation: StoredObservation | null | undefined, contentUrl: string): boolean {
+function sameWorkspacePage(
+  observation: StoredObservation | null | undefined,
+  contentUrl: string,
+): boolean {
   const observedUrl = observation?.url;
   return observedUrl ? workspacePageUrl(observedUrl) === workspacePageUrl(contentUrl) : false;
 }
@@ -721,9 +791,7 @@ export async function handlePrepareWorkspace(
   }
 
   const adapter = resolveAdapter(content.url);
-  const sources = adapter
-    ? selectWorkspaceSources(content, (url) => adapter.classifyUrl(url))
-    : [];
+  const sources = adapter ? selectWorkspaceSources(content, (url) => adapter.classifyUrl(url)) : [];
   const page = sources[0];
   if (!page) {
     return {
@@ -799,9 +867,7 @@ export async function handleCloseWorkspace(
   // as part of it, so they close with it. Recorded tabs are excluded here: if
   // one is outside the group, the student moved it there.
   const recorded = new Set(tabIds);
-  const unrecorded = (await tabs.tabsOpenedBy(`${workflow.id}:`)).filter(
-    (id) => !recorded.has(id),
-  );
+  const unrecorded = (await tabs.tabsOpenedBy(`${workflow.id}:`)).filter((id) => !recorded.has(id));
 
   const closing = [...new Set([...kept, ...unrecorded])];
   await tabs.close(closing);
@@ -816,7 +882,10 @@ export async function handleCloseWorkspace(
  * both use it, so the readings join the group the icon started rather than a
  * second one. Both page titles come from `document.title`.
  */
-export function workspaceGroupTitle(courseCode: string | null | undefined, pageTitle: string): string {
+export function workspaceGroupTitle(
+  courseCode: string | null | undefined,
+  pageTitle: string,
+): string {
   return groupTitle([courseCode, pageTitle || 'Assignment']);
 }
 
@@ -866,8 +935,10 @@ export async function handleActionClick(
     const live = await tabs.get(tabId);
     const observation = await readObservation(tabId);
     const liveMayAdopt = live !== null && mayAdopt(live, observation);
-    const samePage = liveMayAdopt && typeof observation?.url === 'string'
-      && workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
+    const samePage =
+      liveMayAdopt &&
+      typeof observation?.url === 'string' &&
+      workspacePageUrl(observation.url) === workspacePageUrl(namedUrl);
     if (!liveMayAdopt || !samePage) {
       await tabs.forgetAdopted(tabId);
       return declined;
@@ -910,7 +981,8 @@ async function courseForUrl(url: string | null | undefined): Promise<Course | nu
 }
 
 async function currentCourseId(tabId?: number): Promise<string | null> {
-  const activeTabId = tabId ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
+  const activeTabId =
+    tabId ?? (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0]?.id;
   if (activeTabId === undefined) return null;
   const observation = await readObservation(activeTabId);
   return (await courseForUrl(observation?.url))?.id ?? null;
@@ -937,7 +1009,9 @@ async function requestExtraction(tabId: number | undefined): Promise<{ requested
  * rendered the coursework workspace: the panel claimed a page Motion could not
  * read. The page type is the fact that decides it.
  */
-function connectionFor(observation: StoredObservation | null | undefined): PanelState['connection'] {
+function connectionFor(
+  observation: StoredObservation | null | undefined,
+): PanelState['connection'] {
   if (!observation) return 'idle';
   if (observation.restricted) return 'restricted';
   if (observation.pageType === 'signed-out') return 'signed-out';

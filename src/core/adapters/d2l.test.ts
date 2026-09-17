@@ -21,10 +21,15 @@ describe('D2L route detection', () => {
   it.each([
     ['d2l:title:relational algebra', true],
     ['d2l:javascript://legacy-quiz', true],
-    ['d2l:363:title:relational algebra', false],
+    // A title-scoped fallback id predates the canonical scheme regardless of
+    // whether a course id got mixed in — D-ID: only `d2l:<ou>:<kind>:<entityId>`
+    // with a real kind counts as canonical, so this is still legacy.
+    ['d2l:363:title:relational algebra', true],
     ['d2l:363:quiz:101', false],
+    // Every URL-shaped id is legacy now (D-ID/N3): the canonical scheme never
+    // contains a URL, so there is no "already canonical" URL id to preserve.
     [`d2l:${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, true],
-    [`d2l:${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=101&ou=363`, false],
+    [`d2l:${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?db=101&ou=363`, true],
   ])('classifies task id %s as legacy=%s', (id, legacy) => {
     expect(d2lAdapter.isLegacyTaskId(id, 'd2l:363')).toBe(legacy);
   });
@@ -447,9 +452,11 @@ describe('MyLearningSpace list markup', () => {
       input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, fixture('mylearningspace-identity-list')),
     );
     expect(first.map((task) => task.id)).toEqual(second.map((task) => task.id));
+    // The canonical D2L identity is (course, entity kind, entity id), which
+    // also matches the calendar-API identity (SOL-7), not the row's URL.
     expect(first.map((task) => task.id)).toEqual([
-      'd2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?db=321&ou=999999',
-      'd2l:https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?db=322&ou=999999',
+      'd2l:999999:assignment:321',
+      'd2l:999999:assignment:322',
     ]);
     expect(first.every((task) => !/isprv|bp|d2l_state|d2l_view/.test(task.id))).toBe(true);
   });

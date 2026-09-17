@@ -1,8 +1,23 @@
 import { z } from 'zod';
 import type { PanelState } from '../core/view/state';
+import {
+  sessionCreateSchema,
+  sessionMessageSchema,
+  sessionCommandSchema,
+  sessionSelectSchema,
+  sessionSourceSchema,
+  sessionTabSchema,
+  aiStatusSchema,
+  setProviderKeySchema,
+  forgetProviderKeySchema,
+  testProviderSchema,
+  setAiPreferencesSchema,
+  acceptCloudDisclosureSchema,
+  deleteLocalDataSchema,
+} from '../core/messaging/sessionContracts';
+import { scanAllCoursesSchema, setDeadlineDiscoveryOptInSchema } from '../core/messaging/contracts';
 
 export const motionCommandSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('ask-about-page'), question: z.string().trim().min(1).max(2_000), history: z.array(z.object({ role: z.enum(['student', 'motion']), text: z.string().max(4_000) })).max(12) }),
   z.object({ type: z.literal('open-settings') }),
   z.object({ type: z.literal('request-permission') }),
   z.object({ type: z.literal('read-page'), url: z.string().url().nullable() }),
@@ -11,11 +26,6 @@ export const motionCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('decide-approval'),
     approvalId: z.string().min(1),
     approved: z.boolean(),
-  }),
-  z.object({
-    type: z.literal('workflow-command'),
-    workflowId: z.string().min(1),
-    command: z.enum(['pause', 'resume', 'retry', 'cancel']),
   }),
   z.object({ type: z.literal('build-checklist') }),
   z.object({
@@ -34,10 +44,29 @@ export const motionCommandSchema = z.discriminatedUnion('type', [
     targetWords: z.number().int().min(50).max(5_000).optional(),
   }),
   z.object({ type: z.literal('review-draft'), checklistId: z.string().min(1), draft: z.string() }),
-  z.object({ type: z.literal('model-status') }),
-  z.object({ type: z.literal('prepare-workspace') }),
-  z.object({ type: z.literal('close-workspace'), workflowId: z.string().min(1) }),
   z.object({ type: z.literal('get-checklist'), checklistId: z.string().min(1) }),
+  scanAllCoursesSchema,
+  setDeadlineDiscoveryOptInSchema,
+  // Session vocabulary — these already match the worker message shape 1:1
+  // (`src/core/messaging/sessionContracts.ts`), so the runtime bridge mostly
+  // passes them through rather than translating.
+  sessionCreateSchema,
+  sessionMessageSchema,
+  sessionCommandSchema,
+  sessionSelectSchema,
+  sessionSourceSchema,
+  sessionTabSchema,
+  aiStatusSchema,
+  setProviderKeySchema,
+  forgetProviderKeySchema,
+  testProviderSchema,
+  setAiPreferencesSchema,
+  acceptCloudDisclosureSchema,
+  deleteLocalDataSchema,
+  // Convenience command: resolves to a `session-tab` adopt of whichever tab
+  // is active right now. Kept separate from `session-tab` because only the
+  // runtime bridge — never a view — may decide which tab id that is.
+  z.object({ type: z.literal('session-adopt-current-tab'), sessionId: z.string().min(1) }),
 ]);
 
 export type MotionCommand = z.infer<typeof motionCommandSchema>;
@@ -49,9 +78,9 @@ export interface MotionBridge {
   send: (command: MotionCommand) => void | Promise<void>;
   /**
    * Like `send`, but for commands whose answer the panel renders — building a
-   * checklist, drafting, reviewing a draft. Separate from `send` so a view that
-   * only fires an action cannot accidentally depend on a reply that a closed
-   * worker may never deliver.
+   * checklist, drafting, reviewing a draft, provider diagnostics. Separate
+   * from `send` so a view that only fires an action cannot accidentally
+   * depend on a reply that a closed worker may never deliver.
    */
   request?: <T>(command: MotionCommand) => Promise<T | null>;
 }

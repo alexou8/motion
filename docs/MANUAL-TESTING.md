@@ -140,6 +140,40 @@ Two things the harness cannot reach, so check them by hand:
   known gaps: the root is not a recognised route, and a login page with rendered
   content at a course URL is still read as a course page.
 
+## Agentic and AI checks
+
+Use synthetic goals, notes, and page excerpts only. Never paste a real API key
+into diagnostics or a test fixture.
+
+1. **AgentSession.** Start a goal, confirm the session persists its plan,
+   blockers, context references, artifacts, activity, and workspace ownership.
+   Pause, resume, restart from a step, and close the workspace; confirm adopted
+   tabs are ungrouped but never closed and released/foreign tabs are untouched.
+2. **BYOK.** Select OpenAI or Anthropic, enter a canary key, accept the provider
+   disclosure, and grant the host permission just in time. Confirm the request
+   goes directly to the selected fixed provider endpoint, not a Motion server;
+   switch providers and confirm keys remain independent. Restart Chrome and
+   confirm the key is gone.
+   Use the [OpenAI model catalogue](https://developers.openai.com/api/docs/models)
+   and [Anthropic model overview](https://platform.claude.com/docs/en/models/overview)
+   as references only; account-specific model access and quota remain
+   unverified until this smoke test is performed.
+3. **Approval and policy.** Exercise automatic, configurable, consequential,
+   and forbidden actions. Confirm consequential actions require a fresh
+   target-bound single-use approval that expires after two minutes, with no
+   always-allow option. Confirm every graded/timed/proctored attempt stays
+   restricted and is never read or acted inside.
+4. **Local AI.** Check the composite provider in the panel-host-port,
+   worker-`LanguageModel`, and `needs-document-context` states. Confirm
+   unavailable inference reports an honest blocker and does not silently use a
+   cloud provider. Inference itself is not currently exercised by the harness.
+   Gemini Nano generation and long-prompt behavior after worker suspension
+   remain manual checks.
+5. **Redaction.** Trigger success, failure, cancellation, and recovery paths.
+   Diagnostics may identify a provider and status, but must not include keys,
+   goals, prompts, page text, notes, drafts, URLs, grades, or identifiers.
+   Replace any captured value with `[REDACTED]` before sharing a report.
+
 ## Recording a defect
 
 Record the route *shape*, not the URL — no org unit ids, course codes, student

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ChromeTabs, groupTitle, isOpenableUrl, markUrl, operationIdOf } from './tabs';
+import {
+  ChromeTabs,
+  ensureSessionGroup,
+  groupTitle,
+  isOpenableUrl,
+  markUrl,
+  navigateOwned,
+  NAVIGATION_MARKERS_KEY,
+  operationIdOf,
+} from './tabs';
 
 /**
  * A minimal fake of the Chrome tab APIs. Built by hand rather than mocked
@@ -55,6 +64,12 @@ function fakeChrome() {
       get: vi.fn(async (id: number) => {
         const tab = tabs.find((t) => t.id === id);
         if (!tab) throw new Error('No tab with id');
+        return tab;
+      }),
+      update: vi.fn(async (id: number, info: { url?: string }) => {
+        const tab = tabs.find((candidate) => candidate.id === id);
+        if (!tab) throw new Error('No tab with id');
+        if (info.url !== undefined) tab.url = info.url;
         return tab;
       }),
       remove: vi.fn(async (ids: number[]) => {
@@ -394,6 +409,38 @@ describe('tabs Motion owns', () => {
     const a = await tabs.open('https://x.brightspace.com/a', 'op-a');
     await tabs.close([a.tabId]);
     expect(api.tabs.remove).toHaveBeenCalledWith([a.tabId]);
+  });
+});
+
+describe('owned navigation and session groups', () => {
+  it('records a navigation marker before updating the tab', async () => {
+    const tabs = new ChromeTabs();
+    const opened = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    api.tabs.update.mockImplementationOnce(async (id: number, info: { url?: string }) => {
+      expect(api._state.session[NAVIGATION_MARKERS_KEY]).toEqual({ [opened.tabId]: 'nav-1' });
+      const tab = api._state.tabs.find((candidate) => candidate.id === id);
+      if (!tab) throw new Error('No tab with id');
+      if (info.url !== undefined) tab.url = info.url;
+      return tab;
+    });
+
+    await navigateOwned(opened.tabId, 'https://x.brightspace.com/b', 'nav-1');
+
+    expect(api.tabs.update).toHaveBeenCalledWith(opened.tabId, { url: 'https://x.brightspace.com/b' });
+  });
+
+  it('rejects an unsafe owned navigation before writing a marker', async () => {
+    await expect(navigateOwned(1, 'javascript:alert(1)', 'nav-1')).rejects.toThrow(/non-https/i);
+    expect(api.tabs.update).not.toHaveBeenCalled();
+    expect(api._state.session[NAVIGATION_MARKERS_KEY]).toBeUndefined();
+  });
+
+  it('ensures a titled session group through the free helper', async () => {
+    const tabs = new ChromeTabs();
+    const opened = await tabs.open('https://x.brightspace.com/a', 'op-a');
+    const groupId = await ensureSessionGroup({ title: 'Motion · Session', color: 'blue' }, [opened.tabId]);
+    expect(groupId).toBe(100);
+    expect(api._state.groups.get(groupId)?.title).toBe('Motion · Session');
   });
 });
 

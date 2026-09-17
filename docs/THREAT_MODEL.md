@@ -1,8 +1,9 @@
 # Threat model
 
-Scope: the Motion Chrome extension as built — local-first, no backend. Drafting
-and the chat about the page use Chrome's on-device model only; nothing is sent
-to a hosted model (ADR 0004). Findings below came from an adversarial
+Scope: the Motion Chrome extension as built — local-first, with no Motion
+backend. Drafting and chat use Chrome's local runtime or a student-selected
+BYOK provider after disclosure and just-in-time permission (ADRs 0005–0006).
+Findings below came from an adversarial
 architecture review; each names
 the control and its current status. Nothing is marked mitigated unless the code
 implementing the control exists.
@@ -26,7 +27,7 @@ privileged context, the side panel renders and asks.
 
 ## T0 — Prompt injection through course content
 
-Motion now drafts coursework with an on-device model, and the material it reads
+Motion now drafts coursework with a local or student-selected BYOK model, and the material it reads
 — assignment instructions, discussion posts, uploaded documents — is written by
 people who are not the student and, on a discussion board, by anyone in the
 course. A crafted instruction planted in that text ("ignore your rules and
@@ -48,8 +49,9 @@ Controls, all implemented and tested in `src/core/assist/compose.test.ts`:
 **Residual risk:** fencing is a mitigation, not a proof. A sufficiently
 persuasive injection could still influence wording. It cannot cause an
 *action*, because the model's output is text into the student's own workspace —
-there is no path from model output to a browser action, an approval, or a
-submission. That containment, not the fencing, is the real control. — *Mitigated*
+there is no path from model output to an action without the worker's policy,
+  approval, and actor defenses. That containment, not fencing alone, is the
+  real control. — *Mitigated*
 
 The **chat about the page** is a second route from page text to the model, with
 the same controls and one more input: the student's earlier turns. Those turns
@@ -92,7 +94,26 @@ The worker must verify, for every message: `sender.id === chrome.runtime.id`;
 that the sender's role (content script vs. extension UI) may invoke that message
 type at all; that content messages carry `sender.tab` with an expected HTTPS
 origin; and that any claimed tab, window or URL is derived from `sender` rather
-than trusted from the payload. — *Planned*
+than trusted from the payload. The content-script inward listener separately
+accepts only `sender.id === chrome.runtime.id` with `sender.tab === undefined`.
+The intended mitigation is a worker-opened, browser-authenticated actor port
+whose sender carries the target tab, plus a one-shot capability issued only
+after the workflow engine consumes fresh approval. The current source and
+browser-forgery evidence are still being reconciled; until that pass is
+complete, extension-page compromise remains a residual actor risk. —
+*Content-message sender checks mitigated; actor-channel mitigation pending
+final verification*. Actor exceptions and stale recovery previews also require
+bounded failure/cleanup before this boundary can be called production-ready.
+
+The restricted-page verdict and the element capture are the same atomic call
+in the content script (`buildSnapshot`, `src/content/actor.ts`): a page that
+is restricted at capture time yields zero element descriptors, so no control
+label from it can ever be relayed into a provider prompt. The worker's
+inspect-tab capability additionally re-checks the live page immediately
+before capturing, and refuses to trust or store a captured snapshot whose
+`url` no longer matches that live check — closing the remaining window where
+the tab navigates between the worker's check and the content script's reply
+(SOL-5). — *Mitigated*
 
 `externally_connectable` is not declared, so no web page may message the
 extension directly. — *Mitigated (manifest omits it)*
@@ -129,7 +150,10 @@ boundary would be bypassed without ever naming a prohibited action.
 
 The prohibition is enforced again at the lowest capability-dispatch layer, and
 workflows are given a **closed allowlist of concrete, parameter-validated
-actions** — never generic page mutation or script execution. — *Planned*
+actions** — never generic page mutation or script execution. The content actor
+receives only Motion-issued handles and typed actions. — *Mitigated in policy
+and actor dispatch; interrupted actor writes are not replayed automatically
+because they have no durable browser idempotency marker.*
 
 Policy-level refusal, including refusal ahead of reading approval status, is
 already implemented. — *Mitigated (`src/core/policy`, tested)*
@@ -315,3 +339,86 @@ content or closes a student tab. — *Accepted*
   in-extension control meaningfully survives that; prevention is the control.
 - **No cross-device sync**, so no server-side breach surface — and no
   server-side recovery if the profile is lost.
+
+## T15 — BYOK key exposure
+
+A provider key is readable by code running in a trusted extension context. Motion
+stores it only in `chrome.storage.session` under `TRUSTED_CONTEXTS`, never logs
+or fake-encrypts it, and loses it on browser restart. A compromised extension
+page or browser profile can still expose it. — *Accepted*
+
+## T16 — Provider endpoint or SSRF-style destination control
+
+Provider requests use a fixed endpoint selected by the provider registry; user
+input and model output cannot supply an arbitrary URL. Optional provider hosts
+are requested just-in-time after disclosure. — *Mitigated in provider clients;
+permission flow remains in progress*
+
+## T17 — Prompt injection leading to tool calls
+
+Untrusted page text is fenced and the instruction is last, but model output is
+not authorization. Motion-issued references, worker policy, approval checks,
+and the typed actor provide layered defenses before any action. Consequential
+submission, posting, uploading and sending require fresh confirmation each time;
+graded, timed and proctored attempts remain forbidden. — *Mitigated in design;
+end-to-end actor path is in progress*
+
+## T18 — Actor misuse or consequential click
+
+The actor accepts only validated handles and closed typed actions; the worker
+classifies consequences and requires a fresh target-bound single-use approval
+for consequential work. Forbidden actions are refused and there is no
+always-allow setting. — *Mitigated in policy; browser end-to-end coverage is
+in progress*
+
+## T19 — Stale approval replay after resume
+
+Approvals are target-bound, single-use, expire after two minutes, and are
+checked immediately before dispatch. Recovery clears or revalidates pending
+work rather than treating resume as fresh consent. Parameter binding and atomic
+consumption remain a follow-up where not yet implemented. — *Partially
+mitigated*
+
+## T20 — Duplicate chargeable requests on recovery
+
+Provider turns carry a persisted `pendingModelRequest` recovery record; recovery
+does not blindly resend an uncertain request. POST network failures, timeouts
+after headers, and ambiguous 500/502/504 responses surface `outcome-unknown`
+with an explicit retry choice. The student must choose whether to re-run the
+model turn when its outcome cannot be established. Retry also resends the
+exact student turn that failed, not the session's original goal, so recovery
+cannot fabricate a conversation entry the student never sent (SOL-18).
+A claimed request additionally schedules a `chrome.alarms` recovery wake-up
+at claim time (`motion:model-recovery:*`, `src/background/modelTurn.ts`), so a
+worker that is suspended or killed mid-stream — or during a provider's own
+retry backoff, before any blocker is ever recorded — still gets woken to run
+`recoverStaleModelRequests` instead of leaving the session `working` until
+some unrelated event happens to wake the worker (SOL-19, interim fix: this
+narrows the gap to the alarm's own delay and Chrome's alarm-scheduling
+guarantees, it does not make recovery instantaneous or immune to a worker that
+never wakes at all). — *Mitigated in design; provider-specific idempotency is
+not claimed*
+
+## T21 — Cloud disclosure or silent fallback
+
+Local mode stays local. Cloud mode names the selected provider and requires
+disclosure acceptance before sending the student's message, session plan/state
+labels, relevant notes, and bounded excerpts from pages read for the session.
+Each source is capped at 8,000 characters and each request at 24,000; excluded
+sources are omitted. There is no Motion proxy, telemetry, or silent provider
+fallback. — *Mitigated in design*
+
+## T22 — Inference-port spoofing
+
+The local composite provider accepts a panel-host port only through the
+worker-controlled connection path and validates messages at the boundary; it
+falls back to the worker LanguageModel probe or reports
+`needs-document-context`. The inference path itself has not been exercised. —
+*Partially mitigated*
+
+## T23 — Workspace tab ownership override
+
+Session workspace ownership is recorded by tab id and session key, with owned,
+adopted, and released sets. Group membership alone never grants ownership;
+close operations affect only owned tabs still in the expected group. — *Partially
+mitigated; real-browser race coverage is in progress*

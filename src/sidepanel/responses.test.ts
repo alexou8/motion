@@ -23,8 +23,29 @@ const review = {
   constraintChecks: [{ label: 'At least 3 words', satisfied: true, detail: 'Your draft has 3 words.' }],
 };
 
+const aiStatus = {
+  selected: 'chrome-local',
+  model: 'recommended',
+  models: [{ id: 'chrome-on-device', label: 'On-device (Chrome)', recommended: true }],
+  providers: [
+    {
+      providerId: 'chrome-local',
+      displayName: 'Chrome built-in',
+      cloud: false,
+      configured: true,
+      status: 'available',
+      message: 'Ready.',
+      backgroundExecution: false,
+      disclosureAccepted: true,
+    },
+  ],
+  autoOpenRelatedTabs: false,
+  allowedConfigurableActions: [],
+  lmsAccess: [{ origin: 'https://mylearningspace.wlu.ca/*', granted: true }],
+};
+
 const validResults = {
-  'model-status': { availability: 'available', explanation: 'Ready.' },
+  'ai-status': aiStatus,
   'build-checklist': { checklistId: '123e4567-e89b-12d3-a456-426614174000', items: 2 },
   'get-checklist': checklist,
   'compose-draft': {
@@ -34,8 +55,6 @@ const validResults = {
     unsupported: [],
   },
   'review-draft': { review, summary: 'The draft covers the requirement.' },
-  'prepare-workspace': { workflowId: 'workflow-1', reused: true },
-  'ask-about-page': { answer: 'A synthetic answer.', label: 'From this page.' },
   'toggle-requirement': { updated: true },
 } as const;
 
@@ -46,9 +65,9 @@ describe('worker result validation', () => {
     });
   }
 
-  it('rejects malformed model status results', () => {
-    expect(parseWorkerResult('model-status', { availability: 'broken', explanation: 'No.' })).toBeNull();
-    expect(parseWorkerResult('model-status', { availability: 'available', explanation: 'x'.repeat(1_001) })).toBeNull();
+  it('rejects malformed ai-status results', () => {
+    expect(parseWorkerResult('ai-status', { ...aiStatus, selected: 'unknown-provider' })).toBeNull();
+    expect(parseWorkerResult('ai-status', { ...aiStatus, providers: [{ ...aiStatus.providers[0], status: 4 }] })).toBeNull();
   });
 
   it('rejects malformed checklist results', () => {
@@ -61,14 +80,12 @@ describe('worker result validation', () => {
     expect(parseWorkerResult('compose-draft', { ...validResults['compose-draft'], reason: 'x'.repeat(1_001) })).toBeNull();
   });
 
-  it('rejects malformed review, workspace, chat, and toggle results', () => {
+  it('rejects malformed review and toggle results', () => {
     expect(parseWorkerResult('review-draft', { review, summary: 4 })).toBeNull();
-    expect(parseWorkerResult('prepare-workspace', { workflowId: null, reason: 'x'.repeat(1_001) })).toBeNull();
-    expect(parseWorkerResult('ask-about-page', { answer: 'x'.repeat(20_001) })).toBeNull();
     expect(parseWorkerResult('toggle-requirement', { updated: 'yes' })).toBeNull();
   });
 
   it('returns null for commands without a rendered result schema', () => {
-    expect(parseWorkerResult('close-workspace', { closed: 1, ungrouped: 0 })).toBeNull();
+    expect(parseWorkerResult('open-settings', { anything: true })).toBeNull();
   });
 });

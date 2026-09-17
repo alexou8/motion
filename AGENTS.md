@@ -39,10 +39,22 @@ change and why it was made, and stop there.
 
 - Motion assists with coursework generously: explaining requirements, building
   checklists, comparing drafts to a rubric, drafting for the student to edit,
-  and generating practice questions.
-- It never submits assessed work, acts within a graded attempt, or modifies
-  remote course data. That boundary lives in `src/core/policy` and is covered
-  by tests; do not weaken it without the user explicitly asking.
+  generating practice questions, and performing typed policy-allowed actions.
+- Consequences, not a blanket action ban, determine execution: automatic work
+  may proceed; configurable work requires the student's setting; consequential
+  work requires a fresh target-bound single-use approval; forbidden work is
+  refused. No always-allow setting exists for consequential or forbidden work.
+- Motion never acts inside a graded/timed/proctored attempt. Consequential
+  submissions, posts, uploads, and other remote-course mutations require a
+  fresh, target-bound, single-use approval; this boundary lives in
+  `src/core/policy` and is covered by tests.
+- Content is an observer plus typed actor. It may perform only validated,
+  handle-based actions authorized by the worker; it never receives selectors,
+  scripts or arbitrary URLs. Actor and policy defenses are both required.
+- Provider keys are session-only in `chrome.storage.session` with
+  `TRUSTED_CONTEXTS`; never persist, log, echo or fake-encrypt them. Cloud
+  requests use fixed selected-provider endpoints after disclosure and
+  just-in-time permission.
 - Never weaken, skip, or delete a test to make a build pass.
 - Never broaden Chrome permissions to work around a bug.
 - Never commit real course content, student names, identifiers, grades, cookies

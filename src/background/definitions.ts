@@ -1,4 +1,6 @@
 import type { WorkflowDefinition } from '@/core/workflows';
+import { actionTypeSchema, tierOf } from '@/core/policy';
+import type { StepPlan } from '@/core/workflows';
 
 /**
  * The workflows Motion can run.
@@ -66,4 +68,72 @@ export const scanDeadlines: WorkflowDefinition = {
   },
 };
 
-export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [prepareWorkspace, scanDeadlines];
+const AGENT_STEP_ID = /^t\d+-\d+$/;
+
+/**
+ * A model turn is deliberately data, not executable code. `guardToolCall`
+ * resolves every model reference before it gets here; this second validation
+ * prevents a corrupt persisted workflow or a caller bypassing that guard from
+ * turning the engine into an open-ended action dispatcher.
+ */
+function agentTurnPlan(params: Record<string, unknown>): StepPlan[] {
+  if (typeof params['sessionId'] !== 'string' || params['sessionId'].trim() === '') {
+    throw new Error('agent-turn requires a sessionId.');
+  }
+  if (!Number.isInteger(params['turnSeq']) || (params['turnSeq'] as number) < 0) {
+    throw new Error('agent-turn requires a non-negative integer turnSeq.');
+  }
+  if (!Array.isArray(params['steps'])) throw new Error('agent-turn requires a steps array.');
+
+  return params['steps'].map((candidate, index) => {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+      throw new Error(`agent-turn step ${index + 1} is not an object.`);
+    }
+    const step = candidate as Record<string, unknown>;
+    if (typeof step['id'] !== 'string' || !AGENT_STEP_ID.test(step['id'])) {
+      throw new Error(`agent-turn step ${index + 1} has an invalid stable id.`);
+    }
+    if (typeof step['title'] !== 'string' || step['title'].trim() === '') {
+      throw new Error(`agent-turn step ${step['id']} has no title.`);
+    }
+    const action = actionTypeSchema.safeParse(step['action']);
+    if (!action.success) throw new Error(`agent-turn step ${step['id']} has an unknown action.`);
+    if (
+      typeof step['input'] !== 'object' ||
+      step['input'] === null ||
+      Array.isArray(step['input'])
+    ) {
+      throw new Error(`agent-turn step ${step['id']} has invalid input.`);
+    }
+    const input = step['input'] as Record<string, unknown>;
+    if (
+      tierOf(action.data) === 'fresh-confirmation' &&
+      (typeof input['target'] !== 'string' ||
+        input['target'].trim() === '' ||
+        typeof input['effect'] !== 'string' ||
+        input['effect'].trim() === '')
+    ) {
+      throw new Error(`agent-turn step ${step['id']} needs a specific target and effect.`);
+    }
+    return {
+      id: step['id'],
+      title: step['title'],
+      action: action.data,
+      input,
+    };
+  });
+}
+
+export const agentTurn: WorkflowDefinition = {
+  id: 'agent-turn',
+  version: 1,
+  title: 'Agent turn',
+  description: 'Executes the concrete, policy-checked steps from one Motion agent turn.',
+  plan: agentTurnPlan,
+};
+
+export const WORKFLOW_DEFINITIONS: WorkflowDefinition[] = [
+  prepareWorkspace,
+  scanDeadlines,
+  agentTurn,
+];

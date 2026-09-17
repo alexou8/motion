@@ -10,7 +10,7 @@
 export const DB_NAME = 'motion';
 
 /** Bump when adding a migration step. Must equal `MIGRATIONS.length`. */
-export const DB_VERSION = 1;
+export const DB_VERSION = 3;
 
 export const STORE = {
   courses: 'courses',
@@ -21,6 +21,8 @@ export const STORE = {
   approvals: 'approvals',
   auditEvents: 'auditEvents',
   meta: 'meta',
+  sessions: 'sessions',
+  courseLinks: 'courseLinks',
 } as const;
 
 export type StoreName = (typeof STORE)[keyof typeof STORE];
@@ -90,6 +92,28 @@ export const MIGRATIONS: readonly MigrationStep[] = [
       ensureIndex(audit, 'byWorkflow', 'workflowId');
 
       ensureStore(db, STORE.meta, { keyPath: 'key' }, transaction);
+    },
+  },
+  {
+    version: 2,
+    describe: 'AgentSession + course graph: sessions, courseLinks stores.',
+    apply(db, transaction) {
+      const sessions = ensureStore(db, STORE.sessions, { keyPath: 'id' }, transaction);
+      ensureIndex(sessions, 'byStatus', 'status');
+      ensureIndex(sessions, 'byUpdatedAt', 'updatedAt');
+      ensureIndex(sessions, 'byCourse', 'courseId');
+
+      const courseLinks = ensureStore(db, STORE.courseLinks, { keyPath: 'id' }, transaction);
+      ensureIndex(courseLinks, 'byCourse', 'courseId');
+      ensureIndex(courseLinks, 'byTask', 'taskId');
+    },
+  },
+  {
+    version: 3,
+    describe: 'Sessions byTask index, for the canonical task-id migration (D-ID) to re-point session.taskId without a full scan.',
+    apply(db, transaction) {
+      const sessions = ensureStore(db, STORE.sessions, { keyPath: 'id' }, transaction);
+      ensureIndex(sessions, 'byTask', 'taskId');
     },
   },
 ];

@@ -23,15 +23,18 @@ stands on its own.
 
 A change that weakens any of these is rejected, however it is framed:
 
-- **Assessment boundary.** Motion never submits assessed work, acts inside a
-  graded attempt, or modifies remote course data. A restricted page yields no
-  content, no links, and no tab operations — including a tab inside Motion's
-  own group. No setting, consent or approval may route around
-  `src/core/policy/assessment.ts`. If a design makes a boundary look like a
-  setting, the design is wrong.
-- **Managing tabs is not acting in a page.** Motion may create, arrange and
-  close *its own* tabs. It never clicks, types or submits inside a page. The
-  content script reads and reports and holds no privileged capability.
+- **Consequence-based policy.** Automatic and configurable work may proceed
+  under the student's settings; consequential work needs a fresh,
+  target-bound, single-use approval; forbidden work is refused. There is no
+  always-allow setting for consequential or forbidden work.
+- **Assessment boundary.** Motion never acts inside a graded, timed, or
+  proctored attempt. Consequential submissions and other remote-course
+  mutations require a fresh, target-bound, single-use approval. The boundary
+  in `src/core/policy/assessment.ts` is absolute; no setting, consent, or
+  approval may route around it.
+- **Observer/actor split.** Content observes pages and may perform only
+  validated, handle-based actions authorized by the worker. It never receives
+  selectors, scripts, arbitrary URLs, or policy authority.
 - **Ownership is recorded, never inferred.** A tab is Motion's because Motion
   recorded opening it in this browser session — not because it sits in
   Motion's group. Tabs the student opened or moved are the student's.
