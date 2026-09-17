@@ -329,6 +329,18 @@ describe('scan-all-courses opt-in and busy lease (SOL-9)', () => {
     expect((chrome.tabs.sendMessage as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled();
   });
 
+  it('surfaces a blocker instead of failing silently when the resolved tab is not a supported LMS page', async () => {
+    activeTabUrl = 'https://example.com/not-learn';
+    const unsupportedKey = 'motion.discovery:https://example.com';
+
+    const result = await handleMessage({ type: 'scan-all-courses', tabId: ACTIVE_TAB });
+
+    expect(result).toMatchObject({ kind: 'error' });
+    const settings = localStore[unsupportedKey] as Record<string, unknown>;
+    expect(settings.blocker).toBe('Open Learn before scanning your courses.');
+    expect(settings.busy).toBe(false);
+  });
+
   it('drops a completed scan and releases its lease if discovery was opted out mid-flight', async () => {
     localStore[DISCOVERY_KEY] = { optedIn: true };
     (chrome.tabs.sendMessage as ReturnType<typeof vi.fn>).mockImplementation(async () => {

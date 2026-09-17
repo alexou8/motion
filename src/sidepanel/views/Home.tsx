@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { CourseTask } from '../../core/domain';
 import type { PanelState, SessionSummary } from '../../core/view/state';
 import { isStale } from '../../core/view/state';
-import { groupByWeek, taskNeedsReview, type DeadlineWeekGroup } from '../../core/view';
+import { groupByWeek, type DeadlineWeekGroup } from '../../core/view';
 import { Button, EmptyState, SourceLink, Track, TrackItem, type MarkerState } from '../../ui/components';
 import type { MotionCommand } from '../bridge';
 import { IdleView, PermissionNeededView, RestrictedView, SignedOutView, UnsupportedView } from './ConnectionViews';
@@ -34,10 +34,6 @@ function relativeDue(iso: string | null, now: Date): string {
   if (days > 1) return `Due in ${days} days`;
   if (days < -1) return `${Math.abs(days)} days overdue`;
   return `Due ${due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
-}
-
-function confidenceNeedsReview(confidence: CourseTask['due']['confidence']): boolean {
-  return confidence === 'medium' || confidence === 'low';
 }
 
 const MOVED_CUE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -106,7 +102,7 @@ function DeadlineItem({ task, bucket, now }: { task: CourseTask; bucket: 'today'
     <TrackItem state={taskMarker(task, bucket)} title={task.title}>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-ink-muted">
         <span>{relativeDue(task.due.iso, now)}</span>
-        {confidenceNeedsReview(task.due.confidence) || taskNeedsReview(task) ? <span className="font-medium text-attention">Needs review</span> : null}
+        {bucket === 'needsReview' ? <span className="font-medium text-attention">Needs review</span> : null}
         {movedFrom && isRecentlyMoved(task, now) ? <span className="rounded-full border border-danger px-2 py-0.5 text-xs font-medium text-danger">Moved</span> : null}
       </div>
       {movedFrom && isRecentlyMoved(task, now) ? (

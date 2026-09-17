@@ -27,6 +27,31 @@ const workerResponseSchema = z.union([
   z.object({ ok: z.literal(false), error: z.string().optional() }),
 ]);
 
+/**
+ * Resolves the LMS tab to act on, ignoring tabs that cannot host an LMS page
+ * (the panel's own `chrome-extension://` page, `chrome://` pages, etc.).
+ *
+ * The active tab is preferred when it qualifies. Side panels stay open across
+ * tab switches, and the panel document itself is briefly the "active" tab at
+ * click time from Chrome's perspective, so falling back to the most recently
+ * accessed qualifying tab in the window keeps "scan" and "build checklist"
+ * targeting the LMS tab the student actually meant.
+ */
+export async function resolveLmsTab(): Promise<chrome.tabs.Tab | null> {
+  const isQualifying = (tab: chrome.tabs.Tab) =>
+    typeof tab.url === 'string' && /^https?:\/\//.test(tab.url);
+
+  const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (active && isQualifying(active)) return active;
+
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  const qualifying = tabs.filter(isQualifying);
+  if (qualifying.length === 0) return null;
+
+  qualifying.sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0));
+  return qualifying[0] ?? null;
+}
+
 async function ask(message: unknown): Promise<unknown> {
   try {
     const response = await chrome.runtime.sendMessage(message);
@@ -80,12 +105,12 @@ async function toWorkerMessage(
     case 'delete-local-data':
       return command;
     case 'build-checklist': {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await resolveLmsTab();
       if (tab?.id === undefined) return null;
       return { type: 'build-checklist', tabId: tab.id, taskId: null };
     }
     case 'scan-all-courses': {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await resolveLmsTab();
       return tab?.id === undefined ? null : { type: 'scan-all-courses', tabId: tab.id };
     }
     case 'toggle-requirement':
@@ -337,7 +362,9 @@ export function createRuntimeBridge(): MotionBridge {
         case 'forget-provider-key':
         case 'set-ai-preferences':
         case 'accept-cloud-disclosure':
-        case 'delete-local-data': {
+        case 'delete-local-data':
+        case 'build-checklist':
+        case 'scan-all-courses': {
           const payload = await toWorkerMessage(command, state);
           if (payload) await ask(payload);
           await refresh();

@@ -458,7 +458,11 @@ try {
       discoveredTasks.some((task) => task.title === 'Discussion 1' && task.courseId === 'd2l:101'),
     `${discovered?.result?.discovery?.result?.courses ?? 0} course(s), ${discoveredTasks.length} task(s)`,
   );
-  await panel.getByRole('button', { name: 'Week' }).first().click();
+  // `exact` matters: the "What's due this week?" suggestion chip is also a
+  // button whose accessible name contains "Week", and role-name matching is
+  // substring-based, so a loose selector starts a chat session instead of
+  // switching the deadline view.
+  await panel.getByRole('button', { name: 'Week', exact: true }).first().click();
   const weekText = await panel.innerText('body');
   check('deadline week view shows this week and later without uncertainty labels', /This week/i.test(weekText) && /Later/i.test(weekText) && !/Needs review/i.test(weekText));
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });

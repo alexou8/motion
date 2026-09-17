@@ -268,7 +268,18 @@ export async function upsertExtractedRecords(incomingCourses: Course[], incoming
 
 async function scanAllCourses(tabId: number): Promise<unknown> {
   const tab = await chrome.tabs.get(tabId);
-  if (!tab.url || !resolveAdapter(tab.url)) return { kind: 'error', message: 'Open Learn before scanning your courses.' };
+  if (!tab.url || !resolveAdapter(tab.url)) {
+    const message = 'Open Learn before scanning your courses.';
+    if (tab.url) {
+      const origin = new URL(tab.url).origin;
+      const unsupportedKey = `motion.discovery:${origin}`;
+      const existing = (await chrome.storage.local.get(unsupportedKey))[unsupportedKey] as DiscoverySettings | undefined;
+      await chrome.storage.local.set({
+        [unsupportedKey]: { ...(existing ?? { optedIn: false }), busy: false, busyRunId: null, busyUntil: null, blocker: message },
+      });
+    }
+    return { kind: 'error', message };
+  }
   const stored = await chrome.storage.local.get(`motion.discovery:${new URL(tab.url).origin}`);
   const key = `motion.discovery:${new URL(tab.url).origin}`;
   const settings = stored[key] as DiscoverySettings | undefined;

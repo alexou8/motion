@@ -361,7 +361,14 @@ try {
   const dialog = panel.getByRole('dialog');
   check('approval dialog explains target/effect and has no always-allow option', await dialog.isVisible() && (await dialog.innerText()).includes('Effect:') && !(await dialog.innerText()).toLowerCase().includes('always')); 
   await panel.keyboard.press('Tab');
-  const approvalFocusTrapped = await panel.evaluate(() => Boolean(document.activeElement?.closest('[role="dialog"]')));
+  // `ConfirmDialog` is a native <dialog> opened with showModal(), so Chrome
+  // traps focus for us. It carries the dialog role implicitly and has no
+  // role attribute, so containment must be tested against the element, not
+  // against a `[role="dialog"]` attribute selector.
+  const approvalFocusTrapped = await panel.evaluate(() => {
+    const open = document.querySelector('dialog[open]');
+    return Boolean(open && document.activeElement && open.contains(document.activeElement));
+  });
   check('approval dialog keeps keyboard focus inside the dialog', approvalFocusTrapped);
   await panel.keyboard.press('Escape');
   await dialog.waitFor({ state: 'hidden', timeout: 3_000 });

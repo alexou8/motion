@@ -1,10 +1,23 @@
 # Browser verification
 
-Latest verification run: 2026-09-16. `npm run test:extension` passed 62/62,
-`npm run test:agent` passed 29/29 (provider stream/cancel skipped because
-headless Chromium did not grant the optional OpenAI host permission), and
-`npm run test:chrome` passed 5/5. Logs: `.motion-local/final-extension.log`,
-`.motion-local/final-agent.log`, and `.motion-local/final-chrome.log`.
+Latest verification run: 2026-09-17. `npm run test:extension` passed 67/67,
+`npm run test:agent` passed 32/32 (one check still SKIPs: the route-backed
+provider stream/cancel, because headless Chromium does not grant the optional
+OpenAI host permission from a scripted click), `npm run test:chrome` passed
+5/5, and `npm run test:provider-stream` passed 5/5 against the
+`dist-e2e-provider` build. Unit evidence from the same tree: `npm test` 958
+passed across 77 files, with typecheck, lint and build clean.
+
+Three defects were found and fixed by this run:
+
+- The side panel's `send()` switch had no case for `scan-all-courses` or
+  `build-checklist`, so both buttons did nothing when clicked.
+- Those commands resolved their target tab with a plain active-tab query,
+  which returns the panel's own `chrome-extension://` page when the panel is
+  focused. `resolveLmsTab()` now ignores tabs that cannot host an LMS page.
+- A scan refused for an unsupported tab returned an error that nothing
+  rendered, so the panel looked like it had hung. The refusal is now written
+  through as a visible blocker.
 
 Verification for VISION §31 was run against synthetic D2L fixtures only. The
 Playwright run used Chrome for Testing 153.0.8010.12; the branded run used
@@ -45,8 +58,10 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
   signal through SSE parsing and mapping provider aborts to a user-readable
   cancellation error. Focused provider tests pass.
 - Actor-channel authentication and consequential-capability forgery resistance
-  remain pending final source/browser verification; do not treat the prior
-  worker-issued-capability claim as browser evidence.
+  are now browser-verified: the `forged extension-page actor request is denied
+  before submit` check in `test/e2e/agent-session.mjs` opens a port from an
+  extension page, replays a submit against a real snapshot handle, and asserts
+  the port is disconnected with no reply and nothing submitted.
 - Rechecked restricted pages live immediately before snapshot/read operations,
   so a stale session observation cannot authorize page access.
 - Made chargeable provider POST failures outcome-unknown on network loss,
@@ -57,7 +72,7 @@ local run logs (`npm run test:extension`, `npm run test:agent`, and
 No Chrome permissions were broadened, no real LMS or provider endpoint was
 contacted, and the canary key was synthetic: `sk-test-CANARY1234567890`.
 
-Run evidence: `test:extension` 62/62, `test:agent` 29/29 (provider stream/cancel
-skipped because headless Chromium did not grant the optional host permission),
-and `test:chrome` 5/5. Logs are in `.motion-local/final-extension.log`,
-`.motion-local/final-agent.log`, and `.motion-local/final-chrome.log`.
+Run evidence (2026-09-17): `test:extension` 67/67, `test:agent` 32/32 (the
+route-backed provider stream/cancel check still SKIPs because headless
+Chromium does not grant the optional host permission), `test:chrome` 5/5, and
+`test:provider-stream` 5/5.
