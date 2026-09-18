@@ -21,9 +21,11 @@ ChatGPT.**
   (Copernicus, Styrene) are proprietary and do not ship; Motion uses **Source
   Serif 4** and **IBM Plex Sans**, both under the SIL Open Font License. Motion
   keeps its own name and mark — Claude-*like*, never Claude-branded.
-- **Use.** The toolbar icon opens the side panel and starts Motion's tab group
-  on the current tab. The panel is the main surface: a header, Motion's task
-  actions, a chat about the current page, and a composer at the bottom.
+- **Use.** The toolbar icon opens a small launcher popup. Its explicit
+  Start/Continue action opens the side panel and starts or resumes the selected
+  workspace; the toolbar click alone does not create an automatic group. The
+  panel is the main surface: a header, Motion's task actions, a chat about the
+  current page, and a composer at the bottom.
   Settings live on a dedicated full-page screen.
 
 This reverses one line of the earlier direction, which listed
@@ -100,15 +102,14 @@ party that a student is using Motion, every time the panel opens.
 
 ## The panel
 
-- **Header:** the mark and "Motion" in the serif; *New chat* and *Settings* as
-  icon buttons with accessible names. There is no history button: the
-  conversation is ephemeral (see below), and a button with nothing behind it is
-  a defect, not a placeholder.
+- **Header:** the mark and "Motion" in the serif, with an accessible Settings
+  control. The home view presents the current page, suggestions and a composer;
+  an explicit **Sessions** control returns to the durable session list.
 - **Body:** the connection state first, and honestly — idle, unsupported,
   permission needed, signed out and restricted each keep their own view. On a
-  page that carries coursework, a row of **task buttons** (Workspace, Checklist,
-  Draft review) opens Motion's existing views; below them, the background-work
-  track; then the conversation.
+  page that carries coursework, the home view offers contextual suggestions;
+  an active session presents Now, Needs you, the conversation, plan, activity,
+  workspace, sources and artifacts.
 - **Composer:** pinned to the bottom. Enter sends, Shift+Enter adds a line.
   Where the chat cannot work, the composer is disabled and says why in a line
   above it — beside a graded attempt, on a page Motion cannot read, or when
@@ -116,13 +117,16 @@ party that a student is using Motion, every time the panel opens.
 
 ## The chat
 
-The chat answers questions about the page in front of the student, using
-Chrome's on-device model (ADR 0004) — nothing leaves the machine. Which hosted
-model a student may bring is still an open product decision
-(`docs/development/ai-account-handoff.md`, Track 2).
+The chat answers questions about the page in front of the student using the
+selected provider. Chrome's on-device model stays local when available; BYOK
+cloud mode sends only the disclosed, bounded turn context directly to the
+selected provider after permission. Provider selection and session-only key
+handling are defined by ADR 0005.
 
-- It is **ephemeral**: held in the panel's memory, forgotten on *New chat* or
-  when the panel closes, stored nowhere.
+- It is scoped to the active AgentSession and persists locally with that session
+  in IndexedDB, so returning to a session can show its conversation. It is not
+  a cloud transcript or a cross-session history; provider requests follow the
+  selected provider's disclosed path.
 - Every answer carries a label saying it was generated and should be checked
   against the page, and names the page it was about, so an old answer is not
   read as describing a new page.

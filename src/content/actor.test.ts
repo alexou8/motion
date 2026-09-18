@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 describe('content actor', () => {
   beforeEach(() => {
     document.body.innerHTML = '';
+    document.getElementById('motion-presence-root')?.remove();
+    document.getElementById('motion-presence-live')?.remove();
     vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/home'));
   });
 
@@ -128,14 +130,14 @@ describe('content actor', () => {
     expect(snapshot.restricted).toBeUndefined();
   });
 
-  it('allows scrollTo and focus using a handle from before the page became restricted', async () => {
+  it('refuses scrollTo and focus using a handle from before the page became restricted', async () => {
     document.body.innerHTML = '<button id="q">Question 1</button>';
     const { buildSnapshot, act } = await loadActor();
     const snapshot = buildSnapshot();
     const handle = snapshot.elements[0]!.handle;
     vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/lms/quizzing/user/attempt/201'));
-    expect(act({ type: 'scrollTo', snapshotId: snapshot.snapshotId, handle })).toMatchObject({ ok: true });
-    expect(act({ type: 'focus', snapshotId: snapshot.snapshotId, handle })).toMatchObject({ ok: true });
+    expect(act({ type: 'scrollTo', snapshotId: snapshot.snapshotId, handle })).toMatchObject({ ok: false, error: 'refused-restricted-context' });
+    expect(act({ type: 'focus', snapshotId: snapshot.snapshotId, handle })).toMatchObject({ ok: false, error: 'refused-restricted-context' });
   });
 
   it('treats page text as a label only — an injected instruction never becomes a command', async () => {
@@ -195,5 +197,49 @@ describe('content actor', () => {
     const result = act({ type: 'toggle', snapshotId: snapshot.snapshotId, handle, checked: true });
     expect(result).toMatchObject({ ok: true, evidence: { before: 'false', after: 'true' } });
     expect((document.getElementById('agree') as HTMLInputElement).checked).toBe(true);
+  });
+
+  it('shows the isolated presence cue before a permitted click, but not when disabled', async () => {
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => window.setTimeout(() => callback(0), 0));
+    document.body.innerHTML = '<button id="go">Go</button><button id="disabled" disabled>Disabled</button>';
+    const { actWithPresence, buildSnapshot } = await loadActor();
+    const snapshot = buildSnapshot();
+    const go = snapshot.elements.find((element) => element.label === 'Go')!;
+    const disabled = snapshot.elements.find((element) => element.label === 'Disabled')!;
+    let presenceWasVisibleAtClick = false;
+    document.getElementById('go')!.addEventListener('click', () => {
+      presenceWasVisibleAtClick = document.getElementById('motion-presence-root') !== null;
+    });
+
+    await expect(actWithPresence({ type: 'click', snapshotId: snapshot.snapshotId, handle: go.handle })).resolves.toMatchObject({ ok: true });
+    expect(presenceWasVisibleAtClick).toBe(true);
+    await expect(actWithPresence({ type: 'click', snapshotId: snapshot.snapshotId, handle: disabled.handle })).resolves.toMatchObject({ ok: false, error: 'disabled' });
+  });
+
+  it('does not create a presence layer when the student turns the cue off', async () => {
+    document.body.innerHTML = '<button id="go">Go</button>';
+    const { actWithPresence, buildSnapshot } = await loadActor();
+    const snapshot = buildSnapshot();
+    let clicks = 0;
+    document.getElementById('go')!.addEventListener('click', () => { clicks += 1; });
+
+    await expect(actWithPresence({ type: 'click', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle }, {}, false)).resolves.toMatchObject({ ok: true });
+    expect(clicks).toBe(1);
+    expect(document.getElementById('motion-presence-root')).toBeNull();
+  });
+
+  it('cleans up the presence layer after a rendering error', async () => {
+    vi.useFakeTimers();
+    document.body.innerHTML = '<button id="go">Go</button>';
+    const target = document.getElementById('go')!;
+    target.getBoundingClientRect = () => { throw new Error('layout unavailable'); };
+    const { actWithPresence, buildSnapshot } = await loadActor();
+    const snapshot = buildSnapshot();
+
+    await expect(actWithPresence({ type: 'click', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle })).rejects.toThrow('layout unavailable');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(document.getElementById('motion-presence-root')).toBeNull();
+    expect(document.getElementById('motion-presence-live')).toBeNull();
+    vi.useRealTimers();
   });
 });

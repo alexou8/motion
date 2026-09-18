@@ -76,3 +76,67 @@ Run evidence (2026-09-17): `test:extension` 67/67, `test:agent` 32/32 (the
 route-backed provider stream/cancel check still SKIPs because headless
 Chromium does not grant the optional host permission), `test:chrome` 5/5, and
 `test:provider-stream` 5/5.
+
+## Integrated presence/popup run (2026-09-17)
+
+The integrated tree was rebuilt after the popup, presence, and side-panel
+changes were ready. Synthetic-only browser evidence, run serially in one
+exclusive browser slot:
+
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+- `npm test`: 976/977 tests passed across 80 files; one existing owner test
+  failed in `src/background/capabilities.test.ts` because it still expects the
+  old actor call shape. The actual call now includes the typed `{ type, handle,
+  snapshotId }` payload and approval flags. The failure was not hidden or
+  changed here.
+- `npm run build`: passed, including service-worker bundle verification.
+- `npm run test:extension`: 67/67 passed; no uncaught panel or worker errors.
+- `npm run test:agent`: 35/35 passed. This includes workspace metadata with no
+  raw tab IDs, the truthful no-Focus-control state when only the current tab is
+  exposed, Release cleanup, actor fill/approval/replay/restart, key redaction,
+  and 200% zoom. The optional-host provider stream/cancel check remains a
+  documented skip in this headless run.
+- `npm run test:chrome`: 5/5 passed in branded Chrome 152.0.7977.83.
+- `npm run build:e2e-provider-hosts`: passed.
+- `npm run test:provider-stream`: 5/5 passed against the local synthetic SSE
+  server; deltas accumulated and Stop aborted the request.
+
+The popup launcher and presence unit suites are included in `npm test`; the
+real-browser extension checks above verify the resulting panel/workspace flow.
+The toolbar gesture itself is not claimed as automated: browser checks open
+the shipped extension documents directly, while toolbar invocation remains a
+manual Chrome check. Closed-shadow presence internals are likewise covered by
+unit tests; the browser run asserts the surrounding actor outcome and has no
+real LMS or provider traffic.
+
+Visual QA snapshots from the integrated unpacked build were inspected locally:
+`.motion-local/integrated-panel.png` (Motion header, mark, settings affordance,
+unsupported-page guidance) and `.motion-local/integrated-popup.png` (canonical
+mark, supported launcher hierarchy, Open Motion and Settings controls). The
+standalone visual probe uses direct extension URLs and therefore is not toolbar
+gesture evidence.
+
+## Final frozen-source verification (2026-09-18)
+
+- `npm run typecheck`: passed.
+- `npm run lint`: passed.
+- `npm test`: 997/997 tests passed across 81 files (jsdom emits the existing
+  non-fatal `HTMLFormElement.prototype.requestSubmit` diagnostic).
+- `npm run build`: passed; service-worker DOM-global verification passed.
+- `npm run test:extension`: 68/68 checks passed.
+- `npm run test:agent`: 42/42 checks passed; the optional provider-host check
+  remains an expected headless skip.
+- `npm run test:chrome`: 5/5 checks passed in branded Chrome 152.0.7977.83.
+- `npm run build:e2e-provider-hosts` and `npm run test:provider-stream`: passed;
+  provider stream suite 5/5.
+- `npm run test:popup-presence`: 5/5 checks passed: a real popup button
+  gesture, no popup loading loop, typed synthetic actor snapshot, restricted
+  attempt refusal, and synthetic-only data.
+
+The authenticated actor path now has browser evidence for fill, click pulse,
+scroll-to, and focus-element. A read-only CDP observer inspected the closed
+shadow tree and verified target geometry, bounded redacted previews, cleanup,
+reduced-motion and pointer-off behavior, with restricted-route refusal. The
+physical toolbar invocation remains a manual Chrome check; popup button handoff
+is covered by `test:popup-presence`.

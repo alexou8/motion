@@ -57,7 +57,7 @@ export const sessionTabSchema = z.object({
   type: z.literal('session-tab'),
   sessionId: z.string().min(1),
   tabId: z.number().int().nonnegative(),
-  op: z.enum(['adopt', 'release']),
+  op: z.enum(['adopt', 'release', 'focus']),
 });
 
 /** Provider diagnostics for settings and the session header. */
@@ -85,6 +85,7 @@ export const setAiPreferencesSchema = z.object({
   providerId: z.enum(PROVIDER_IDS).optional(),
   model: z.string().min(1).max(100).optional(),
   autoOpenRelatedTabs: z.boolean().optional(),
+  showOnPagePointer: z.boolean().optional(),
   allowedConfigurableActions: z.array(z.enum(CONFIGURABLE_ACTION_IDS)).optional(),
 });
 
@@ -156,6 +157,7 @@ export const aiStatusResultSchema = z.object({
   models: z.array(z.object({ id: z.string(), label: z.string(), recommended: z.boolean() })),
   providers: z.array(providerDiagnosticSchema),
   autoOpenRelatedTabs: z.boolean(),
+  showOnPagePointer: z.boolean(),
   allowedConfigurableActions: z.array(z.enum(CONFIGURABLE_ACTION_IDS)),
   lmsAccess: z.array(z.object({ origin: z.string(), granted: z.boolean() })),
 });

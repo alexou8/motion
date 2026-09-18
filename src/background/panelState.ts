@@ -2,7 +2,7 @@ import {
   courseSchema,
   courseTaskSchema,
 } from '@/core/domain';
-import { deadlineBuckets, EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
+import { deadlineBuckets, EMPTY_PANEL_STATE, type PanelState, type WorkspaceTabSummary } from '@/core/view';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
@@ -11,6 +11,7 @@ import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { resolveAdapter } from '@/core/adapters';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
+import { ChromeTabs } from '@/platform/tabs';
 import { DEFAULT_AI_PREFERENCES } from '@/core/ai/preferences';
 import { providerDisplayNames, resolveSessionProvider } from './providers';
 import { recoverWorkflows } from './recovery';
@@ -38,6 +39,31 @@ async function courseForUrl(url: string | null | undefined) {
   const db = await openDatabase();
   const courses = await new Repository(db, STORE.courses, courseSchema).all();
   return courses.records.find((course) => course.externalId === externalId) ?? null;
+}
+
+async function workspaceTabsFor(
+  session: PanelState['activeSession'],
+  activeTabId: number | undefined,
+): Promise<WorkspaceTabSummary[]> {
+  if (!session) return [];
+  const tabs = new ChromeTabs();
+  const ids = [
+    ...session.workspace.ownedTabIds.map((tabId) => ({ tabId, ownership: 'motion' as const })),
+    ...session.workspace.adoptedTabIds.map((tabId) => ({ tabId, ownership: 'student' as const })),
+  ].filter(({ tabId }) => !session.workspace.releasedTabIds.includes(tabId));
+  return (await Promise.all(ids.map(async ({ tabId, ownership }) => {
+    const live = await tabs.get(tabId);
+    if (!live) return null;
+    let host: string | null = null;
+    try { host = new URL(live.url).hostname; } catch { /* title remains useful */ }
+    return {
+      tabId,
+      title: live.title.trim() || host || 'Untitled page',
+      host,
+      ownership,
+      current: tabId === activeTabId,
+    };
+  }))).flatMap((tab) => tab ? [tab] : []);
 }
 
 /** Builds the whole panel view from durable state; no panel-local orchestration. */
@@ -116,6 +142,7 @@ export async function buildPanelState(): Promise<PanelState> {
         currentStepTitle: session.plan.steps.find((step) => step.id === session.plan.currentStepId)?.title ?? null,
       })),
     activeSession,
+    workspaceTabs: await workspaceTabsFor(activeSession, activeTab?.id),
     deadlines: {
       today: buckets.today.map((task) => task.id),
       upcoming: buckets.upcoming.map((task) => task.id),

@@ -349,6 +349,39 @@ describe('capability boundaries', () => {
     expect(act).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['scroll-to', { type: 'scrollTo', snapshotId: 'snap-1', handle: 'e1' }],
+    ['focus-element', { type: 'focus', snapshotId: 'snap-1', handle: 'e1' }],
+  ] as const)('sends %s only as a typed, snapshot-bound actor request', async (action, request) => {
+    await seedSession({
+      workspace: { groupId: 100, groupTitle: 'Motion · CP363 · A2', sessionKey: 'session-1', ownedTabIds: [10], adoptedTabIds: [], releasedTabIds: [] },
+    });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find((item) => item.action === action)!;
+    const actorContext = context();
+    actorContext.step.action = action;
+    actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1' };
+
+    await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'done' });
+    expect(act).toHaveBeenCalledWith(10, request, false, true);
+  });
+
+  it('refuses a snapshot-bound navigation aid on a restricted assessment without acting', async () => {
+    await seedSession({
+      workspace: { groupId: 100, groupTitle: 'Motion · CP363 · A2', sessionKey: 'session-1', ownedTabIds: [10], adoptedTabIds: [], releasedTabIds: [] },
+    });
+    sessionStore.set('observation:10', { restricted: true });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find((item) => item.action === 'scroll-to')!;
+    const actorContext = context();
+    actorContext.step.action = 'scroll-to';
+    actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1' };
+
+    await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'blocked' });
+    expect(act).not.toHaveBeenCalled();
+    sessionStore.delete('observation:10');
+  });
+
   it('marks consequential actor calls only after a fresh approval was consumed', async () => {
     await seedSession({
       workspace: {
@@ -369,7 +402,7 @@ describe('capability boundaries', () => {
     actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1' };
     actorContext.step.consumedApprovalId = 'fresh-approval';
     await capability.execute(actorContext);
-    expect(act).toHaveBeenCalledWith(10, expect.objectContaining({ type: 'click' }), true);
+    expect(act).toHaveBeenCalledWith(10, expect.objectContaining({ type: 'click' }), true, true);
   });
 
   it('rechecks workflow ownership immediately before an actor effect', async () => {

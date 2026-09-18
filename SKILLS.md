@@ -16,16 +16,16 @@ skill has not been exercised yet.
 | `frontend-design` | `anthropics/skills` | Establish an intentional visual direction, avoid templated defaults | Rejecting the generated teal/orange + Plus Jakarta Sans direction; the track motif; IBM Plex choice — see `docs/DESIGN.md` |
 | `ui-ux-pro-max` | `nextlevelbuilder/ui-ux-pro-max-skill` | Product-specific UX and design-system generation | Ran `--design-system`; output was landing-page shaped and rejected per the skill's own query contract. Checklist retained |
 | `design-system` | `nextlevelbuilder/ui-ux-pro-max-skill` | Token architecture | Three-layer primitive → semantic → component tokens in `src/ui/tokens.css` |
-| `ui-styling` | `nextlevelbuilder/ui-ux-pro-max-skill` | Keep implementation consistent with the tokens | Pending — panel components not yet built |
+| `ui-styling` | `nextlevelbuilder/ui-ux-pro-max-skill` | Keep implementation consistent with the tokens | Panel and popup surfaces use the existing tokens |
 | `brand` | `nextlevelbuilder/ui-ux-pro-max-skill` | A restrained identity, not a generic AI-product look | Voice rules for UI copy and docs; single-accent discipline |
-| `web-design-guidelines` | `vercel-labs/agent-skills` | Interface quality audit | Pending — needs rendered UI |
-| `vercel-react-best-practices` | `vercel-labs/agent-skills` | React structure, rendering, bundle size | Pending — panel not yet built |
-| `vercel-composition-patterns` | `vercel-labs/agent-skills` | Composable component APIs, no boolean-prop sprawl | Pending — panel not yet built |
+| `web-design-guidelines` | `vercel-labs/agent-skills` | Interface quality audit | Pending — browser verification remains separate |
+| `vercel-react-best-practices` | `vercel-labs/agent-skills` | React structure, rendering, bundle size | Applied to the panel and popup component structure |
+| `vercel-composition-patterns` | `vercel-labs/agent-skills` | Composable component APIs, no boolean-prop sprawl | Applied to panel and popup action boundaries |
 | `accessibility` | `addyosmani/web-quality-skills` | WCAG 2.2 audit | Split of `rule` vs `edge` tokens after a failed 1.4.11 check; native `<dialog>` for approvals; contrast enforced by test |
 | `performance` | `addyosmani/web-quality-skills` | Startup, content-script overhead, asset cost | Font subsetting and variable-file dedup (84KB vs 166KB) |
 | `baseline-ui` | `ibelick/ui-skills` | Prevent generated-interface mistakes | Fixed z-scale; no gradients; `tabular-nums` for data; animation limited to compositor properties |
-| `fixing-motion-performance` | `ibelick/ui-skills` | Compositor-friendly, reduced-motion-safe animation | Pending — no animation implemented yet |
-| `webapp-testing` | `anthropics/skills` | Browser-level validation | Pending — needs a build to drive |
+| `fixing-motion-performance` | `ibelick/ui-skills` | Compositor-friendly, reduced-motion-safe animation | Applied to bounded presence animation; rendered verification remains pending |
+| `webapp-testing` | `anthropics/skills` | Browser-level validation | Browser verification is pending; native owner will update exact evidence |
 | `find-skills` | `vercel-labs/skills` | Discover genuine gaps | Used to find `chrome-extensions`; security-skill candidates evaluated and rejected |
 
 ## Deliberately not installed

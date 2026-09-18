@@ -95,14 +95,19 @@ describe('content-script request authentication', () => {
   });
 
   function makePort(sender: unknown) {
-    return {
+    let messageListener: ((raw: unknown) => void) | undefined;
+    let disconnectListener: (() => void) | undefined;
+    const port = {
       name: 'motion-actor',
       sender: sender as chrome.runtime.MessageSender,
       disconnect: vi.fn(),
       postMessage: vi.fn(),
-      onMessage: { addListener: vi.fn(), removeListener: vi.fn(), hasListener: vi.fn() },
-      onDisconnect: { addListener: vi.fn(), removeListener: vi.fn(), hasListener: vi.fn() },
-    } as unknown as chrome.runtime.Port;
+      onMessage: { addListener: vi.fn((candidate: (raw: unknown) => void) => { messageListener = candidate; }), removeListener: vi.fn(), hasListener: vi.fn() },
+      onDisconnect: { addListener: vi.fn((candidate: () => void) => { disconnectListener = candidate; }), removeListener: vi.fn(), hasListener: vi.fn() },
+      emitMessage(raw: unknown) { messageListener?.(raw); },
+      emitDisconnect() { disconnectListener?.(); },
+    } as unknown as chrome.runtime.Port & { emitMessage(raw: unknown): void; emitDisconnect(): void };
+    return port;
   }
 
   it.each([
@@ -129,5 +134,46 @@ describe('content-script request authentication', () => {
 
     expect(port.disconnect).not.toHaveBeenCalled();
     expect(port.onMessage.addListener).toHaveBeenCalledTimes(1);
+    expect(port.onDisconnect.addListener).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels a suspended visual action when the authenticated worker port disconnects', async () => {
+    const queuedFrames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', vi.fn((callback: FrameRequestCallback) => {
+      queuedFrames.push(callback);
+      return queuedFrames.length;
+    }));
+    document.body.innerHTML = '<button id="go">Go</button>';
+    let clicks = 0;
+    document.getElementById('go')!.addEventListener('click', () => { clicks += 1; });
+    await loadListener();
+    const port = makePort({ id: 'motion-extension-id', url: 'chrome-extension://motion-extension-id/src/background/service-worker.js' });
+    connectListener(port);
+    const respond = vi.fn();
+    listener({ type: 'motion:snapshot' }, { id: 'motion-extension-id' }, respond);
+    const snapshot = respond.mock.calls[0]![0] as { snapshotId: string; elements: Array<{ handle: string }> };
+
+    port.emitMessage({
+      type: 'motion:act',
+      requestId: '00000000-0000-4000-8000-000000000001',
+      request: {
+        type: 'click',
+        snapshotId: snapshot.snapshotId,
+        handle: snapshot.elements[0]!.handle,
+        authorization: { nonce: '00000000-0000-4000-8000-000000000002' },
+        showOnPagePointer: true,
+      },
+    });
+    await Promise.resolve();
+    expect(document.getElementById('motion-presence-root')).not.toBeNull();
+
+    port.emitDisconnect();
+    for (const frame of queuedFrames) frame(0);
+    await vi.advanceTimersByTimeAsync(200);
+    await Promise.resolve();
+
+    expect(clicks).toBe(0);
+    expect(port.postMessage).not.toHaveBeenCalled();
+    expect(document.getElementById('motion-presence-root')).toBeNull();
   });
 });

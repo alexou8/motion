@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
+import { observePresence } from './presence-browser-observer.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const distPath = resolve(here, '../../dist');
@@ -218,6 +219,7 @@ try {
     if (url.pathname === '/d2l/lms/dropbox/user/folders_list.d2l') body = assignmentList;
     if (url.pathname === '/d2l/lms/dropbox/user/folder_submit_files.d2l') body = assignment;
     if (url.pathname === '/d2l/home/999999') body = fixture('course-home');
+    if (url.pathname.startsWith('/d2l/lms/quizzing/user/attempt/')) body = assignment;
     return route.fulfill({ status: body.includes('Not found') ? 404 : 200, contentType: 'text/html', body });
   });
 
@@ -294,8 +296,28 @@ try {
   });
   check('student and workspace tabs retain explicit ownership records', Boolean(adopted) && !adopted.workspace.ownedTabIds.includes(studentTabId));
 
+  const workspaceUi = await waitFor(async () => {
+    const tabs = (await state())?.workspaceTabs ?? [];
+    return tabs.length > 0 ? tabs : null;
+  });
+  const workspaceText = await panel.innerText('body');
+  check('workspace renders human metadata without raw tab ids', workspaceUi?.every((tab) => tab.title && tab.ownership && !workspaceText.includes(`#${tab.tabId}`)) && /Motion tab|Your tab/.test(workspaceText), `${workspaceUi?.length ?? 0} workspace row(s)`);
+  const focusButton = panel.getByRole('button', { name: 'Focus' }).first();
+  if (await focusButton.count()) {
+    const focusedTab = workspaceUi?.find((tab) => !tab.current);
+    await focusButton.click();
+    const focusedState = await waitFor(async () => {
+      const tabs = (await state())?.workspaceTabs ?? [];
+      return tabs.some((tab) => tab.current && tab.tabId === focusedTab?.tabId) ? tabs : null;
+    });
+    check('workspace Focus targets a non-current workspace tab', Boolean(focusedTab) && Boolean(focusedState));
+  } else {
+    check('workspace Focus is absent when all live workspace tabs are current', !workspaceUi?.some((tab) => !tab.current), 'no non-current workspace tab was exposed');
+  }
+
   const actorTabId = studentTabId;
   const actorPage = studentPage;
+  const presenceObserver = await observePresence(context, actorPage);
 
   // Snapshot through the real content actor, then seed a normal paused
   // agent-turn workflow so the worker policy and approval engine are exercised.
@@ -343,14 +365,81 @@ try {
   }), { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: submit?.handle ?? '' });
   check('forged extension-page actor request is denied before submit', forgedActorResult?.disconnected === true && forgedActorResult?.replies === 0 && (await actorPage.locator('#form-result').textContent()) !== 'SUBMITTED');
 
-  await seedWorkflow({ id: 'e2e-fill-workflow', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill the draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', value: 'student draft', target: 'Draft field' } });
+  const fillValue = 'A'.repeat(90);
+  const intendedFieldRect = await actorPage.locator('#draft-field').evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+  });
+  await seedWorkflow({ id: 'e2e-fill-workflow', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill the draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', value: fillValue, target: 'Draft field' } });
   await send({ type: 'workflow-command', workflowId: 'e2e-fill-workflow', command: 'resume' });
   await refreshPanel();
   const fillApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'fill-form-field'));
   check('configurable actor action waits for approval', Boolean(fillApproval) && (await actorPage.locator('#draft-field').inputValue()) === '', fillApproval?.summary ?? 'no approval');
-  await panel.getByRole('button', { name: 'Allow once' }).click();
-  await waitFor(async () => (await actorPage.locator('#draft-field').inputValue()) === 'student draft', 10_000);
-  check('approved actor fills the synthetic workspace field', (await actorPage.locator('#draft-field').inputValue()) === 'student draft');
+  const fillPresence = await presenceObserver.during(() => panel.getByRole('button', { name: 'Allow once' }).click());
+  await waitFor(async () => (await actorPage.locator('#draft-field').inputValue()) === fillValue, 10_000);
+  const fillHalo = fillPresence?.layers.find((layer) => layer.className.includes('__halo'));
+  const fillPointer = fillPresence?.layers.find((layer) => layer.className.includes('__pointer'));
+  const fillLabel = fillPresence?.layers.find((layer) => layer.className.includes('__label'));
+  check('approved fill exposes a closed-shadow target cue before the real field changes',
+    Boolean(fillPresence) && /pointer-events:\s*none/.test(fillPresence.host.style ?? '') &&
+      Math.abs((fillHalo?.left ?? Number.NaN) - intendedFieldRect.left) < 2 &&
+      Math.abs((fillHalo?.top ?? Number.NaN) - intendedFieldRect.top) < 2 &&
+      Math.abs((fillPointer?.left ?? Number.NaN) - (intendedFieldRect.left + intendedFieldRect.width / 2 + 7)) < 2 &&
+      /Typing: A{71}…/.test(fillLabel?.text ?? '') && !(fillLabel?.text ?? '').includes(fillValue),
+    JSON.stringify({ host: fillPresence?.host, halo: fillHalo, pointer: fillPointer, label: fillLabel }));
+  check('approved actor fills the synthetic workspace field', (await actorPage.locator('#draft-field').inputValue()) === fillValue);
+
+  await actorPage.waitForTimeout(650);
+  check('presence cleans up after an authorized action completes', (await presenceObserver.snapshot()) === null);
+
+  // Automatic scroll/focus tools use the same typed snapshot handle and actor
+  // channel. Make the synthetic page deliberately long so the scroll outcome
+  // is observable rather than inferred from a role match.
+  await actorPage.evaluate(() => {
+    document.body.style.minHeight = '2400px';
+    const target = document.querySelector('#draft-field');
+    if (target instanceof HTMLElement) target.style.marginTop = '1800px';
+    window.scrollTo(0, 0);
+  });
+  const scrollStart = await actorPage.evaluate(() => window.scrollY);
+  await seedWorkflow({ id: 'e2e-scroll-workflow', sessionId: createdSession.id, action: 'scroll-to', title: 'Find the draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', target: 'Draft field' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-scroll-workflow', command: 'resume' });
+  const scrollPresence = await presenceObserver.during(async () => waitFor(async () => {
+    const y = await actorPage.evaluate(() => window.scrollY);
+    return y > scrollStart ? y : null;
+  }));
+  check('approved scroll-to moves the synthetic target into view with presence feedback',
+    Boolean(scrollPresence) && (await actorPage.evaluate(() => window.scrollY)) > scrollStart);
+  await seedWorkflow({ id: 'e2e-focus-workflow', sessionId: createdSession.id, action: 'focus-element', title: 'Focus the draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', target: 'Draft field' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-focus-workflow', command: 'resume' });
+  const focusPresence = await presenceObserver.during(() => waitFor(async () => {
+    const focused = await actorPage.evaluate(() => document.activeElement?.id === 'draft-field');
+    return focused ? true : null;
+  }));
+  check('approved focus-element focuses the intended synthetic target with presence feedback',
+    Boolean(focusPresence) && (await actorPage.evaluate(() => document.activeElement?.id === 'draft-field')));
+
+  await send({ type: 'set-ai-preferences', showOnPagePointer: false });
+  await seedWorkflow({ id: 'e2e-no-presence-fill', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill without pointer', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', value: 'pointer disabled', target: 'Draft field' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-no-presence-fill', command: 'resume' });
+  await refreshPanel();
+  const disabledApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'fill-form-field' && approval.status === 'pending'));
+  const disabledPresence = await presenceObserver.during(() => send({ type: 'decide-approval', approvalId: disabledApproval?.id, approved: true }), 700);
+  await waitFor(async () => (await actorPage.locator('#draft-field').inputValue()) === 'pointer disabled', 10_000);
+  check('turning off the trusted on-page pointer removes only the cue, not the approved fill', disabledPresence === null && (await actorPage.locator('#draft-field').inputValue()) === 'pointer disabled');
+  await send({ type: 'set-ai-preferences', showOnPagePointer: true });
+
+  await actorPage.emulateMedia({ reducedMotion: 'reduce' });
+  await seedWorkflow({ id: 'e2e-reduced-motion-fill', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill with reduced motion', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: field?.handle ?? '', value: 'reduced motion', target: 'Draft field' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-reduced-motion-fill', command: 'resume' });
+  await refreshPanel();
+  const reducedApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'fill-form-field' && approval.status === 'pending'));
+  const reducedPresence = await presenceObserver.during(() => send({ type: 'decide-approval', approvalId: reducedApproval?.id, approved: true }));
+  await waitFor(async () => (await actorPage.locator('#draft-field').inputValue()) === 'reduced motion', 10_000);
+  check('reduced-motion feedback has no animated pointer travel',
+    Boolean(reducedPresence?.layers.some((layer) => layer.className === 'motion-presence')) &&
+      !reducedPresence?.layers.some((layer) => layer.className.includes('--animated')));
+  await actorPage.emulateMedia({ reducedMotion: 'no-preference' });
 
   await seedWorkflow({ id: 'e2e-submit-workflow', sessionId: createdSession.id, action: 'submit-assignment', title: 'Submit assignment', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: submit?.handle ?? '', target: 'Synthetic Example Assignment', effect: 'This will create a final LMS submission.' } });
   await send({ type: 'workflow-command', workflowId: 'e2e-submit-workflow', command: 'resume' });
@@ -375,9 +464,11 @@ try {
   const focusRestored = await panel.evaluate(() => document.activeElement instanceof HTMLElement && /Review|Allow once/.test(document.activeElement.innerText));
   check('Escape cancels approval and restores focus to its action', focusRestored);
   await panel.getByRole('button', { name: 'Review' }).click();
-  await dialog.getByRole('button', { name: 'Confirm' }).click();
+  const submitPresence = await presenceObserver.during(() => dialog.getByRole('button', { name: 'Confirm' }).click());
   await waitFor(async () => (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED', 10_000);
-  check('confirmed synthetic Submit is the only path that submits', (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED');
+  check('confirmed synthetic Submit is the only path that submits and shows a closed-shadow click pulse',
+    Boolean(submitPresence?.layers.some((layer) => layer.className.includes('__pulse'))) &&
+      (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED');
   const approvalReplay = await send({ type: 'decide-approval', approvalId: submitApproval.id, approved: true });
   check('stale or replayed approval cannot execute again', approvalReplay?.result === undefined || approvalReplay?.result === null || (await actorPage.locator('#form-result').textContent()) === 'SUBMITTED', 'single-use approval remains consumed');
 
@@ -429,6 +520,11 @@ try {
   await refreshPanel();
   const injectionApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'submit-assignment'), 20_000);
   check('prompt-injection response cannot submit or navigate without student approval', Boolean(injectionApproval) && (await actorPage.locator('#form-result').textContent()) !== 'SUBMITTED' && new URL(actorPage.url()).pathname === '/d2l/lms/dropbox/user/folder_submit_files.d2l');
+
+  await actorPage.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'domcontentloaded' });
+  const restrictedSnapshot = await waitFor(async () => panel.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'motion:snapshot' }).catch(() => null), actorTabId));
+  check('restricted synthetic attempt exposes neither actor targets nor a presence overlay after navigation',
+    restrictedSnapshot?.restricted === true && (restrictedSnapshot.elements?.length ?? -1) === 0 && (await presenceObserver.snapshot()) === null);
 
   const options = await context.newPage();
   options.on('pageerror', (error) => optionsErrors.push(error.message));
@@ -512,6 +608,20 @@ try {
   await send({ type: 'forget-provider-key', providerId: 'openai' });
   const forgotten = await storageDump();
   check('forget key removes it from chrome.storage.session', !JSON.stringify(forgotten.session).includes(CANARY));
+
+  await studentPage.bringToFront();
+  await panel.waitForTimeout(300);
+  const releaseButton = panel.getByRole('button', { name: 'Release' }).first();
+  if (await releaseButton.count()) {
+    await releaseButton.click();
+    const released = await waitFor(async () => {
+      const current = await state();
+      return current?.activeSession?.workspace?.adoptedTabIds?.includes(studentTabId) ? null : current;
+    });
+    check('workspace Release removes the student tab from the live workspace', Boolean(released));
+  } else {
+    check('workspace Release removes the student tab from the live workspace', false, 'no Release control rendered');
+  }
 
   // 200% zoom is checked against the actual rendered panel and options page.
   await panel.evaluate(() => { document.documentElement.style.zoom = '2'; });

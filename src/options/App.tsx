@@ -624,6 +624,16 @@ function AgentBehaviour({ ai, setStatus, refresh }: { ai: AiStatusResult | null;
     await refresh();
   };
 
+  const toggleOnPagePointer = async (value: boolean) => {
+    const response = await ask({ type: 'set-ai-preferences', showOnPagePointer: value });
+    if (!response.ok) {
+      setStatus(`Motion could not save the on-page pointer setting. ${response.error ?? 'Try again.'}`);
+      return;
+    }
+    await refresh();
+    setStatus(`Motion’s on-page pointer is ${value ? 'on' : 'off'}.`);
+  };
+
   return (
     <section aria-labelledby="behaviour-heading">
       <h2 id="behaviour-heading" className="font-serif text-lg">
@@ -641,6 +651,21 @@ function AgentBehaviour({ ai, setStatus, refresh }: { ai: AiStatusResult | null;
             <span className="block text-ink-muted">Opens linked readings and rubrics in a Motion-owned tab group when a session starts.</span>
           </span>
         </label>
+      </div>
+      <div className={`${card} mt-4`}>
+        <div className="flex items-start gap-2">
+          <input
+            id="show-on-page-pointer"
+            type="checkbox"
+            checked={ai?.showOnPagePointer ?? true}
+            onChange={(event) => void toggleOnPagePointer(event.target.checked)}
+            aria-describedby="show-on-page-pointer-description"
+          />
+          <span className="text-sm">
+            <label className="font-medium" htmlFor="show-on-page-pointer">Show Motion on-page pointer</label>
+            <span id="show-on-page-pointer-description" className="block text-ink-muted">Shows where Motion is about to act. It does not change what Motion is allowed to do.</span>
+          </span>
+        </div>
       </div>
       <div className={`${card} mt-4`}>
         <h3 className="text-md font-medium">Actions Motion can take automatically</h3>

@@ -50,6 +50,7 @@ const aiStatus = {
     },
   ],
   autoOpenRelatedTabs: false,
+  showOnPagePointer: true,
   allowedConfigurableActions: [],
   lmsAccess: [{ origin: 'https://mylearningspace.wlu.ca/*', granted: true }],
 };
@@ -73,6 +74,7 @@ beforeEach(() => {
         if (typeof msg.model === 'string') status = { ...status, model: msg.model };
         if (Array.isArray(msg.allowedConfigurableActions)) status = { ...status, allowedConfigurableActions: msg.allowedConfigurableActions as never };
         if (typeof msg.autoOpenRelatedTabs === 'boolean') status = { ...status, autoOpenRelatedTabs: msg.autoOpenRelatedTabs };
+        if (typeof msg.showOnPagePointer === 'boolean') status = { ...status, showOnPagePointer: msg.showOnPagePointer };
         return { ok: true };
       }
       case 'accept-cloud-disclosure': {
@@ -253,6 +255,34 @@ describe('reminders', () => {
 });
 
 describe('AI settings', () => {
+  it('saves the on-page pointer preference and keeps authority copy explicit', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Agent behaviour' }));
+    const pointer = screen.getByRole('checkbox', { name: 'Show Motion on-page pointer' });
+    expect(pointer).toBeChecked();
+    await user.click(pointer);
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: 'set-ai-preferences', showOnPagePointer: false }));
+    expect(screen.getByRole('status')).toHaveTextContent('on-page pointer is off');
+    expect(document.getElementById('show-on-page-pointer-description')).toHaveTextContent('It does not change what Motion is allowed to do.');
+  });
+
+  it('keeps the existing pointer value and surfaces a save failure', async () => {
+    const original = sendMessage;
+    sendMessage = vi.fn(async (message: unknown) => {
+      if ((message as { type?: string }).type === 'set-ai-preferences')
+        return { ok: false, error: 'Storage is unavailable. Try again.' };
+      return original(message);
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Agent behaviour' }));
+    const pointer = screen.getByRole('checkbox', { name: 'Show Motion on-page pointer' });
+    await user.click(pointer);
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('could not save the on-page pointer setting'));
+    expect(pointer).toBeChecked();
+  });
+
   it('clears the key input after saving and never re-renders it', async () => {
     const user = userEvent.setup();
     render(<App />);

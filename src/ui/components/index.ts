@@ -8,3 +8,4 @@ export * from './SourceLink';
 export * from './StatusMarker';
 export * from './TextInput';
 export * from './Track';
+export * from './MotionMark';

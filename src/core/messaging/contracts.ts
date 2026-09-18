@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { courseSchema, courseTaskSchema, pageContentSchema, pageTypeSchema } from '../domain';
 import { SESSION_MESSAGE_SCHEMAS } from './sessionContracts';
+import { popupActionSchema } from '../view/popup';
 import {
   snapshotRequestSchema,
 } from '../actor/contracts';
@@ -70,6 +71,19 @@ export const askAboutPageSchema = z.object({
 export const closeWorkspaceSchema = z.object({ type: z.literal('close-workspace'), workflowId: z.string().min(1) });
 
 export const getStateSchema = z.object({ type: z.literal('get-state') });
+
+/** A popup asks for context and invokes only narrow worker-owned intents. */
+export const popupContextSchema = z.object({
+  type: z.literal('popup-context'),
+  tabId: z.number().int().nonnegative(),
+});
+export const popupCommandSchema = z.object({
+  type: z.literal('popup-command'),
+  action: popupActionSchema,
+  tabId: z.number().int().nonnegative(),
+  /** Required only for a worker-selected existing session. */
+  sessionId: z.string().min(1).nullable().default(null),
+});
 
 export const decideApprovalSchema = z.object({
   type: z.literal('decide-approval'),
@@ -168,6 +182,8 @@ export const messageSchema = z.discriminatedUnion('type', [
   askAboutPageSchema,
   closeWorkspaceSchema,
   getStateSchema,
+  popupContextSchema,
+  popupCommandSchema,
   decideApprovalSchema,
   workflowCommandSchema,
   correctTaskSchema,
@@ -198,6 +214,8 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'ask-about-page': ['extension-ui'],
   'close-workspace': ['extension-ui'],
   'get-state': ['extension-ui'],
+  'popup-context': ['extension-ui'],
+  'popup-command': ['extension-ui'],
   'decide-approval': ['extension-ui'],
   'workflow-command': ['extension-ui'],
   'correct-task': ['extension-ui'],

@@ -56,6 +56,7 @@ src/core/         platform-agnostic
 src/platform/     capability wrappers over chrome.* (semantic, not thin mirrors)
 src/background/   MV3 service worker
 src/content/      content script
+src/popup/        default-popup launcher; validated intents only
 src/sidepanel/    React UI
 src/ui/           design tokens and components
 ```
@@ -116,8 +117,9 @@ work from a side panel.
    its route and reports a normalized `PageDetection` to the worker.
 2. The worker resolves the course, stores it with provenance, and tells the
    panel what it knows.
-3. Student chooses **Prepare workspace**. The worker creates a workflow —
-   persisted before any step runs.
+3. Student chooses **Start workspace** or **Continue workspace** in the popup,
+   or **Prepare workspace** in the panel. The worker creates or resumes a
+   workflow, persisted before any step runs.
 4. Steps execute one at a time, each claimed, each persisting its output and its
    transition in a single transaction so a restart cannot advance past work it
    did not save.

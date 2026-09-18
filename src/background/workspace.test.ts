@@ -3,6 +3,8 @@ import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { FakeTabs } from '@/test/fakeTabs';
 import { handleActionClick, handleCloseWorkspace, handleMessage, handlePrepareWorkspace } from './router';
+import { createOrReuseWorkspaceSession } from './sessions';
+import { sessionRepository } from '@/core/storage/repositories';
 
 /**
  * "Prepare workspace" through the worker, against an in-memory browser.
@@ -98,6 +100,25 @@ describe('preparing a workspace', () => {
     expect([...tabs.groups.values()]).toEqual(['Motion · Synthetic Assignment 2']);
     const [workflow] = await workflows();
     expect(workflow?.status).toBe('completed');
+  });
+
+  it('binds a popup workspace workflow to its AgentSession before opening tabs', async () => {
+    await observe(ACTIVE_TAB);
+    const tabs = new FakeTabs();
+    const session = await createOrReuseWorkspaceSession({
+      title: 'Synthetic Assignment 2', goal: 'Work on Synthetic Assignment 2.', courseId: null,
+      pageUrl: ASSIGNMENT, browserSessionKey: tabs.currentSession,
+    });
+
+    const result = await handlePrepareWorkspace(ACTIVE_TAB, tabs, session.id);
+
+    const [workflow] = await workflows();
+    expect(workflow?.params.sessionId).toBe(session.id);
+    const db = await openDatabase();
+    const projected = await sessionRepository(db).get(session.id);
+    db.close();
+    expect(projected?.workflowIds).toContain(result.workflowId);
+    expect(projected?.workspace.ownedTabIds).not.toEqual([]);
   });
 
   it('returns the open workspace instead of opening a second one', async () => {

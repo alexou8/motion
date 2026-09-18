@@ -71,20 +71,29 @@ export const motionCommandSchema = z.discriminatedUnion('type', [
 
 export type MotionCommand = z.infer<typeof motionCommandSchema>;
 
+/**
+ * Every interactive command has an observable outcome. `transport-*` codes
+ * mean the runtime boundary failed; all other codes are worker/domain
+ * refusals that can be shown beside the control that initiated them.
+ */
+export type UiCommandResult<T = undefined> =
+  | { ok: true; data?: T }
+  | { ok: false; code: string; message: string; recoverable?: boolean };
+
 /** The only dependency the panel needs from the extension runtime. */
 export interface MotionBridge {
   getState: () => PanelState;
   subscribe: (listener: () => void) => () => void;
-  send: (command: MotionCommand) => void | Promise<void>;
+  send: (command: MotionCommand) => Promise<UiCommandResult>;
   /**
    * Like `send`, but for commands whose answer the panel renders — building a
    * checklist, drafting, reviewing a draft, provider diagnostics. Separate
    * from `send` so a view that only fires an action cannot accidentally
    * depend on a reply that a closed worker may never deliver.
    */
-  request?: <T>(command: MotionCommand) => Promise<T | null>;
+  request?: <T>(command: MotionCommand) => Promise<UiCommandResult<T>>;
 }
 
-export function sendCommand(bridge: MotionBridge, command: MotionCommand): void {
-  bridge.send(motionCommandSchema.parse(command));
+export function sendCommand(bridge: MotionBridge, command: MotionCommand): Promise<UiCommandResult> {
+  return bridge.send(motionCommandSchema.parse(command));
 }

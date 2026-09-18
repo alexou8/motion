@@ -23,20 +23,21 @@ import { explainAvailability, type LanguageModelCapability } from '@/platform/la
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
-import { updateTask, upsertExtractedTask } from '@/core/storage/repositories';
+import { sessionRepository, updateTask, upsertExtractedTask } from '@/core/storage/repositories';
 import { STORE } from '@/core/storage/schema';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
-import { EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
+import { EMPTY_PANEL_STATE, popupLauncherStateSchema, type PanelState, type PopupAction, type PopupLauncherState } from '@/core/view';
 import { createEngine } from './recovery';
 import { adapterById, resolveAdapter } from '@/core/adapters';
 import type { Course } from '@/core/domain';
 import { isTerminal } from '@/core/workflows';
 import { selectWorkspaceSources, workspaceOwnership, workspacePageUrl } from '@/core/workspace';
+import { sessionTitle } from '@/core/session';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 import { askContentScript, sendToContentScript } from './contentBridge';
-import { handleSessionMessage } from './sessions';
+import { adoptWorkspaceTab, createOrReuseWorkspaceSession, handleSessionMessage } from './sessions';
 import { buildPanelState as buildAgentPanelState } from './panelState';
 import { handleAiMessage } from './aiHandlers';
 import { resolveSessionProvider } from './providers';
@@ -59,6 +60,10 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleExtraction(message);
     case 'get-state':
       return buildAgentPanelState();
+    case 'popup-context':
+      return buildPopupLauncherState(message.tabId);
+    case 'popup-command':
+      return handlePopupCommand(message);
     case 'session-create':
     case 'session-message':
     case 'session-command':
@@ -126,6 +131,137 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleAskAboutPage(message);
     case 'close-workspace':
       return handleCloseWorkspace(message.workflowId);
+  }
+}
+
+/** A safe, student-readable refusal that crosses the worker UI boundary. */
+export class UiCommandError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly recoverable = true,
+  ) {
+    super(message);
+  }
+}
+
+async function activeSessionForPage(
+  courseId: string | null,
+  pageUrl: string | null | undefined,
+  browserSessionKey: string,
+): Promise<{ id: string; title: string } | null> {
+  const target = pageUrl ? workspacePageUrl(pageUrl) : null;
+  if (!courseId || !target) return null;
+  const db = await openDatabase();
+  try {
+    const sessions = await sessionRepository(db).all();
+    const found = sessions.records
+      .filter((session) => session.courseId === courseId
+        && session.workspace.sessionKey === browserSessionKey
+        && session.status !== 'archived'
+        && session.status !== 'completed'
+        && session.context.sources.some((source) => workspacePageUrl(source.url) === target))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+    return found ? { id: found.id, title: found.title } : null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Minimal worker-derived state for the transient toolbar popup. */
+export async function buildPopupLauncherState(tabId: number): Promise<PopupLauncherState> {
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab?.url || tab.windowId === undefined)
+    throw new UiCommandError('tab-unavailable', 'Motion could not find the page you opened the popup from. Try again.');
+
+  const observation = await readObservation(tabId);
+  const course = await courseForUrl(observation?.url);
+  const relevant = await activeSessionForPage(
+    course?.id ?? null,
+    observation?.url,
+    await new ChromeTabs().sessionKey(),
+  );
+  return popupLauncherStateSchema.parse({
+    tabId,
+    windowId: tab.windowId,
+    connection: connectionFor(observation),
+    title: observation?.restricted ? '' : observation?.title || tab.title || '',
+    courseLabel: course?.code ?? course?.name ?? null,
+    relevantSessionId: relevant?.id ?? null,
+    relevantSessionTitle: relevant?.title ?? null,
+  });
+}
+
+function requirePopupAction(
+  state: PopupLauncherState,
+  action: PopupAction,
+  sessionId: string | null,
+): void {
+  if (action === 'open-motion') return;
+  if (state.connection === 'restricted')
+    throw new UiCommandError('restricted-page', 'Motion will not act inside this active assessment. Open Motion for help outside the attempt.');
+  if (state.connection !== 'supported')
+    throw new UiCommandError('unsupported-page', 'This tab is not a supported LMS page. Open Motion without starting a workspace.');
+  if (action === 'continue-session' && (!state.relevantSessionId || sessionId !== state.relevantSessionId))
+    throw new UiCommandError('stale-session', 'That workspace is no longer available. Reopen the popup and choose a current workspace.');
+}
+
+/**
+ * Popup commands remain intent-level. The worker owns the page checks, session
+ * selection, reading, and grouping; the popup never receives selectors or
+ * browser-workspace authority.
+ */
+export async function handlePopupCommand(
+  message: Extract<Message, { type: 'popup-command' }>,
+): Promise<{ action: PopupAction; workflowId?: string; sessionId?: string; requested?: boolean }> {
+  const state = await buildPopupLauncherState(message.tabId);
+  requirePopupAction(state, message.action, message.sessionId);
+  switch (message.action) {
+    case 'open-motion':
+      return { action: message.action };
+    case 'continue-session':
+      // Continuing a workspace also reconciles the tab the student is viewing
+      // into that session's existing group. Selection alone left the page
+      // outside the workspace and made ownership/cancel state misleading.
+      {
+        const adopted = await adoptWorkspaceTab(message.sessionId!, message.tabId);
+        if (!adopted.updated)
+          throw new UiCommandError('workspace-unavailable', adopted.reason ?? 'Motion could not reopen this workspace.');
+      }
+      await handleSessionMessage({ type: 'session-select', sessionId: message.sessionId });
+      return { action: message.action, sessionId: message.sessionId ?? undefined };
+    case 'read-current-page': {
+      const result = await requestExtraction(message.tabId);
+      if (!result.requested)
+        throw new UiCommandError('page-unavailable', 'Motion could not read this page. Wait for it to load, then try again.');
+      return { action: message.action, requested: true };
+    }
+    case 'scan-deadlines': {
+      await scanAllCourses(message.tabId);
+      return { action: message.action };
+    }
+    case 'start-workspace': {
+      const tabs = new ChromeTabs();
+      const observation = await readObservation(message.tabId);
+      if (!observation?.url)
+        throw new UiCommandError('page-unavailable', 'Motion could not confirm this page. Wait for it to load, then try again.');
+      const course = await courseForUrl(observation.url);
+      const title = sessionTitle(course?.code, state.title || 'Coursework');
+      const session = await createOrReuseWorkspaceSession({
+        title,
+        goal: `Work on ${state.title || 'this coursework page'}.`,
+        courseId: course?.id ?? null,
+        pageUrl: observation.url,
+        browserSessionKey: await tabs.sessionKey(),
+      });
+      const workspace = await handlePrepareWorkspace(message.tabId, tabs, session.id);
+      if (!workspace.workflowId)
+        throw new UiCommandError('workspace-unavailable', workspace.reason ?? 'Motion could not prepare this workspace. Try again.');
+      const adopted = await adoptWorkspaceTab(session.id, message.tabId, tabs);
+      if (!adopted.updated)
+        throw new UiCommandError('workspace-changed', adopted.reason ?? 'Motion could not group this tab because the page changed. Try Start workspace again.');
+      return { action: message.action, workflowId: workspace.workflowId, sessionId: session.id };
+    }
   }
 }
 
@@ -765,6 +901,7 @@ export interface PrepareWorkspaceResult {
 export async function handlePrepareWorkspace(
   tabId: number,
   tabs: TabsCapability = new ChromeTabs(),
+  sessionId?: string,
 ): Promise<PrepareWorkspaceResult> {
   const observation = await readObservation(tabId);
   if (observation?.restricted) {
@@ -807,10 +944,12 @@ export async function handlePrepareWorkspace(
 
   // Finding an existing workspace and creating a new one must be one step, or
   // two quick presses both find nothing and both open a set of tabs.
-  const claimed = await withLock(`motion:${PREPARE_WORKSPACE}`, async () => {
+  const claimed = await withLock(`motion:${PREPARE_WORKSPACE}:${sessionId ?? 'legacy'}:${page}`, async () => {
     const db = await openDatabase();
     const workflows = (await new IndexedDbWorkflowStore(db).list()).filter(
-      (workflow) => workflow.definitionId === PREPARE_WORKSPACE && workflow.params['url'] === page,
+      (workflow) => workflow.definitionId === PREPARE_WORKSPACE
+        && workflow.params['url'] === page
+        && workflow.params['sessionId'] === sessionId,
     );
 
     const inFlight = workflows.find((workflow) => !isTerminal(workflow.status));
@@ -827,7 +966,7 @@ export async function handlePrepareWorkspace(
 
     const created = await engine.create(
       PREPARE_WORKSPACE,
-      { url: page, sources, courseCode: course?.code ?? null, label },
+      { url: page, sources, courseCode: course?.code ?? null, label, ...(sessionId ? { sessionId } : {}) },
       { courseId: course?.id ?? null, title: workspaceGroupTitle(course?.code, label) },
     );
     return { workflowId: created.id };

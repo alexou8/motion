@@ -35,13 +35,13 @@ graded, timed or proctored attempt; the boundary is enforced in
 
 ## MVP scope
 
-1. Chrome side panel and extension shell
+1. Chrome extension shell with a default-popup launcher and side panel
 2. D2L Brightspace page and course detection, including institution deployments
 3. Deadline extraction with provenance, confidence and student correction
 4. Source-linked local notes
 5. Assignment requirement extraction into a checklist
 6. Resumable workflow progress UI
-7. Automatic tab-group creation
+7. Explicit workspace tab-group creation from Start/Continue actions
 8. Permission and approval foundations
 9. Local-first storage with a versioned schema
 10. Clear restricted behaviour on graded assessments

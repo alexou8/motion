@@ -1,6 +1,6 @@
 # Chrome Web Store Listing — Motion
 
-> Last Updated: 2026-09-07
+> Last Updated: 2026-09-17
 
 ## Store Listing
 
@@ -27,8 +27,11 @@ FEATURES
 
 HOW TO USE
 1. Open a supported D2L Brightspace or MyLearningSpace course page.
-2. Click the Motion toolbar icon to open the side panel.
-3. Choose what to read, organize, or review.
+2. Click the Motion toolbar icon to open the launcher popup.
+3. Choose Start workspace or Continue workspace. The popup opens the side
+   panel and sends the validated intent; grouping is explicit, not automatic
+   on a toolbar click.
+4. Choose what to read, organize, or review in the side panel.
 
 PRIVACY
 Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's message, session plan/state labels, relevant notes, and bounded page excerpts directly to the selected provider only. Each source excerpt is at most 8,000 characters and each request is at most 24,000 characters; excluded sources are omitted. Motion has no server or telemetry; provider keys remain in session memory and are not persisted.
@@ -53,6 +56,7 @@ English
 | Asset | Dimensions | Status | Filename |
 |-------|-----------|--------|----------|
 | Store Icon | 128×128 PNG | ✅ Ready | `src/assets/icons/icon-128.png` |
+| Product mark | SVG source; PNG outputs generated for extension surfaces | ✅ In source and consumed by UI | `src/assets/brand/motion-mark.svg` |
 | Screenshot 1 | 1280×800 or 640×400 | ⬜ Not created | |
 | Screenshot 2 | 1280×800 or 640×400 | ⬜ Not created | |
 | Small Promo Tile | 440×280 | ⬜ Not created | |
@@ -131,6 +135,8 @@ Show the side panel beside a synthetic course page with extracted work and sourc
 ### Known Issues / Limitations
 
 - Chrome 116 or newer is required.
+- The launcher popup, side-panel presence cue, and product-mark integration are
+  implemented; browser verification of the current build is still pending.
 - The manifest currently declares the unused `scripting` permission; remove it before submission unless an implemented feature requires it.
 - Local draft assistance requires Chrome's on-device model; BYOK assistance requires the selected provider, disclosure, and just-in-time host permission.
 - Remote code: none. All executable code ships in the extension package.

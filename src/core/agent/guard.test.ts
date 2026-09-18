@@ -203,6 +203,18 @@ describe('guardToolCall', () => {
     if (result.kind === 'ok') expect(result.decision.decision).toBe('allow');
   });
 
+  it('maps snapshot-bound scroll and focus tools to their automatic actions', () => {
+    const tabs = [{ tabId: 1, url: `${LMS_ORIGIN}/x` }];
+    const snapshots = { 1: snapshot([{ handle: 'e1', role: 'textbox', tag: 'input', label: 'Answer', disabled: false }]) };
+    const refs = buildTrustedRefs(session(), { links: [], tabs, snapshots, tasks: [], notes: [] });
+    const ctx = baseCtx({ assessmentRestrictedByTabRef: { T1: true } });
+
+    for (const [tool, action] of [['scroll_to', 'scroll-to'], ['focus_element', 'focus-element']] as const) {
+      const result = guardToolCall({ tool, tabRef: 'T1', handle: 'e1' }, refs, ctx);
+      expect(result).toMatchObject({ kind: 'ok', step: { action }, decision: { decision: 'allow' } });
+    }
+  });
+
   it('allows a configurable action automatically when the student enabled it', () => {
     const tabs = [{ tabId: 1, url: `${LMS_ORIGIN}/x` }];
     const snapshots = { 1: snapshot([{ handle: 'e1', role: 'textbox', tag: 'input', label: 'Comment', disabled: false }]) };

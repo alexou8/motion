@@ -79,8 +79,8 @@ describe('permission hygiene', () => {
     expect(csp).not.toMatch(/unsafe-eval|unsafe-inline|https:/);
   });
 
-  it('declares no default_popup, which would break the side-panel open behaviour', () => {
-    expect(manifest.action ?? {}).not.toHaveProperty('default_popup');
+  it('declares the popup launcher, which opens the side panel from its own user gesture', () => {
+    expect(manifest.action ?? {}).toHaveProperty('default_popup', 'src/popup/index.html');
   });
 
   it('references only icon files that exist', async () => {

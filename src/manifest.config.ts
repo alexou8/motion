@@ -31,13 +31,9 @@ const manifest: ManifestV3Export = {
   // chrome.sidePanel requires 114+; opening it from an action requires 116.
   minimum_chrome_version: '116',
 
-  /**
-   * Declared with no `default_popup` on purpose. The service worker handles
-   * `action.onClicked` and opens the panel directly; a popup would consume that
-   * event and duplicate what the panel already provides.
-   */
   action: {
-    default_title: 'Open Motion',
+    default_title: 'Open Motion launcher',
+    default_popup: 'src/popup/index.html',
     default_icon: {
       16: 'src/assets/icons/icon-16.png',
       32: 'src/assets/icons/icon-32.png',
