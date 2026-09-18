@@ -206,6 +206,7 @@ async function handleAiStatus(ctx: HandlerContext) {
     })),
     providers,
     autoOpenRelatedTabs: preferences.autoOpenRelatedTabs,
+    showOnPagePointer: preferences.showOnPagePointer,
     allowedConfigurableActions: preferences.allowedConfigurableActions,
     lmsAccess,
   };

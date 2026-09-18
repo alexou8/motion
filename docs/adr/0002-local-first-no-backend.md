@@ -36,8 +36,10 @@ ADR 0005 defines that exception.
   papered over.
 - No server-side audit trail. The audit log is local, which means it is evidence
   for the student, not for an institution.
-- Model-assisted features (summaries, study guides) are out of the MVP slice,
-  since they require a gateway. The note model already distinguishes generated
-  text so the capability can be added without a schema change.
+- Model-assisted features use the selected local or BYOK provider directly;
+  they do not require a Motion gateway. Cloud turns are disclosed, bounded and
+  sent directly to the selected provider, while provider keys remain
+  session-only. This ADR still excludes a Motion model gateway, account, sync
+  service and telemetry.
 - Introducing a backend later requires a new ADR covering authentication,
   retention defaults, deletion, and what leaves the device.

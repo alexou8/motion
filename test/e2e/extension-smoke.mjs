@@ -109,6 +109,13 @@ try {
   await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`, { waitUntil: 'domcontentloaded' });
   check('side panel document loads and renders', (await panel.innerText('body')).includes('Motion'));
 
+  const popup = await context.newPage();
+  await popup.goto(`chrome-extension://${extensionId}/src/popup/index.html`, { waitUntil: 'domcontentloaded' });
+  await popup.waitForTimeout(800);
+  const popupBody = await popup.innerText('body');
+  check('popup default bridge resolves bounded context', /Open Motion/.test(popupBody) && !/Loading page context/i.test(popupBody), popupBody.replace(/\s+/g, ' ').slice(0, 160));
+  await popup.close();
+
   const manifest = await panel.evaluate(() => chrome.runtime.getManifest());
   check('manifest loads in the browser as MV3', manifest.manifest_version === 3);
   check('minimum_chrome_version is still 116', manifest.minimum_chrome_version === '116');

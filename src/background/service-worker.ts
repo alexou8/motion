@@ -16,7 +16,7 @@ import { resolveAdapter, supportedHosts } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
-import { handleMessage, forgetTab, handleActionClick } from './router';
+import { handleMessage, forgetTab, UiCommandError } from './router';
 import { recoverWorkflows, scheduleRetryAlarm, RETRY_ALARM_PREFIX, LEASE_ALARM_PREFIX } from './recovery';
 import { registerInferencePort } from './inferencePort';
 import { onTabRemoved, onTabUpdated } from './workspaceEvents';
@@ -37,22 +37,6 @@ chrome.runtime.onInstalled.addListener((details) => {
   }
   void reconcileReminders().catch((error) => {
     void warn('Motion: reminder reconciliation failed', error);
-  });
-});
-
-// Register the action directly instead of relying on setPanelBehavior state
-// written during installation. Development reloads can replace the worker
-// without replaying onInstalled, while this listener exists on every start.
-chrome.action.onClicked.addListener((tab) => {
-  // This must stay synchronous: Chrome only accepts the user gesture before
-  // the first await, so open the panel before starting tab grouping.
-  if (tab.windowId !== undefined) {
-    void chrome.sidePanel.open({ windowId: tab.windowId }).catch((error) => {
-      void warn('Motion: could not open the side panel', error);
-    });
-  }
-  void handleActionClick(tab).catch((error) => {
-    void warn('Motion: toolbar grouping failed', error);
   });
 });
 
@@ -101,7 +85,12 @@ chrome.runtime.onMessage.addListener((raw, sender, sendResponse) => {
       }
     } catch (error) {
       void warn('Motion: message handling failed', error);
-      sendResponse({ ok: false, error: error instanceof Error ? error.message : 'Unexpected error' });
+      sendResponse({
+        ok: false,
+        code: error instanceof UiCommandError ? error.code : 'command-failed',
+        error: error instanceof Error ? error.message : 'Unexpected error',
+        ...(error instanceof UiCommandError ? { recoverable: error.recoverable } : {}),
+      });
     }
   })();
 

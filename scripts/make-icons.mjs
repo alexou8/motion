@@ -1,15 +1,43 @@
 /**
- * Generates Motion's icon PNGs from the "track" mark used throughout the UI:
- * a vertical rule with a marker sitting on it. Committed as a script so the
- * icons are reproducible rather than opaque binaries nobody can regenerate.
+ * Generates Motion's icon PNGs from assets/brand/motion-mark.svg's geometry.
+ * Committed as a script so the icons are reproducible rather than opaque
+ * binaries nobody can regenerate. The browser mark uses currentColor; icons
+ * use the fixed signal color on transparent pixels.
  *
  *   node scripts/make-icons.mjs
  */
 import zlib from 'node:zlib';
 import fs from 'node:fs';
 
-const INK = [0x16, 0x20, 0x2a, 0xff];
-const SIGNAL = [0x24, 0x48, 0x7a, 0xff];
+const svg = fs.readFileSync('src/assets/brand/motion-mark.svg', 'utf8');
+const attr = (tag, name) => tag.match(new RegExp(`${name}="([^"]+)"`))?.[1];
+const rootTag = svg.match(/<svg\b[^>]*>/)?.[0] ?? '';
+const hex = (value) => {
+  const match = value.match(/^#([0-9a-f]{6})$/i);
+  if (!match) throw new Error(`Expected six-digit color in canonical mark: ${value}`);
+  return [...match[1].matchAll(/../g)].map(([pair]) => parseInt(pair, 16)).concat(0xff);
+};
+const INK = hex(attr(rootTag, 'data-track') ?? '');
+const SIGNAL = hex(attr(rootTag, 'data-signal') ?? '');
+const pathTag = svg.match(/<path\b[^>]*>/)?.[0] ?? '';
+const pathData = attr(pathTag, 'd')?.match(/^M([\d.]+) ([\d.]+)v([\d.]+)$/);
+if (!pathData) throw new Error('Canonical mark path must be a vertical Mx yvheight path');
+const pathX = Number(pathData[1]);
+const pathTop = Number(pathData[2]);
+const pathHeight = Number(pathData[3]);
+const pathWidth = Number(attr(pathTag, 'stroke-width'));
+const circles = [...svg.matchAll(/<circle\b[^>]*>/g)].map((match) => {
+  const tag = match[0];
+  return {
+    cx: Number(attr(tag, 'cx')),
+    cy: Number(attr(tag, 'cy')),
+    r: Number(attr(tag, 'r')),
+    strokeWidth: Number(attr(tag, 'stroke-width') ?? 0),
+  };
+});
+if (circles.length !== 2 || circles.some((circle) => !Number.isFinite(circle.r))) {
+  throw new Error('Canonical mark must contain two circles');
+}
 
 function render(size) {
   const buf = Buffer.alloc(size * size * 4);
@@ -17,37 +45,41 @@ function render(size) {
     if (x < 0 || y < 0 || x >= size || y >= size) return;
     const i = (y * size + x) * 4;
     // simple source-over so edges are not jagged at 16px
-    const sa = c[3] / 255 * a;
+    const sa = (c[3] / 255) * a;
     buf[i] = Math.round(c[0] * sa + buf[i] * (1 - sa));
     buf[i + 1] = Math.round(c[1] * sa + buf[i + 1] * (1 - sa));
     buf[i + 2] = Math.round(c[2] * sa + buf[i + 2] * (1 - sa));
     buf[i + 3] = Math.round(255 * sa + buf[i + 3] * (1 - sa));
   };
 
-  const trackX = size * 0.3;
-  const trackW = Math.max(1.2, size / 12);
-  const top = size * 0.14;
-  const bottom = size * 0.86;
+  const scale = size / 20;
+  const trackX = pathX * scale - (pathWidth * scale) / 2;
+  const trackW = pathWidth * scale;
+  const top = pathTop * scale;
+  const bottom = (pathTop + pathHeight) * scale;
   for (let y = Math.floor(top); y < Math.ceil(bottom); y++) {
     for (let x = Math.floor(trackX); x < Math.ceil(trackX + trackW); x++) {
-      const cov =
-        Math.min(x + 1, trackX + trackW) - Math.max(x, trackX);
+      const cov = Math.min(x + 1, trackX + trackW) - Math.max(x, trackX);
       if (cov > 0) set(x, y, INK, Math.min(1, cov));
     }
   }
 
-  // Marker: a disc clear of the track, with a gap between them so neither
-  // shape reads as damaged by the other.
-  const cx = size * 0.62;
-  const cy = size * 0.5;
-  const r = size * 0.2;
-  for (let y = Math.floor(cy - r - 1); y <= Math.ceil(cy + r + 1); y++) {
-    for (let x = Math.floor(cx - r - 1); x <= Math.ceil(cx + r + 1); x++) {
-      const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
-      const cov = Math.max(0, Math.min(1, r - d + 0.5));
-      if (cov > 0) set(x, y, SIGNAL, cov);
+  const drawCircle = ({ cx: sourceX, cy: sourceY, r: sourceR, strokeWidth = 0 }, color, ring) => {
+    const cx = sourceX * scale;
+    const cy = sourceY * scale;
+    const r = sourceR * scale;
+    const inner = ring ? Math.max(0, r - (strokeWidth * scale) / 2) : 0;
+    for (let y = Math.floor(cy - r - 1); y <= Math.ceil(cy + r + 1); y++) {
+      for (let x = Math.floor(cx - r - 1); x <= Math.ceil(cx + r + 1); x++) {
+        const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+        if (d < inner) continue;
+        const cov = Math.max(0, Math.min(1, Math.min(r - d + 0.5, d - inner + 0.5)));
+        if (cov > 0) set(x, y, SIGNAL, cov);
+      }
     }
-  }
+  };
+  drawCircle(circles[0], SIGNAL, false);
+  drawCircle(circles[1], SIGNAL, true);
   return buf;
 }
 

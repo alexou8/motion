@@ -46,6 +46,9 @@ const workerResultSchemas = {
     summary: reasonSchema,
   }),
   'toggle-requirement': z.object({ updated: z.boolean() }),
+  // Returning to the session list deliberately selects no session. This is a
+  // valid navigation result, unlike a command that silently failed to update.
+  'session-select': z.object({ selected: z.string().min(1).nullable() }),
 } satisfies Partial<Record<MotionCommand['type'], z.ZodTypeAny>>;
 
 export function parseWorkerResult(commandType: MotionCommand['type'], raw: unknown): unknown | null {

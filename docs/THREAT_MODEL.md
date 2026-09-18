@@ -72,8 +72,8 @@ student and labelled as generated; it has no path to an action. —
 An attacker who can post to a discussion board controls text Motion extracts,
 stores, and later renders in the side panel.
 
-**Prompt injection is not the MVP risk** — there is no model. The risk is
-rendering and interpretation.
+**Prompt injection remains a product risk** because model turns may use page
+text. Rendering and interpretation are also risks.
 
 - Motion stores extracted **text, never page HTML**. — *Planned (content script)*
 - The panel renders through React text nodes; `dangerouslySetInnerHTML` is
@@ -293,16 +293,21 @@ Restricted mode is not relaxed inside Motion's own group. A tab Motion opened
 that turns out to be a graded attempt records that it is restricted and nothing
 else, exactly as a tab the student opened would. — *Mitigated (tested)*
 
-Clicking the toolbar icon puts the *current* tab into Motion's group. That tab
+The toolbar click opens the default popup launcher. Its explicit Start/Continue
+action opens the panel and routes a validated intent; grouping and adoption are
+policy-checked by the worker rather than inferred from the click alone. The
+student's current tab remains distinct from tabs Motion opened.
+
+Clicking the explicit workspace action puts the *current* tab into Motion's group. That tab
 is the student's: Motion groups it because the student asked, but records it
 only as **adopted** — in session storage, under a key separate from the tabs
 Motion opened — never as owned. Closing the workspace ungroups adopted tabs
 still in the group and never closes them; an adopted tab the student moved
-out is left alone. The icon only groups a tab that is not already in a group,
+out is left alone. The explicit action only groups a tab that is not already in a group,
 whose stored observation is a supported, unrestricted page matching the tab's
 current URL, and whose live URL the assessment policy also clears. Anywhere
 else — a graded attempt, a signed-out or unsupported page, a page that has not
-reported itself yet — it opens the panel and does nothing else. The icon and
+reported itself yet — it leaves the workspace unopened. The launcher action and
 **Prepare workspace** share one group title, so the readings join the adopted
 tab's group rather than a second one. — *Mitigated (`src/background/router.ts`,
 `src/platform/tabs.ts`, unit-tested; not yet exercised in a real browser)*
@@ -322,9 +327,9 @@ ungroup the pending tab, never close it. — *Mitigated (tested)*
 Residual: Chrome's own check-and-group operation is not atomic, so Chrome can
 still change a tab while `tabs.group` is running. A stale pending record only
 matches a group with its own workspace title and can only ungroup, never close,
-that tab. A toolbar click racing **Prepare workspace** can also create two
-same-titled groups because they use different locks; neither race reads page
-content or closes a student tab. — *Accepted*
+that tab. A popup action racing **Prepare workspace** is serialized by the
+workspace lock; neither race reads page content or closes a student tab. —
+*Accepted*
 
 ---
 

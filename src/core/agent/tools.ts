@@ -87,6 +87,16 @@ export const listDeadlinesSchema = z
 
 export const snapshotTabSchema = z.object({ tool: z.literal('snapshot_tab'), tabRef: refString }).strict();
 
+/** Navigate only to an element named by the latest Motion snapshot. */
+export const scrollToSchema = z
+  .object({ tool: z.literal('scroll_to'), tabRef: refString, handle: handleString })
+  .strict();
+
+/** Focus only an element named by the latest Motion snapshot. */
+export const focusElementSchema = z
+  .object({ tool: z.literal('focus_element'), tabRef: refString, handle: handleString })
+  .strict();
+
 export const fillFieldSchema = z
   .object({ tool: z.literal('fill_field'), tabRef: refString, handle: handleString, value: boundedFillValue })
   .strict();
@@ -139,6 +149,8 @@ export const toolCallSchema = z.discriminatedUnion('tool', [
   summarizeSourcesSchema,
   listDeadlinesSchema,
   snapshotTabSchema,
+  scrollToSchema,
+  focusElementSchema,
   fillFieldSchema,
   selectOptionSchema,
   toggleControlSchema,
@@ -171,6 +183,8 @@ export const TOOL_ACTION: Record<ToolName, ActionType> = {
   summarize_sources: 'summarize',
   list_deadlines: 'extract-deadlines',
   snapshot_tab: 'inspect-tab',
+  scroll_to: 'scroll-to',
+  focus_element: 'focus-element',
   fill_field: 'fill-form-field',
   select_option: 'select-option',
   toggle_control: 'toggle-control',
@@ -203,6 +217,8 @@ export const TOOL_CATALOGUE = `
 - summarize_sources(): summarize the sources gathered so far.
 - list_deadlines(range): list deadlines (today | week | overdue | all).
 - snapshot_tab(tabRef): look at the interactive elements on a page before acting on it.
+- scroll_to(tabRef, handle): scroll to an element from the latest snapshot.
+- focus_element(tabRef, handle): focus an element from the latest snapshot.
 - fill_field(tabRef, handle, value): fill a form field (never submits anything).
 - select_option(tabRef, handle, value): choose an option in a dropdown/listbox.
 - toggle_control(tabRef, handle, checked): check/uncheck a checkbox or switch.

@@ -23,6 +23,8 @@ export const aiPreferencesSchema = z.object({
   /** Providers whose cloud-processing disclosure the student has accepted. */
   cloudDisclosureAccepted: z.array(z.enum(PROVIDER_IDS)).default([]),
   autoOpenRelatedTabs: z.boolean().default(false),
+  /** A student-controlled visual aid; it never changes actor authority. */
+  showOnPagePointer: z.boolean().default(true),
   allowedConfigurableActions: z.array(configurableActionIdSchema).default([]),
 });
 
@@ -33,6 +35,7 @@ export const DEFAULT_AI_PREFERENCES: AIPreferences = {
   model: 'recommended',
   cloudDisclosureAccepted: [],
   autoOpenRelatedTabs: false,
+  showOnPagePointer: true,
   allowedConfigurableActions: [],
 };
 

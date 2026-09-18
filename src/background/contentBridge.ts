@@ -71,6 +71,7 @@ export async function actInContentScript(
   tabId: number,
   request: ActRequest,
   consequentialCapability = false,
+  showOnPagePointer = true,
 ): Promise<ActResult | null> {
   try {
     const parsedRequest = actRequestSchema.parse(request);
@@ -83,6 +84,9 @@ export async function actInContentScript(
           nonce: crypto.randomUUID(),
           ...(consequentialCapability ? { consequentialCapability: crypto.randomUUID() } : {}),
         }),
+        // This is worker-resolved preference state, not page or model input.
+        // The actor still owns the final restricted-context check.
+        showOnPagePointer,
       },
     });
     // D-ACTOR-2 (SOL-1): the worker opens this port itself, fresh per

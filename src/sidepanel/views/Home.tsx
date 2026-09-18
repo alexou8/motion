@@ -4,9 +4,22 @@ import type { CourseTask } from '../../core/domain';
 import type { PanelState, SessionSummary } from '../../core/view/state';
 import { isStale } from '../../core/view/state';
 import { groupByWeek, type DeadlineWeekGroup } from '../../core/view';
-import { Button, EmptyState, SourceLink, Track, TrackItem, type MarkerState } from '../../ui/components';
+import {
+  Button,
+  EmptyState,
+  SourceLink,
+  Track,
+  TrackItem,
+  type MarkerState,
+} from '../../ui/components';
 import type { MotionCommand } from '../bridge';
-import { IdleView, PermissionNeededView, RestrictedView, SignedOutView, UnsupportedView } from './ConnectionViews';
+import {
+  IdleView,
+  PermissionNeededView,
+  RestrictedView,
+  SignedOutView,
+  UnsupportedView,
+} from './ConnectionViews';
 
 /**
  * Home: the session command centre when no session is open (VISION §6, §18).
@@ -18,7 +31,7 @@ import { IdleView, PermissionNeededView, RestrictedView, SignedOutView, Unsuppor
 
 interface HomeProps {
   state: PanelState;
-  send: (command: MotionCommand) => void;
+  send: (command: MotionCommand) => void | Promise<boolean>;
   onOpenSession: (sessionId: string) => void;
   now: Date;
 }
@@ -28,7 +41,8 @@ function relativeDue(iso: string | null, now: Date): string {
   const due = new Date(iso);
   const difference = due.getTime() - now.getTime();
   const days = Math.round(difference / 86_400_000);
-  if (Math.abs(difference) < 86_400_000 && now.toDateString() === due.toDateString()) return 'Due today';
+  if (Math.abs(difference) < 86_400_000 && now.toDateString() === due.toDateString())
+    return 'Due today';
   if (days === 1) return 'Due tomorrow';
   if (days === -1) return 'Due yesterday';
   if (days > 1) return `Due in ${days} days`;
@@ -50,11 +64,16 @@ function useDeadlineView(): ['list' | 'week', (view: 'list' | 'week') => void] {
   useEffect(() => {
     if (typeof chrome === 'undefined' || !chrome.storage?.local) return;
     let active = true;
-    void chrome.storage.local.get(DEADLINE_VIEW_KEY).then((stored) => {
-      const parsed = deadlineViewSchema.safeParse(stored[DEADLINE_VIEW_KEY]);
-      if (active && parsed.success) setView(parsed.data);
-    }).catch(() => undefined);
-    return () => { active = false; };
+    void chrome.storage.local
+      .get(DEADLINE_VIEW_KEY)
+      .then((stored) => {
+        const parsed = deadlineViewSchema.safeParse(stored[DEADLINE_VIEW_KEY]);
+        if (active && parsed.success) setView(parsed.data);
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
   }, []);
 
   const select = (next: 'list' | 'week') => {
@@ -79,10 +98,17 @@ function dueDateLabel(iso: string | null, timeZone: string | undefined): string 
 function isRecentlyMoved(task: CourseTask, now: Date): boolean {
   if (!task.dueChangedAt) return false;
   const changedAt = new Date(task.dueChangedAt).getTime();
-  return Number.isFinite(changedAt) && now.getTime() >= changedAt && now.getTime() - changedAt <= MOVED_CUE_DURATION_MS;
+  return (
+    Number.isFinite(changedAt) &&
+    now.getTime() >= changedAt &&
+    now.getTime() - changedAt <= MOVED_CUE_DURATION_MS
+  );
 }
 
-function taskMarker(task: CourseTask, bucket: 'today' | 'upcoming' | 'overdue' | 'needsReview'): MarkerState {
+function taskMarker(
+  task: CourseTask,
+  bucket: 'today' | 'upcoming' | 'overdue' | 'needsReview',
+): MarkerState {
   if (bucket === 'overdue') return 'blocked';
   if (bucket === 'needsReview') return 'pending';
   return task.status === 'in-progress' ? 'active' : 'pending';
@@ -91,44 +117,82 @@ function taskMarker(task: CourseTask, bucket: 'today' | 'upcoming' | 'overdue' |
 function needsReviewReason(task: CourseTask): string {
   if (task.due.iso === null) return "Motion could not parse a date from this page's text.";
   if (task.due.timeAssumed) return 'A time was assumed; the page only stated a date.';
-  if (task.due.zoneEvidence === 'assumed-local') return "The page did not state a time zone, so Motion assumed yours.";
+  if (task.due.zoneEvidence === 'assumed-local')
+    return 'The page did not state a time zone, so Motion assumed yours.';
   return 'Motion is not confident in this date.';
 }
 
-function DeadlineItem({ task, bucket, now }: { task: CourseTask; bucket: 'today' | 'upcoming' | 'overdue' | 'needsReview'; now: Date }) {
+function DeadlineItem({
+  task,
+  bucket,
+  now,
+}: {
+  task: CourseTask;
+  bucket: 'today' | 'upcoming' | 'overdue' | 'needsReview';
+  now: Date;
+}) {
   const movedFrom = task.dueHistory.at(-1);
   const dueConflict = task.dueConflict;
   return (
     <TrackItem state={taskMarker(task, bucket)} title={task.title}>
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-ink-muted">
         <span>{relativeDue(task.due.iso, now)}</span>
-        {bucket === 'needsReview' ? <span className="font-medium text-attention">Needs review</span> : null}
-        {movedFrom && isRecentlyMoved(task, now) ? <span className="rounded-full border border-danger px-2 py-0.5 text-xs font-medium text-danger">Moved</span> : null}
+        {bucket === 'needsReview' ? (
+          <span className="font-medium text-attention">Needs review</span>
+        ) : null}
+        {movedFrom && isRecentlyMoved(task, now) ? (
+          <span className="rounded-full border border-danger px-2 py-0.5 text-xs font-medium text-danger">
+            Moved
+          </span>
+        ) : null}
       </div>
       {movedFrom && isRecentlyMoved(task, now) ? (
         <p className="mt-1 text-xs text-danger">
-          Moved from <del aria-label={`Previously due ${dueDateLabel(movedFrom.iso, task.due.timeZone)}`}>{dueDateLabel(movedFrom.iso, task.due.timeZone)}</del>
+          Moved from{' '}
+          <del aria-label={`Previously due ${dueDateLabel(movedFrom.iso, task.due.timeZone)}`}>
+            {dueDateLabel(movedFrom.iso, task.due.timeZone)}
+          </del>
         </p>
       ) : null}
       {dueConflict ? (
         <p className="mt-1 text-xs font-medium text-attention">
-          Learn changed this date to {dueDateLabel(dueConflict.observed.iso, task.due.timeZone)}; you set {dueDateLabel(task.due.iso, task.due.timeZone)}. Needs review.
+          Learn changed this date to {dueDateLabel(dueConflict.observed.iso, task.due.timeZone)};
+          you set {dueDateLabel(task.due.iso, task.due.timeZone)}. Needs review.
         </p>
       ) : null}
       {bucket === 'needsReview' ? (
         <>
           <p className="mt-1 text-xs text-attention text-pretty">{needsReviewReason(task)}</p>
-          {task.due.raw ? <p className="mt-1 text-xs text-attention text-pretty">Source text: {task.due.raw}</p> : null}
+          {task.due.raw ? (
+            <p className="mt-1 text-xs text-attention text-pretty">Source text: {task.due.raw}</p>
+          ) : null}
         </>
       ) : null}
-      <SourceLink className="mt-2" href={task.provenance.sourceUrl} pageTitle={task.provenance.pageTitle} />
+      <SourceLink
+        className="mt-2"
+        href={task.provenance.sourceUrl}
+        pageTitle={task.provenance.pageTitle}
+      />
     </TrackItem>
   );
 }
 
-const BUCKET_LABELS = { today: 'Today', upcoming: 'Upcoming', overdue: 'Overdue', needsReview: 'Needs review' } as const;
+const BUCKET_LABELS = {
+  today: 'Today',
+  upcoming: 'Upcoming',
+  overdue: 'Overdue',
+  needsReview: 'Needs review',
+} as const;
 
-function DeadlineSummary({ state, tasks, now }: { state: PanelState; tasks: CourseTask[]; now: Date }) {
+function DeadlineSummary({
+  state,
+  tasks,
+  now,
+}: {
+  state: PanelState;
+  tasks: CourseTask[];
+  now: Date;
+}) {
   if (tasks.length === 0) return null;
   const counts = new Map<string, number>();
   for (const task of tasks) counts.set(task.courseId, (counts.get(task.courseId) ?? 0) + 1);
@@ -142,20 +206,102 @@ function DeadlineSummary({ state, tasks, now }: { state: PanelState; tasks: Cour
   const updated = observedAt ? relativeUpdatedAt(observedAt, now) : null;
   return (
     <div className="grid gap-1 text-sm text-ink-muted">
-      <p>{tasks.length} {tasks.length === 1 ? 'deadline' : 'deadlines'} across {counts.size} {counts.size === 1 ? 'course' : 'courses'}</p>
+      <p>
+        {tasks.length} {tasks.length === 1 ? 'deadline' : 'deadlines'} across {counts.size}{' '}
+        {counts.size === 1 ? 'course' : 'courses'}
+      </p>
       <ul className="flex flex-wrap gap-x-3 gap-y-1 text-xs" aria-label="Deadline count by course">
-        {[...counts.entries()].map(([courseId, count]) => <li key={courseId}>{names.get(courseId) ?? 'Unknown course'} · {count}</li>)}
+        {[...counts.entries()].map(([courseId, count]) => (
+          <li key={courseId}>
+            {names.get(courseId) ?? 'Unknown course'} · {count}
+          </li>
+        ))}
       </ul>
       {updated ? <p className="text-xs">Updated {updated}</p> : null}
     </div>
   );
 }
 
-function DiscoveryControls({ state, send, now }: { state: PanelState; send: (command: MotionCommand) => void; now: Date }) {
+function DiscoveryControls({
+  state,
+  send,
+  now,
+}: {
+  state: PanelState;
+  send: (command: MotionCommand) => void;
+  now: Date;
+}) {
   const discovery = state.discovery;
   if (state.connection !== 'supported' || !discovery.host) return null;
-  if (discovery.optedIn === null) return <section className="grid gap-2 rounded border border-edge bg-surface p-3" aria-labelledby="scan-prompt"><h3 className="text-sm font-medium" id="scan-prompt">Find deadlines across your courses?</h3><p className="text-xs text-ink-muted">Motion can read deadline data from Learn while you are on {new URL(discovery.host).host}. It stays in this browser.</p><div className="flex gap-2"><Button type="button" variant="primary" onClick={() => send({ type: 'set-deadline-discovery-opt-in', host: discovery.host!, enabled: true })}>Enable scanning</Button><Button type="button" variant="secondary" onClick={() => send({ type: 'set-deadline-discovery-opt-in', host: discovery.host!, enabled: false })}>Not now</Button></div></section>;
-  return <section className="grid gap-2" aria-label="Course deadline scanning"><label className="flex items-start gap-2 text-sm"><input type="checkbox" checked={discovery.optedIn} onChange={(event) => send({ type: 'set-deadline-discovery-opt-in', host: discovery.host!, enabled: event.target.checked })} /> <span>Scan my courses for deadlines while I’m on {new URL(discovery.host).host}</span></label>{discovery.optedIn ? <Button type="button" variant="secondary" disabled={discovery.busy} onClick={() => send({ type: 'scan-all-courses' })}>{discovery.busy ? 'Scanning courses…' : 'Scan all courses'}</Button> : null}<p className="text-xs text-ink-muted" aria-live="polite">{discovery.blocker ?? (discovery.result ? `Found ${discovery.result.deadlines} deadlines across ${discovery.result.courses} courses. Updated ${relativeUpdatedAt(discovery.result.updatedAt, now)}.` : '')}</p></section>;
+  if (discovery.optedIn === null)
+    return (
+      <section
+        className="grid gap-2 rounded border border-edge bg-surface p-3"
+        aria-labelledby="scan-prompt"
+      >
+        <h3 className="text-sm font-medium" id="scan-prompt">
+          Find deadlines across your courses?
+        </h3>
+        <p className="text-xs text-ink-muted">
+          Motion can read deadline data from Learn while you are on {new URL(discovery.host).host}.
+          It stays in this browser.
+        </p>
+        <div className="flex gap-2">
+          <Button
+            type="button"
+            variant="primary"
+            onClick={() =>
+              send({ type: 'set-deadline-discovery-opt-in', host: discovery.host!, enabled: true })
+            }
+          >
+            Enable scanning
+          </Button>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={() =>
+              send({ type: 'set-deadline-discovery-opt-in', host: discovery.host!, enabled: false })
+            }
+          >
+            Not now
+          </Button>
+        </div>
+      </section>
+    );
+  return (
+    <section className="grid gap-2" aria-label="Course deadline scanning">
+      <label className="flex items-start gap-2 text-sm">
+        <input
+          type="checkbox"
+          checked={discovery.optedIn}
+          onChange={(event) =>
+            send({
+              type: 'set-deadline-discovery-opt-in',
+              host: discovery.host!,
+              enabled: event.target.checked,
+            })
+          }
+        />{' '}
+        <span>Scan my courses for deadlines while I’m on {new URL(discovery.host).host}</span>
+      </label>
+      {discovery.optedIn ? (
+        <Button
+          type="button"
+          variant="secondary"
+          disabled={discovery.busy}
+          onClick={() => send({ type: 'scan-all-courses' })}
+        >
+          {discovery.busy ? 'Scanning courses…' : 'Scan all courses'}
+        </Button>
+      ) : null}
+      <p className="text-xs text-ink-muted" aria-live="polite">
+        {discovery.blocker ??
+          (discovery.result
+            ? `Found ${discovery.result.deadlines} deadlines across ${discovery.result.courses} courses. Updated ${relativeUpdatedAt(discovery.result.updatedAt, now)}.`
+            : '')}
+      </p>
+    </section>
+  );
 }
 
 function relativeUpdatedAt(value: string, now: Date): string {
@@ -168,14 +314,27 @@ function relativeUpdatedAt(value: string, now: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function DeadlineSections({ state, now, send }: { state: PanelState; now: Date; send: (command: MotionCommand) => void }) {
+function DeadlineSections({
+  state,
+  now,
+  send,
+}: {
+  state: PanelState;
+  now: Date;
+  send: (command: MotionCommand) => void;
+}) {
   const [view, setView] = useDeadlineView();
   const byId = new Map(state.tasks.map((task) => [task.id, task]));
   const buckets = (['today', 'overdue', 'needsReview', 'upcoming'] as const)
-    .map((bucket) => ({ bucket, tasks: state.deadlines[bucket].map((id) => byId.get(id)).filter((t): t is CourseTask => !!t) }))
+    .map((bucket) => ({
+      bucket,
+      tasks: state.deadlines[bucket].map((id) => byId.get(id)).filter((t): t is CourseTask => !!t),
+    }))
     .filter((section) => section.tasks.length > 0);
 
-  const activeTasks = state.tasks.filter((task) => !['submitted', 'graded', 'archived'].includes(task.status) && !task.archived);
+  const activeTasks = state.tasks.filter(
+    (task) => !['submitted', 'graded', 'archived'].includes(task.status) && !task.archived,
+  );
   if (buckets.length === 0 && activeTasks.length === 0) return null;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const weeks = groupByWeek(activeTasks, now, timeZone);
@@ -183,22 +342,46 @@ function DeadlineSections({ state, now, send }: { state: PanelState; now: Date; 
   return (
     <section className="grid gap-5" aria-labelledby="deadlines-title">
       <div className="flex items-center justify-between gap-3">
-        <h2 className="text-md font-medium" id="deadlines-title">Deadlines</h2>
-        <div className="flex rounded border border-edge p-0.5" role="group" aria-label="Deadline view">
-          <button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')} className="rounded px-2 py-1 text-xs font-medium aria-pressed:bg-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">List</button>
-          <button type="button" aria-pressed={view === 'week'} onClick={() => setView('week')} className="rounded px-2 py-1 text-xs font-medium aria-pressed:bg-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus">Week</button>
+        <h2 className="text-md font-medium" id="deadlines-title">
+          Deadlines
+        </h2>
+        <div
+          className="flex rounded border border-edge p-0.5"
+          role="group"
+          aria-label="Deadline view"
+        >
+          <button
+            type="button"
+            aria-pressed={view === 'list'}
+            onClick={() => setView('list')}
+            className="rounded px-2 py-1 text-xs font-medium aria-pressed:bg-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            List
+          </button>
+          <button
+            type="button"
+            aria-pressed={view === 'week'}
+            onClick={() => setView('week')}
+            className="rounded px-2 py-1 text-xs font-medium aria-pressed:bg-sunken focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            Week
+          </button>
         </div>
       </div>
       <DeadlineSummary state={state} tasks={activeTasks} now={now} />
       <DiscoveryControls state={state} send={send} now={now} />
-      {view === 'list' ? buckets.map(({ bucket, tasks }) => (
-        <div key={bucket} className="grid gap-2">
-          <h3 className="text-sm font-medium text-ink-muted">{BUCKET_LABELS[bucket]}</h3>
-          <Track label={BUCKET_LABELS[bucket]}>
-            {tasks.map((task) => <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />)}
-          </Track>
-        </div>
-      )) : weeks.map((week) => <WeekSection key={week.key} week={week} now={now} />)}
+      {view === 'list'
+        ? buckets.map(({ bucket, tasks }) => (
+            <div key={bucket} className="grid gap-2">
+              <h3 className="text-sm font-medium text-ink-muted">{BUCKET_LABELS[bucket]}</h3>
+              <Track label={BUCKET_LABELS[bucket]}>
+                {tasks.map((task) => (
+                  <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />
+                ))}
+              </Track>
+            </div>
+          ))
+        : weeks.map((week) => <WeekSection key={week.key} week={week} now={now} />)}
     </section>
   );
 }
@@ -207,12 +390,17 @@ function WeekSection({ week, now }: { week: DeadlineWeekGroup; now: Date }) {
   // Week grouping is temporal, not a confidence verdict. In particular, a
   // normal deadline beyond next week belongs to the Later section without
   // acquiring the review warning used by the list's Needs review bucket.
-  const bucket = week.key === 'thisWeek' ? 'today' : week.key === 'overdue' ? 'overdue' : 'upcoming';
+  const bucket =
+    week.key === 'thisWeek' ? 'today' : week.key === 'overdue' ? 'overdue' : 'upcoming';
   return (
     <div className="grid gap-2">
-      <h3 className="text-sm font-medium text-ink-muted">{week.label} · {week.count}</h3>
+      <h3 className="text-sm font-medium text-ink-muted">
+        {week.label} · {week.count}
+      </h3>
       <Track label={week.label}>
-        {week.tasks.map((task) => <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />)}
+        {week.tasks.map((task) => (
+          <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />
+        ))}
       </Track>
     </div>
   );
@@ -220,16 +408,28 @@ function WeekSection({ week, now }: { week: DeadlineWeekGroup; now: Date }) {
 
 function statusLabel(status: SessionSummary['status']): string {
   switch (status) {
-    case 'active': return 'Active';
-    case 'working': return 'Working';
-    case 'waiting': return 'Waiting on you';
-    case 'paused': return 'Paused';
-    case 'completed': return 'Completed';
-    case 'archived': return 'Archived';
+    case 'active':
+      return 'Active';
+    case 'working':
+      return 'Working';
+    case 'waiting':
+      return 'Waiting on you';
+    case 'paused':
+      return 'Paused';
+    case 'completed':
+      return 'Completed';
+    case 'archived':
+      return 'Archived';
   }
 }
 
-function SessionListItem({ session, onOpen }: { session: SessionSummary; onOpen: (id: string) => void }) {
+function SessionListItem({
+  session,
+  onOpen,
+}: {
+  session: SessionSummary;
+  onOpen: (id: string) => void;
+}) {
   return (
     <li>
       <button
@@ -254,13 +454,23 @@ function SessionListItem({ session, onOpen }: { session: SessionSummary; onOpen:
   );
 }
 
-function SessionList({ sessions, onOpen }: { sessions: SessionSummary[]; onOpen: (id: string) => void }) {
+function SessionList({
+  sessions,
+  onOpen,
+}: {
+  sessions: SessionSummary[];
+  onOpen: (id: string) => void;
+}) {
   if (sessions.length === 0) return null;
   return (
     <section className="grid gap-2" aria-labelledby="sessions-title">
-      <h2 className="text-md font-medium" id="sessions-title">Sessions</h2>
+      <h2 className="text-md font-medium" id="sessions-title">
+        Sessions
+      </h2>
       <ul className="grid gap-2">
-        {sessions.map((session) => <SessionListItem key={session.id} session={session} onOpen={onOpen} />)}
+        {sessions.map((session) => (
+          <SessionListItem key={session.id} session={session} onOpen={onOpen} />
+        ))}
       </ul>
     </section>
   );
@@ -269,7 +479,11 @@ function SessionList({ sessions, onOpen }: { sessions: SessionSummary[]; onOpen:
 /** Suggestions derived from the current page and known deadlines. */
 function suggestions(state: PanelState): string[] {
   const list: string[] = [];
-  if (state.connection === 'supported' && state.page.title && ['assignment', 'discussion-topic', 'content-topic'].includes(state.page.pageType ?? '')) {
+  if (
+    state.connection === 'supported' &&
+    state.page.title &&
+    ['assignment', 'discussion-topic', 'content-topic'].includes(state.page.pageType ?? '')
+  ) {
     list.push(`Work on ${state.page.title}`);
   }
   if (state.deadlines.today.length > 0 || state.deadlines.upcoming.length > 0) {
@@ -292,15 +506,30 @@ function PageContextLine({ state }: { state: PanelState }) {
   );
 }
 
-function HomeComposer({ onStart, disabled }: { onStart: (goal: string) => void; disabled: boolean }) {
+function HomeComposer({
+  onStart,
+  disabled,
+}: {
+  onStart: (goal: string) => void | Promise<boolean>;
+  disabled: boolean;
+}) {
   const [draft, setDraft] = useState('');
-  const canSend = !disabled && draft.trim().length > 0;
+  const [sending, setSending] = useState(false);
+  const canSend = !disabled && !sending && draft.trim().length > 0;
 
-  const submit = (event?: FormEvent) => {
+  const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!canSend) return;
-    onStart(draft.trim());
-    setDraft('');
+    if (sending) return;
+    const submittedText = draft.trim();
+    setSending(true);
+    try {
+      const started = await onStart(submittedText);
+      if (started !== false)
+        setDraft((current) => (current.trim() === submittedText ? '' : current));
+    } finally {
+      setSending(false);
+    }
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -324,7 +553,7 @@ function HomeComposer({ onStart, disabled }: { onStart: (goal: string) => void; 
           className="min-h-10 min-w-0 flex-1 resize-none bg-transparent px-1 text-sm text-ink placeholder:text-ink-muted focus:outline-none disabled:cursor-not-allowed"
         />
         <Button type="submit" variant="primary" disabled={!canSend}>
-          Start
+          {sending ? 'Starting…' : 'Start'}
         </Button>
       </div>
     </form>
@@ -337,7 +566,8 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
   if (state.connection === 'restricted') return <RestrictedView state={state} send={send} />;
   if (state.connection === 'idle') return <IdleView state={state} send={send} />;
   if (state.connection === 'unsupported') return <UnsupportedView state={state} send={send} />;
-  if (state.connection === 'permission-needed') return <PermissionNeededView state={state} send={send} />;
+  if (state.connection === 'permission-needed')
+    return <PermissionNeededView state={state} send={send} />;
   if (state.connection === 'signed-out') return <SignedOutView state={state} send={send} />;
 
   const hints = suggestions(state);
@@ -362,7 +592,11 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
         </div>
       ) : null}
       {state.sessions.length === 0 && state.tasks.length === 0 ? (
-        <EmptyState title="Motion organizes coursework" actionLabel="Read this page" onAction={() => send({ type: 'read-page', url: state.page.url })}>
+        <EmptyState
+          title="Motion organizes coursework"
+          actionLabel="Read this page"
+          onAction={() => send({ type: 'read-page', url: state.page.url })}
+        >
           Ask Motion to work on something above, or read this page to see its deadlines here.
         </EmptyState>
       ) : (

@@ -40,6 +40,7 @@ const aiStatus = {
     },
   ],
   autoOpenRelatedTabs: false,
+  showOnPagePointer: true,
   allowedConfigurableActions: [],
   lmsAccess: [{ origin: 'https://mylearningspace.wlu.ca/*', granted: true }],
 };

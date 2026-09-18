@@ -6,9 +6,8 @@ describe('service worker browser entry points', () => {
     vi.resetModules();
   });
 
-  it('registers the toolbar action as an explicit side-panel trigger', async () => {
+  it('does not mutate workspaces from the toolbar action when the popup is declared', async () => {
     const actionClicked = vi.fn();
-    const open = vi.fn(async () => undefined);
     const event = () => ({ addListener: vi.fn() });
 
     vi.stubGlobal('chrome', {
@@ -20,36 +19,13 @@ describe('service worker browser entry points', () => {
         onMessage: event(),
         onStartup: event(),
       },
-      sidePanel: {
-        open,
-        setPanelBehavior: vi.fn(async () => undefined),
-      },
+      sidePanel: { open: vi.fn(async () => undefined), setPanelBehavior: vi.fn(async () => undefined) },
       tabs: { onUpdated: event(), onRemoved: event() },
     });
 
     await import('./service-worker');
 
-    expect(actionClicked).toHaveBeenCalledOnce();
-    const handler = actionClicked.mock.calls[0]?.[0] as (tab: chrome.tabs.Tab) => void;
-    handler({ windowId: 42 } as chrome.tabs.Tab);
-    expect(open).toHaveBeenCalledWith({ windowId: 42 });
-  });
-
-  it('opens the panel even when grouping later fails', async () => {
-    const actionClicked = vi.fn();
-    const open = vi.fn(async () => undefined);
-    const event = () => ({ addListener: vi.fn() });
-    vi.stubGlobal('chrome', {
-      action: { onClicked: { addListener: actionClicked } },
-      alarms: { onAlarm: event() },
-      runtime: { id: 'test-extension-id', onInstalled: event(), onMessage: event(), onStartup: event() },
-      sidePanel: { open, setPanelBehavior: vi.fn(async () => undefined) },
-      tabs: { onUpdated: event(), onRemoved: event() },
-    });
-    await import('./service-worker');
-    const handler = actionClicked.mock.calls[0]?.[0] as (tab: chrome.tabs.Tab) => void;
-    handler({ id: 1, url: 'https://mylearningspace.wlu.ca/d2l/home/999', windowId: 42 } as chrome.tabs.Tab);
-    expect(open).toHaveBeenCalledWith({ windowId: 42 });
+    expect(actionClicked).not.toHaveBeenCalled();
   });
 
   it('recovers the workflow named by an expired lease alarm', async () => {

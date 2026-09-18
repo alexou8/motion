@@ -2,7 +2,7 @@ import { EMPTY_PANEL_STATE, panelStateSchema, type PanelState } from '@/core/vie
 import { originPatternFor } from '@/platform/permissions';
 import { resolveAdapter } from '@/core/adapters';
 import { z } from 'zod';
-import type { MotionBridge, MotionCommand } from './bridge';
+import type { MotionBridge, MotionCommand, UiCommandResult } from './bridge';
 import { parseWorkerResult } from './responses';
 import { ChromeLocalProvider } from '@/platform/ai/chromeLocal';
 import { attachInferenceHost } from '@/platform/ai/inferenceHost';
@@ -24,7 +24,7 @@ type Listener = () => void;
 
 const workerResponseSchema = z.union([
   z.object({ ok: z.literal(true), result: z.unknown().optional() }),
-  z.object({ ok: z.literal(false), error: z.string().optional() }),
+  z.object({ ok: z.literal(false), code: z.string().optional(), error: z.string().optional(), recoverable: z.boolean().optional() }),
 ]);
 
 /**
@@ -55,12 +55,47 @@ export async function resolveLmsTab(): Promise<chrome.tabs.Tab | null> {
 async function ask(message: unknown): Promise<unknown> {
   try {
     const response = await chrome.runtime.sendMessage(message);
-    return response ?? { ok: false, error: 'The background worker did not respond.' };
+    return response ?? { ok: false, code: 'transport-no-response', error: 'The background worker did not respond.' };
   } catch (error) {
-    // A rejected sendMessage usually means the worker was asleep and is now
-    // starting; the caller refreshes, so this is not surfaced as an error.
-    return { ok: false, error: error instanceof Error ? error.message : 'Message failed' };
+    return { ok: false, code: 'transport-unavailable', error: error instanceof Error ? error.message : 'Motion could not reach its background worker.' };
   }
+}
+
+export function toUiCommandResult<T = undefined>(raw: unknown, parser?: (value: unknown) => T | null): UiCommandResult<T> {
+  const envelope = workerResponseSchema.safeParse(raw);
+  if (!envelope.success)
+    return { ok: false, code: 'transport-malformed-response', message: 'Motion received an invalid response from its background worker. Try again.' };
+  if (!envelope.data.ok)
+    return {
+      ok: false,
+      code: envelope.data.code ?? 'command-refused',
+      message: envelope.data.error ?? 'Motion could not complete that action. Try again.',
+      ...(envelope.data.recoverable === undefined ? {} : { recoverable: envelope.data.recoverable }),
+    };
+  // A transport success only says the worker answered. Commands also carry
+  // explicit domain no-ops (closed workspace tab, terminal session, declined
+  // extraction). Do not clear UI feedback or report success for those results.
+  const result = envelope.data.result;
+  if (typeof result === 'object' && result !== null) {
+    const domain = result as { updated?: unknown; requested?: unknown; session?: unknown; refusal?: unknown; reason?: unknown };
+    const refusal = typeof domain.refusal === 'object' && domain.refusal !== null
+      ? (domain.refusal as { message?: unknown }).message
+      : undefined;
+    const message = typeof refusal === 'string'
+      ? refusal
+      : typeof domain.reason === 'string'
+        ? domain.reason
+        : 'Motion could not complete that action. Try again.';
+    if (domain.updated === false || domain.requested === false || domain.session === null || typeof refusal === 'string')
+      return { ok: false, code: 'command-refused', message };
+  }
+  if (parser) {
+    const parsed = parser(envelope.data.result);
+    return parsed === null
+      ? { ok: false, code: 'transport-invalid-result', message: 'Motion received an invalid result. Refresh and try again.' }
+      : { ok: true, data: parsed };
+  }
+  return { ok: true };
 }
 
 /**
@@ -78,16 +113,16 @@ async function toWorkerMessage(
   switch (command.type) {
     case 'session-create': {
       if (command.tabId !== null) return command;
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await resolveLmsTab();
       return { ...command, tabId: tab?.id ?? null };
     }
     case 'session-message': {
       if (command.tabId !== null) return command;
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await resolveLmsTab();
       return { ...command, tabId: tab?.id ?? null };
     }
     case 'session-adopt-current-tab': {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      const tab = await resolveLmsTab();
       if (tab?.id === undefined) return null;
       return { type: 'session-tab', sessionId: command.sessionId, tabId: tab.id, op: 'adopt' };
     }
@@ -277,15 +312,16 @@ export function createRuntimeBridge(): MotionBridge {
   });
 
   /** Sends a command and returns the worker's answer for the panel to render. */
-  const request = async <T,>(command: MotionCommand): Promise<T | null> => {
+  const request = async <T,>(command: MotionCommand): Promise<UiCommandResult<T>> => {
     const payload = await toWorkerMessage(command, state);
-    if (!payload) return null;
-    const envelope = workerResponseSchema.safeParse(await ask(payload));
-    if (!envelope.success || !envelope.data.ok) return null;
+    if (!payload)
+      return { ok: false, code: 'target-unavailable', message: 'Motion could not find a supported page for that action.' };
+    const result = toUiCommandResult<T>(await ask(payload), (raw) => parseWorkerResult(command.type, raw) as T | null);
+    if (!result.ok) return result;
     await refresh();
     // The worker is a boundary too: version skew or a worker defect must not
     // turn an unexpected result into rendered panel data.
-    return parseWorkerResult(command.type, envelope.data.result) as T | null;
+    return result;
   };
 
   return {
@@ -297,36 +333,40 @@ export function createRuntimeBridge(): MotionBridge {
       return () => listeners.delete(listener);
     },
 
-    send: async (command: MotionCommand) => {
+    send: async (command: MotionCommand): Promise<UiCommandResult> => {
       switch (command.type) {
         case 'open-settings':
           await chrome.runtime.openOptionsPage();
-          return;
+          return { ok: true };
         case 'request-permission': {
           // Must run inside the click that produced it: `chrome.permissions
           // .request` needs a live user gesture and loses it at the first
           // await. This is why the panel asks directly rather than routing the
           // request through the worker (docs/THREAT_MODEL.md T10).
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          const origin = tab?.url ? originPatternFor(tab.url) : null;
-          if (!origin) return;
-          await chrome.permissions.request({ origins: [origin] });
+          const origin = state.page.url ? originPatternFor(state.page.url) : null;
+          if (!origin) return { ok: false, code: 'permission-unavailable', message: 'Motion could not identify this page to request access.' };
+          // Do not await before this call: Chrome consumes the popup/panel click
+          // gesture at the first async boundary.
+          const permission = chrome.permissions.request({ origins: [origin] });
+          const granted = await permission;
           await refresh();
-          return;
+          return granted
+            ? { ok: true }
+            : { ok: false, code: 'permission-denied', message: 'Browser access was not granted. You can try again from this page.', recoverable: true };
         }
 
         case 'read-page': {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (tab?.id === undefined) return;
-          await ask({ type: 'request-extraction', tabId: tab.id });
+          const tab = await resolveLmsTab();
+          if (tab?.id === undefined) return { ok: false, code: 'target-unavailable', message: 'Motion could not find the current page.' };
+          const result = toUiCommandResult(await ask({ type: 'request-extraction', tabId: tab.id }));
           await refresh();
-          return;
+          return result;
         }
 
         case 'create-note': {
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          if (!tab?.url || !command.pageUrl) return;
-          await ask({
+          const tab = await resolveLmsTab();
+          if (!tab?.url || !command.pageUrl) return { ok: false, code: 'target-unavailable', message: 'Motion could not find the page for this note.' };
+          const result = toUiCommandResult(await ask({
             type: 'create-note',
             title: tab.title?.slice(0, 200) ?? 'Note',
             courseId: state.course?.id ?? null,
@@ -335,19 +375,19 @@ export function createRuntimeBridge(): MotionBridge {
             sourceUrl: command.pageUrl,
             pageTitle: tab.title ?? '',
             pageType: state.page.pageType ?? 'unsupported',
-          });
+          }));
           await refresh();
-          return;
+          return result;
         }
 
         case 'decide-approval': {
-          await ask({
+          const result = toUiCommandResult(await ask({
             type: 'decide-approval',
             approvalId: command.approvalId,
             approved: command.approved,
-          });
+          }));
           await refresh();
-          return;
+          return result;
         }
 
         case 'session-create':
@@ -366,11 +406,18 @@ export function createRuntimeBridge(): MotionBridge {
         case 'build-checklist':
         case 'scan-all-courses': {
           const payload = await toWorkerMessage(command, state);
-          if (payload) await ask(payload);
+          if (!payload) return { ok: false, code: 'target-unavailable', message: 'Motion could not find a supported page for that action.' };
+          const result = toUiCommandResult(
+            await ask(payload),
+            command.type === 'session-select'
+              ? (raw) => parseWorkerResult('session-select', raw) === null ? null : undefined
+              : undefined,
+          );
           await refresh();
-          return;
+          return result;
         }
       }
+      return { ok: false, code: 'unsupported-command', message: 'Motion does not recognise that action.' };
     },
   };
 }

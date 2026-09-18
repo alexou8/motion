@@ -100,7 +100,10 @@ after the extension passes its type checks, tests, build, and package validation
 1. Download and unzip `motion-extension-latest.zip`.
 2. Open `chrome://extensions` and turn on **Developer mode**.
 3. Choose **Load unpacked** and select the unzipped folder.
-4. Open a D2L or MyLearningSpace course page and click the Motion icon.
+4. Open a D2L or MyLearningSpace course page and click the Motion toolbar icon.
+   Use the popup's explicit Start/Continue action to open the side panel and
+   begin or resume the workspace; the toolbar click alone does not create an
+   automatic group.
 
 Builds for open pull requests remain available from GitHub Actions. Tagged
 version releases (`v*`) continue to provide permanent versioned downloads.

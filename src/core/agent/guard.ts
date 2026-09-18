@@ -123,6 +123,10 @@ function friendlyTitle(call: ToolCall): string {
       return `List deadlines (${call.range})`;
     case 'snapshot_tab':
       return 'Look at page elements';
+    case 'scroll_to':
+      return 'Scroll to element';
+    case 'focus_element':
+      return 'Focus element';
     case 'fill_field':
       return 'Fill field';
     case 'select_option':
@@ -324,6 +328,8 @@ export function guardToolCall(call: ToolCall, refs: RefTables, ctx: GuardContext
     }
 
     case 'fill_field':
+    case 'scroll_to':
+    case 'focus_element':
     case 'select_option':
     case 'toggle_control':
     case 'save_discussion_draft':

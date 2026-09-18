@@ -6,7 +6,9 @@ import { openDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { courseLinkRepository, sessionRepository, updateSession } from '@/core/storage/repositories';
 import { STORE } from '@/core/storage/schema';
-import { ChromeTabs } from '@/platform/tabs';
+import { ChromeTabs, type TabsCapability } from '@/platform/tabs';
+import { withLock } from '@/platform/locks';
+import { workspacePageUrl } from '@/core/workspace';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { createEngine } from './recovery';
 import { closeSessionWorkspace } from './workspaceEvents';
@@ -113,6 +115,110 @@ async function createSession(message: Extract<SessionMessage, { type: 'session-c
   return (await runModelTurn(session.id, message.goal)) ?? session;
 }
 
+export interface WorkspaceSessionInput {
+  title: string;
+  goal: string;
+  courseId: string | null;
+  /** The page this workspace is for. It is the reuse key, never just course. */
+  pageUrl: string;
+  browserSessionKey: string;
+}
+
+/**
+ * Popup workspace creation is explicit, so it must have a durable
+ * AgentSession even when it starts from the older workspace workflow. The
+ * lock prevents two fast clicks from creating parallel sessions for one page.
+ */
+export async function createOrReuseWorkspaceSession(input: WorkspaceSessionInput): Promise<AgentSession> {
+  return withLock(`motion:workspace-session:${input.browserSessionKey}:${input.pageUrl}`, async () => {
+    const db = await openDatabase();
+    try {
+      const repo = sessionRepository(db);
+      const existing = (await repo.all()).records
+        .filter((session) => session.courseId === input.courseId
+          && session.workspace.sessionKey === input.browserSessionKey
+          && session.status !== 'archived'
+          && session.status !== 'completed'
+          && session.context.sources.some((source) => workspacePageUrl(source.url) === workspacePageUrl(input.pageUrl)))
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+      const now = new Date().toISOString();
+      if (existing) {
+        // Tab and group IDs are scoped to a browser session. Reuse may select
+        // this exact page/session, but must never rewrite retained ownership.
+        await chrome.storage.session.set({ [ACTIVE_SESSION_KEY]: existing.id });
+        return existing;
+      }
+      const session: AgentSession = {
+        id: crypto.randomUUID(), revision: 0, title: input.title, goal: input.goal,
+        courseId: input.courseId, taskId: null, status: 'active', createdAt: now, updatedAt: now,
+        workspace: { groupId: null, groupTitle: `Motion · ${input.title}`, sessionKey: input.browserSessionKey, ownedTabIds: [], adoptedTabIds: [], releasedTabIds: [] },
+        plan: { steps: [], currentStepId: null }, blockers: [], context: { sources: [{ url: input.pageUrl, title: input.title, kind: 'instructions', excluded: false, provenance: input.pageUrl, excerpt: '' }] }, artifacts: [], agent: { providerId: null, model: null },
+        conversation: [{ id: crypto.randomUUID(), role: 'student', text: input.goal, at: now }], activity: [], workflowIds: [], modelTurnGeneration: 0, pendingModelRequest: null,
+      };
+      await repo.put(session);
+      await chrome.storage.session.set({ [ACTIVE_SESSION_KEY]: session.id });
+      return session;
+    } finally {
+      db.close();
+    }
+  });
+}
+
+/**
+ * Add the student's current tab to an existing session without borrowing an
+ * ID from another browser session. This is deliberately separate from reuse:
+ * a stale session can be selected but can never be re-keyed into this browser.
+ */
+export async function adoptWorkspaceTab(
+  sessionId: string,
+  tabId: number,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<{ updated: boolean; reason?: string }> {
+  return withLock(`motion:workspace-adopt:${sessionId}`, async () => {
+    const session = await getSession(sessionId);
+    if (!session) return { updated: false, reason: 'That workspace is no longer available.' };
+    if (terminalRefusal(session)) return { updated: false, reason: terminalRefusal(session)?.message };
+    if (session.workspace.sessionKey !== await tabs.sessionKey())
+      return { updated: false, reason: 'This workspace belongs to an earlier browser session.' };
+    if (session.workspace.releasedTabIds.includes(tabId))
+      return { updated: false, reason: 'This tab was removed from the Motion workspace.' };
+    const tab = await tabs.get(tabId);
+    if (!tab) return { updated: false, reason: 'That page is no longer open.' };
+    const currentPage = workspacePageUrl(tab.url);
+    if (!currentPage || !session.context.sources.some((source) => workspacePageUrl(source.url) === currentPage))
+      return { updated: false, reason: 'That page changed before Motion could add it to this workspace.' };
+    if (tab.groupId !== null && tab.groupId !== session.workspace.groupId)
+      return { updated: false, reason: 'This tab is in a group chosen by the student.' };
+    if (session.workspace.groupId !== null && tab.groupId === session.workspace.groupId && session.workspace.adoptedTabIds.includes(tabId))
+      return { updated: true };
+    // A tab may navigate or be moved while the worker is awaiting state. Read
+    // it again immediately before grouping, and preserve any student override.
+    const latest = await tabs.get(tabId);
+    if (!latest || workspacePageUrl(latest.url) !== currentPage)
+      return { updated: false, reason: 'That page changed before Motion could add it to this workspace.' };
+    if (latest.groupId !== null && latest.groupId !== session.workspace.groupId)
+      return { updated: false, reason: 'This tab is in a group chosen by the student.' };
+    const groupId = await tabs.groupInto(session.workspace.groupId, [tabId], {
+      title: session.workspace.groupTitle,
+      color: 'blue',
+      ...(latest.windowId === undefined ? {} : { windowId: latest.windowId }),
+    });
+    const next = await updateExistingSession(sessionId, (current) => {
+      if (terminalRefusal(current) || current.workspace.sessionKey !== session.workspace.sessionKey) return null;
+      return {
+        ...current,
+        updatedAt: new Date().toISOString(),
+        workspace: {
+          ...current.workspace,
+          groupId,
+          adoptedTabIds: [...new Set([...current.workspace.adoptedTabIds, tabId])],
+        },
+      };
+    });
+    return next ? { updated: true } : { updated: false, reason: 'That workspace changed before the tab could be added.' };
+  });
+}
+
 async function applyIntent(session: AgentSession, text: string): Promise<AgentSession> {
   const intent = detectIntent(text);
   if (!intent) return (await runModelTurn(session.id, text)) ?? session;
@@ -196,6 +302,24 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
       if (!session) return { updated: false };
       const refusal = terminalRefusal(session);
       if (refusal) return { updated: false, session, refusal };
+      const liveWorkspaceTab = !session.workspace.releasedTabIds.includes(message.tabId)
+        && (session.workspace.ownedTabIds.includes(message.tabId) || session.workspace.adoptedTabIds.includes(message.tabId));
+      if (message.op === 'focus') {
+        if (!liveWorkspaceTab)
+          return { updated: false, reason: 'That tab is no longer in this Motion workspace.' };
+        const tab = await chrome.tabs.get(message.tabId).catch(() => undefined);
+        if (tab?.id === undefined || tab.windowId === undefined)
+          return { updated: false, reason: 'That workspace tab is no longer open.' };
+        await chrome.windows.update(tab.windowId, { focused: true });
+        await chrome.tabs.update(tab.id, { active: true });
+        return { updated: true, focused: true };
+      }
+      if (message.op === 'release' && liveWorkspaceTab) {
+        const tabs = new ChromeTabs();
+        const tab = await tabs.get(message.tabId);
+        if (tab?.groupId !== null && tab?.groupId === session.workspace.groupId)
+          await tabs.ungroup([message.tabId]);
+      }
       const now = new Date().toISOString();
       const next = await updateExistingSession(session.id, (current) => {
         if (terminalRefusal(current)) return null;

@@ -160,12 +160,12 @@ export const actorAuthorizationSchema = z.object({
 export type ActorAuthorization = z.infer<typeof actorAuthorizationSchema>;
 
 export const authorizedActorRequestSchema = z.discriminatedUnion('type', [
-  clickActionSchema.extend({ authorization: actorAuthorizationSchema }),
-  fillActionSchema.extend({ authorization: actorAuthorizationSchema }),
-  selectActionSchema.extend({ authorization: actorAuthorizationSchema }),
-  toggleActionSchema.extend({ authorization: actorAuthorizationSchema }),
-  scrollToActionSchema.extend({ authorization: actorAuthorizationSchema }),
-  focusActionSchema.extend({ authorization: actorAuthorizationSchema }),
+  clickActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
+  fillActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
+  selectActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
+  toggleActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
+  scrollToActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
+  focusActionSchema.extend({ authorization: actorAuthorizationSchema, showOnPagePointer: z.boolean().default(true) }),
 ]);
 export type AuthorizedActorRequest = z.infer<typeof authorizedActorRequestSchema>;
 
