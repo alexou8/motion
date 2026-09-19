@@ -17,10 +17,23 @@ export interface TaskResolution {
   ambiguous: CourseTask[];
 }
 
-const KIND_WORDS = ['assignment', 'lab', 'quiz', 'discussion', 'project', 'week', 'module', 'exercise'];
+const KIND_WORDS = [
+  'assignment',
+  'lab',
+  'quiz',
+  'discussion',
+  'project',
+  'week',
+  'module',
+  'exercise',
+];
 
 function normalize(text: string): string {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function extractCourseCode(goal: string): string | null {
@@ -61,7 +74,7 @@ export function resolveTaskForGoal(
 
   const courseCode = extractCourseCode(goal);
   const matchedCourse = courseCode
-    ? courses.find((c) => c.code && c.code.replace(/\s/g, '').toLowerCase() === courseCode)
+    ? courses.find((c) => c.code && c.code.replace(/[\s-]/g, '').toLowerCase() === courseCode)
     : undefined;
 
   const pool = matchedCourse ? tasks.filter((t) => t.courseId === matchedCourse.id) : tasks;
@@ -97,6 +110,7 @@ export function resolveTaskForGoal(
     };
   }
 
-  const confidence: Confidence = matchedCourse && kindAndNumber && top.score >= 10 ? 'high' : top.score >= 4 ? 'medium' : 'low';
+  const confidence: Confidence =
+    matchedCourse && kindAndNumber && top.score >= 10 ? 'high' : top.score >= 4 ? 'medium' : 'low';
   return { task: top.task, confidence, ambiguous: [] };
 }

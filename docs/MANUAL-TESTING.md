@@ -90,11 +90,22 @@ Deployment findings worth knowing when a fixture is needed:
   shadow roots; list tools (dropbox, quizzes, discussions, grades) are
   server-rendered tables in the light DOM with no iframes.
 
-Still **not verified** live: `navigateContent` topics, a live expired session,
-same-document navigation, and the graded-attempt route — which was deliberately
-not opened on a real account and is covered only by `npm run test:extension`
-against a synthetic attempt page. Extraction still runs only when the student
-asks the panel to read the page.
+Still **not verified** live: a live expired session, same-document navigation,
+and the graded-attempt route — which was deliberately not opened on a real
+account and is covered only by `npm run test:extension` against a synthetic
+attempt page. Extraction still runs only when the student asks the panel to
+read the page.
+
+### Route follow-up — 2026-09-18
+
+A signed-in read-only walkthrough confirmed that this deployment does not emit
+`navigateContent` URLs for topic navigation. A real content topic used
+`viewContent/{id}/View`; its Next control returned to the module
+`Home?itemIdentifier=...` route. A constructed `navigateContent` route reached
+the deployment's own 404 page. No graded attempt was opened and no course data
+or identifiers were recorded. The remaining live gaps are therefore a live
+expired session, same-document navigation, and the deliberately excluded
+graded-attempt route.
 
 ## Setup
 
