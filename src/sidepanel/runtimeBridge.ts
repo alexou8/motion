@@ -52,6 +52,18 @@ export async function resolveLmsTab(): Promise<chrome.tabs.Tab | null> {
   return qualifying[0] ?? null;
 }
 
+/**
+ * Starts an optional host-permission request in the same synchronous turn as
+ * the side-panel click. Chrome drops user activation after the first await, so
+ * the already-rendered page URL is the only input this helper may use before
+ * calling `permissions.request`.
+ */
+export function requestPagePermission(pageUrl: string | null): Promise<boolean> | null {
+  const origin = pageUrl ? originPatternFor(pageUrl) : null;
+  if (!origin) return null;
+  return chrome.permissions.request({ origins: [origin] });
+}
+
 async function ask(message: unknown): Promise<unknown> {
   try {
     const response = await chrome.runtime.sendMessage(message);
@@ -277,7 +289,7 @@ export function createRuntimeBridge(): MotionBridge {
   });
 
   /** Sends a command and returns the worker's answer for the panel to render. */
-  const request = async <T,>(command: MotionCommand): Promise<T | null> => {
+  const request = async <T>(command: MotionCommand): Promise<T | null> => {
     const payload = await toWorkerMessage(command, state);
     if (!payload) return null;
     const envelope = workerResponseSchema.safeParse(await ask(payload));
@@ -303,14 +315,11 @@ export function createRuntimeBridge(): MotionBridge {
           await chrome.runtime.openOptionsPage();
           return;
         case 'request-permission': {
-          // Must run inside the click that produced it: `chrome.permissions
-          // .request` needs a live user gesture and loses it at the first
-          // await. This is why the panel asks directly rather than routing the
-          // request through the worker (docs/THREAT_MODEL.md T10).
-          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-          const origin = tab?.url ? originPatternFor(tab.url) : null;
-          if (!origin) return;
-          await chrome.permissions.request({ origins: [origin] });
+          // This call must happen before any await: Chrome consumes the user
+          // activation after the first asynchronous boundary.
+          const request = requestPagePermission(state.page.url);
+          if (!request) return;
+          await request;
           await refresh();
           return;
         }

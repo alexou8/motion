@@ -52,7 +52,8 @@ const task: CourseTask = {
 };
 
 const session: AgentSession = {
-  id: 'session-1', revision: 0,
+  id: 'session-1',
+  revision: 0,
   title: 'CP363 · Assignment 2',
   goal: 'Work on Assignment 2',
   courseId: course.id,
@@ -60,24 +61,63 @@ const session: AgentSession = {
   status: 'working',
   createdAt: NOW.toISOString(),
   updatedAt: NOW.toISOString(),
-  workspace: { groupId: 1, groupTitle: 'CP363', sessionKey: 'session-key', ownedTabIds: [11], adoptedTabIds: [22], releasedTabIds: [] },
+  workspace: {
+    groupId: 1,
+    groupTitle: 'CP363',
+    sessionKey: 'session-key',
+    ownedTabIds: [11],
+    adoptedTabIds: [22],
+    releasedTabIds: [],
+  },
   plan: {
     steps: [
       { id: 'step-1', title: 'Read the instructions', status: 'done' },
-      { id: 'step-2', title: 'Draft an outline', status: 'active', rationale: 'The rubric weights structure heavily.' },
+      {
+        id: 'step-2',
+        title: 'Draft an outline',
+        status: 'active',
+        rationale: 'The rubric weights structure heavily.',
+      },
       { id: 'step-3', title: 'Write the draft', status: 'pending' },
     ],
     currentStepId: 'step-2',
   },
   blockers: [],
-  context: { sources: [{ url: 'https://lms.example.test/course/1/rubric', title: 'Rubric', kind: 'rubric', excluded: false, provenance: 'assignment page', excerpt: '' }] },
-  artifacts: [{ id: 'artifact-1', kind: 'checklist', refId: 'checklist-1', title: 'Assignment 2 checklist', createdAt: NOW.toISOString() }],
+  context: {
+    sources: [
+      {
+        url: 'https://lms.example.test/course/1/rubric',
+        title: 'Rubric',
+        kind: 'rubric',
+        excluded: false,
+        provenance: 'assignment page',
+        excerpt: '',
+      },
+    ],
+  },
+  artifacts: [
+    {
+      id: 'artifact-1',
+      kind: 'checklist',
+      refId: 'checklist-1',
+      title: 'Assignment 2 checklist',
+      createdAt: NOW.toISOString(),
+    },
+  ],
   agent: { providerId: 'chrome-local', model: 'chrome-on-device' },
   conversation: [
     { id: 'c1', role: 'student', text: 'Work on Assignment 2', at: NOW.toISOString() },
     { id: 'c2', role: 'motion', text: 'Starting with the rubric.', at: NOW.toISOString() },
   ],
-  activity: [{ id: 'a1', at: NOW.toISOString(), kind: 'plan', summary: 'Read the rubric.', sourceUrl: 'https://lms.example.test/course/1/rubric' }],
+  activity: [
+    {
+      id: 'a1',
+      at: NOW.toISOString(),
+      kind: 'plan',
+      summary: 'Read the rubric.',
+      sourceUrl: 'https://lms.example.test/course/1/rubric',
+    },
+  ],
   workflowIds: ['workflow-1'],
   modelTurnGeneration: 0,
   pendingModelRequest: null,
@@ -138,17 +178,48 @@ describe('connection views on Home', () => {
     render(<App bridge={bridgeFor(state({ connection }))} now={NOW} />);
     expect(screen.getByRole('heading', { name: heading })).toBeInTheDocument();
   });
+
+  it.each([
+    ['unsupported', 'Add a note', { type: 'create-note', pageUrl: state().page.url }],
+    ['permission-needed', 'Request page permission', { type: 'request-permission' }],
+    ['signed-out', 'Read the page again', { type: 'read-page', url: state().page.url }],
+  ] as const)('wires the %s recovery action', async (connection, label, command) => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(<App bridge={bridgeFor(state({ connection }), commands)} now={NOW} />);
+
+    await user.click(screen.getByRole('button', { name: label }));
+
+    expect(commands).toContainEqual(command);
+  });
+
+  it('wires the persistent Settings control', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(<App bridge={bridgeFor(state(), commands)} now={NOW} />);
+
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+
+    expect(commands).toContainEqual({ type: 'open-settings' });
+  });
 });
 
 it('keeps restricted mode read-only and free of automation controls', () => {
   render(
     <App
-      bridge={bridgeFor(state({ connection: 'restricted', page: { ...state().page, restrictionReason: 'Graded attempt detected.' } }))}
+      bridge={bridgeFor(
+        state({
+          connection: 'restricted',
+          page: { ...state().page, restrictionReason: 'Graded attempt detected.' },
+        }),
+      )}
       now={NOW}
     />,
   );
   expect(screen.getByText('Graded attempt detected.')).toBeInTheDocument();
-  expect(screen.queryAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Settings']);
+  expect(
+    screen.queryAllByRole('button').map((button) => button.getAttribute('aria-label')),
+  ).toEqual(['Settings']);
   expect(screen.queryAllByRole('textbox')).toHaveLength(0);
 });
 
@@ -160,7 +231,18 @@ describe('Home', () => {
           state({
             tasks: [task],
             deadlines: { today: [], upcoming: [], overdue: [], needsReview: [task.id] },
-            sessions: [{ id: session.id, title: session.title, status: 'working', courseId: course.id, taskId: task.id, updatedAt: NOW.toISOString(), needsYou: 1, currentStepTitle: 'Draft an outline' }],
+            sessions: [
+              {
+                id: session.id,
+                title: session.title,
+                status: 'working',
+                courseId: course.id,
+                taskId: task.id,
+                updatedAt: NOW.toISOString(),
+                needsYou: 1,
+                currentStepTitle: 'Draft an outline',
+              },
+            ],
           }),
         )}
         now={NOW}
@@ -168,7 +250,9 @@ describe('Home', () => {
     );
     expect(screen.getAllByText('Needs review').length).toBeGreaterThan(0);
     expect(screen.getByText('Source text: Thursday, maybe at noon')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: /Synthetic assignments.*lms\.example\.test/ })).toHaveAttribute('href', task.provenance.sourceUrl);
+    expect(
+      screen.getByRole('link', { name: /Synthetic assignments.*lms\.example\.test/ }),
+    ).toHaveAttribute('href', task.provenance.sourceUrl);
     expect(screen.getByText('CP363 · Assignment 2')).toBeInTheDocument();
     expect(screen.getByText('Needs you · 1')).toBeInTheDocument();
   });
@@ -176,13 +260,34 @@ describe('Home', () => {
   it('renders a moved date with visible and accessible text', () => {
     const moved = {
       ...task,
-      due: { ...task.due, iso: '2026-09-24T16:00:00.000Z', zoneEvidence: 'explicit' as const, timeAssumed: false, confidence: 'high' as const },
-      dueHistory: [{
-        iso: '2026-09-17T16:00:00.000Z', raw: 'Due Sep 17', observedAt: NOW.toISOString(), provenance: task.provenance,
-      }],
+      due: {
+        ...task.due,
+        iso: '2026-09-24T16:00:00.000Z',
+        zoneEvidence: 'explicit' as const,
+        timeAssumed: false,
+        confidence: 'high' as const,
+      },
+      dueHistory: [
+        {
+          iso: '2026-09-17T16:00:00.000Z',
+          raw: 'Due Sep 17',
+          observedAt: NOW.toISOString(),
+          provenance: task.provenance,
+        },
+      ],
       dueChangedAt: NOW.toISOString(),
     };
-    render(<App bridge={bridgeFor(state({ tasks: [moved], deadlines: { today: [], upcoming: [moved.id], overdue: [], needsReview: [] } }))} now={NOW} />);
+    render(
+      <App
+        bridge={bridgeFor(
+          state({
+            tasks: [moved],
+            deadlines: { today: [], upcoming: [moved.id], overdue: [], needsReview: [] },
+          }),
+        )}
+        now={NOW}
+      />,
+    );
 
     expect(screen.getByText('Moved')).toBeInTheDocument();
     expect(screen.getByText('Moved from')).toBeInTheDocument();
@@ -194,7 +299,17 @@ describe('Home', () => {
     const set = vi.fn(async () => undefined);
     vi.stubGlobal('chrome', { storage: { local: { get: vi.fn(async () => ({})), set } } });
     try {
-      render(<App bridge={bridgeFor(state({ tasks: [task], deadlines: { today: [], upcoming: [task.id], overdue: [], needsReview: [] } }))} now={NOW} />);
+      render(
+        <App
+          bridge={bridgeFor(
+            state({
+              tasks: [task],
+              deadlines: { today: [], upcoming: [task.id], overdue: [], needsReview: [] },
+            }),
+          )}
+          now={NOW}
+        />,
+      );
       await user.click(screen.getByRole('button', { name: 'Week' }));
       expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
       expect(set).toHaveBeenCalledWith({ 'motion.deadlines.view': 'week' });
@@ -205,8 +320,27 @@ describe('Home', () => {
 
   it('does not label a high-confidence later deadline as needing review in Week view', async () => {
     const user = userEvent.setup();
-    const laterTask = { ...task, id: 'later-task', due: { ...task.due, iso: '2026-10-20T12:00:00.000Z', confidence: 'high' as const, zoneEvidence: 'explicit' as const } };
-    render(<App bridge={bridgeFor(state({ tasks: [laterTask], deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] } }))} now={NOW} />);
+    const laterTask = {
+      ...task,
+      id: 'later-task',
+      due: {
+        ...task.due,
+        iso: '2026-10-20T12:00:00.000Z',
+        confidence: 'high' as const,
+        zoneEvidence: 'explicit' as const,
+      },
+    };
+    render(
+      <App
+        bridge={bridgeFor(
+          state({
+            tasks: [laterTask],
+            deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] },
+          }),
+        )}
+        now={NOW}
+      />,
+    );
     await user.click(screen.getByRole('button', { name: 'Week' }));
     expect(screen.getByText(/Later/)).toBeInTheDocument();
     expect(screen.queryByText('Motion is not confident in this date.')).not.toBeInTheDocument();
@@ -217,9 +351,14 @@ describe('Home', () => {
     const commands: MotionCommand[] = [];
     render(<App bridge={bridgeFor(state(), commands)} now={NOW} />);
 
-    await user.type(screen.getByLabelText('What do you want to work on?'), 'Work on Assignment 2{Enter}');
+    await user.type(
+      screen.getByLabelText('What do you want to work on?'),
+      'Work on Assignment 2{Enter}',
+    );
 
-    expect(commands).toEqual([{ type: 'session-create', goal: 'Work on Assignment 2', tabId: null }]);
+    expect(commands).toEqual([
+      { type: 'session-create', goal: 'Work on Assignment 2', tabId: null },
+    ]);
   });
 
   it('sends session-create from a suggestion chip', async () => {
@@ -228,14 +367,19 @@ describe('Home', () => {
     render(
       <App
         bridge={bridgeFor(
-          state({ page: { ...state().page, pageType: 'assignment' }, deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] } }),
+          state({
+            page: { ...state().page, pageType: 'assignment' },
+            deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] },
+          }),
           commands,
         )}
         now={NOW}
       />,
     );
     await user.click(screen.getByRole('button', { name: 'Work on Synthetic assignments' }));
-    expect(commands).toEqual([{ type: 'session-create', goal: 'Work on Synthetic assignments', tabId: null }]);
+    expect(commands).toEqual([
+      { type: 'session-create', goal: 'Work on Synthetic assignments', tabId: null },
+    ]);
   });
 
   it('opens a session from the list, sending session-select', async () => {
@@ -244,7 +388,20 @@ describe('Home', () => {
     render(
       <App
         bridge={bridgeFor(
-          state({ sessions: [{ id: session.id, title: session.title, status: 'working', courseId: course.id, taskId: task.id, updatedAt: NOW.toISOString(), needsYou: 0, currentStepTitle: null }] }),
+          state({
+            sessions: [
+              {
+                id: session.id,
+                title: session.title,
+                status: 'working',
+                courseId: course.id,
+                taskId: task.id,
+                updatedAt: NOW.toISOString(),
+                needsYou: 0,
+                currentStepTitle: null,
+              },
+            ],
+          }),
           commands,
         )}
         now={NOW}
@@ -272,7 +429,17 @@ describe('SessionView', () => {
   it('shows the provider chip, marking a cloud provider', () => {
     render(
       <App
-        bridge={bridgeFor(withSession({ ai: { providerId: 'openai', displayName: 'OpenAI', cloud: true, status: 'available', message: 'Ready.' } }))}
+        bridge={bridgeFor(
+          withSession({
+            ai: {
+              providerId: 'openai',
+              displayName: 'OpenAI',
+              cloud: true,
+              status: 'available',
+              message: 'Ready.',
+            },
+          }),
+        )}
         now={NOW}
       />,
     );
@@ -292,7 +459,11 @@ describe('SessionView', () => {
     expect(within(dialog).queryByText(/always allow/i)).not.toBeInTheDocument();
 
     await user.click(within(dialog).getByRole('button', { name: 'Confirm' }));
-    expect(commands).toContainEqual({ type: 'decide-approval', approvalId: approval.id, approved: true });
+    expect(commands).toContainEqual({
+      type: 'decide-approval',
+      approvalId: approval.id,
+      approved: true,
+    });
   });
 
   it('sends stop-generation while streaming', async () => {
@@ -300,19 +471,28 @@ describe('SessionView', () => {
     const commands: MotionCommand[] = [];
     render(
       <App
-        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }), commands)}
+        bridge={bridgeFor(
+          withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }),
+          commands,
+        )}
         now={NOW}
       />,
     );
     expect(screen.getByRole('log')).toHaveTextContent('Drafting the outline…');
     await user.click(screen.getByRole('button', { name: 'Stop' }));
-    expect(commands).toContainEqual({ type: 'session-command', sessionId: session.id, command: 'stop-generation' });
+    expect(commands).toContainEqual({
+      type: 'session-command',
+      sessionId: session.id,
+      command: 'stop-generation',
+    });
   });
 
   it('announces streaming text in the live log', () => {
     render(
       <App
-        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }))}
+        bridge={bridgeFor(
+          withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }),
+        )}
         now={NOW}
       />,
     );
@@ -333,7 +513,12 @@ describe('SessionView', () => {
 
     await user.clear(input);
     await user.type(input, 'Keep going{Enter}');
-    expect(commands).toContainEqual({ type: 'session-message', sessionId: session.id, text: 'Keep going', tabId: null });
+    expect(commands).toContainEqual({
+      type: 'session-message',
+      sessionId: session.id,
+      text: 'Keep going',
+      tabId: null,
+    });
   });
 
   it('goes back to the session list', async () => {

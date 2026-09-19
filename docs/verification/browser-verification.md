@@ -8,11 +8,20 @@ recovery alarm timing, session workspace release invariants, and course-code
 task resolution. The new resolver test found and fixed a punctuation mismatch:
 a goal naming `CP363` did not narrow tasks stored under course code `CP-363`.
 
-Results: typecheck, lint, build, and 973 unit tests passed; `test:extension`
-passed 67/67, `test:agent` passed 32/32, `test:chrome` passed 5/5, and
+Results: typecheck, lint, build, and 979 unit tests passed; `test:extension`
+passed 70/70, `test:agent` passed 32/32, `test:chrome` passed 5/5, and
 `test:provider-stream` passed 5/5. The normal agent suite still reports its
 documented optional-host-permission skip; the dedicated provider-stream suite
 covers that production request/stream/cancel path through its test-only host.
+
+The user-flow pass also found and fixed a side-panel permission bug. The
+“Request page permission” handler queried the active tab before calling
+`chrome.permissions.request`, which consumed Chrome's short-lived user gesture
+and could make the permission button fail. It now starts the request
+synchronously from the already-rendered page URL. Browser coverage also clicks
+the panel's Settings button, verifies the options page and reminder controls,
+checks the toolbar manifest has no popup competing with the side panel, and
+asserts that those interactions produce no page or console errors.
 
 Latest verification run: 2026-09-17. `npm run test:extension` passed 67/67,
 `npm run test:agent` passed 32/32 (one check still SKIPs: the route-backed

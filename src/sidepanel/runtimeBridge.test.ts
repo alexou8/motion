@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { resolveLmsTab } from './runtimeBridge';
+import { requestPagePermission, resolveLmsTab } from './runtimeBridge';
 
 /**
  * Regression coverage for the "Scan all courses" tab-resolution bug: at click
@@ -12,7 +12,10 @@ describe('resolveLmsTab', () => {
     vi.unstubAllGlobals();
   });
 
-  function stubChrome(activeTab: Partial<chrome.tabs.Tab> | undefined, windowTabs: Partial<chrome.tabs.Tab>[]) {
+  function stubChrome(
+    activeTab: Partial<chrome.tabs.Tab> | undefined,
+    windowTabs: Partial<chrome.tabs.Tab>[],
+  ) {
     vi.stubGlobal('chrome', {
       tabs: {
         query: vi.fn(async (opts: { active?: boolean }) => {
@@ -30,27 +33,52 @@ describe('resolveLmsTab', () => {
   });
 
   it('falls back to the most recently accessed qualifying tab when the active tab is the panel itself', async () => {
-    stubChrome(
-      { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html' },
-      [
-        { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html', lastAccessed: 500 },
-        { id: 2, url: 'https://mylearningspace.wlu.ca/d2l/home', lastAccessed: 100 },
-        { id: 3, url: 'https://mylearningspace.wlu.ca/d2l/le/content', lastAccessed: 300 },
-      ],
-    );
+    stubChrome({ id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html' }, [
+      { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html', lastAccessed: 500 },
+      { id: 2, url: 'https://mylearningspace.wlu.ca/d2l/home', lastAccessed: 100 },
+      { id: 3, url: 'https://mylearningspace.wlu.ca/d2l/le/content', lastAccessed: 300 },
+    ]);
     const tab = await resolveLmsTab();
     expect(tab?.id).toBe(3);
   });
 
   it('returns null when no tab in the window qualifies', async () => {
-    stubChrome(
-      { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html' },
-      [
-        { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html', lastAccessed: 500 },
-        { id: 2, url: 'chrome://extensions', lastAccessed: 100 },
-      ],
-    );
+    stubChrome({ id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html' }, [
+      { id: 1, url: 'chrome-extension://abc/src/sidepanel/index.html', lastAccessed: 500 },
+      { id: 2, url: 'chrome://extensions', lastAccessed: 100 },
+    ]);
     const tab = await resolveLmsTab();
     expect(tab).toBeNull();
+  });
+});
+
+describe('requestPagePermission', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('starts the request synchronously from the rendered page URL', async () => {
+    let resolveRequest: ((granted: boolean) => void) | undefined;
+    const request = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          resolveRequest = resolve;
+        }),
+    );
+    vi.stubGlobal('chrome', { permissions: { request } });
+
+    const pending = requestPagePermission('https://learn.example.edu/d2l/home/123');
+
+    expect(request).toHaveBeenCalledWith({ origins: ['https://learn.example.edu/*'] });
+    resolveRequest?.(true);
+    await expect(pending).resolves.toBe(true);
+  });
+
+  it('does not request access for a URL without an eligible web origin', () => {
+    const request = vi.fn();
+    vi.stubGlobal('chrome', { permissions: { request } });
+
+    expect(requestPagePermission('chrome-extension://abc/panel.html')).toBeNull();
+    expect(request).not.toHaveBeenCalled();
   });
 });

@@ -27,7 +27,9 @@ const distPath = resolve(here, '../../dist');
 const fixtureDir = resolve(here, '../../src/test/fixtures/d2l');
 const executablePath =
   process.env.MOTION_CHROME ??
-  (existsSync('/opt/pw-browsers/chromium') ? '/opt/pw-browsers/chromium' : chromium.executablePath());
+  (existsSync('/opt/pw-browsers/chromium')
+    ? '/opt/pw-browsers/chromium'
+    : chromium.executablePath());
 const ORIGIN = 'https://mylearningspace.wlu.ca';
 
 let failures = 0;
@@ -46,14 +48,47 @@ const jsonFixture = (name) => readFileSync(join(fixtureDir, `${name}.json`), 'ut
 const ROUTES = [
   { path: '/d2l/home', fixture: 'course-home', expect: 'dashboard' },
   { path: '/d2l/home/999999?ou=999999', fixture: 'course-home-navbar', expect: 'course-home' },
-  { path: '/d2l/le/content/999999/home?ou=999999', fixture: 'course-home', expect: 'content-module' },
-  { path: '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999', fixture: 'mylearningspace-assignment-list', expect: 'assignment-list' },
-  { path: '/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999', fixture: 'quiz-list', expect: 'quiz-list' },
-  { path: '/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201', fixture: 'quiz-list', expect: 'quiz-list' },
-  { path: '/d2l/le/999999/discussions/List?ou=999999', fixture: 'discussion-list', expect: 'discussion-list' },
-  { path: '/d2l/lms/grades/my_grades/main.d2l?ou=999999', fixture: 'course-home-navbar', expect: 'grades' },
-  { path: '/d2l/lms/quizzing/user/attempt/201?ou=999999', fixture: 'quiz-attempt', expect: 'quiz-attempt', restricted: true },
-  { path: '/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101', fixture: 'assignment', expect: 'assignment' },
+  {
+    path: '/d2l/le/content/999999/home?ou=999999',
+    fixture: 'course-home',
+    expect: 'content-module',
+  },
+  {
+    path: '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999',
+    fixture: 'mylearningspace-assignment-list',
+    expect: 'assignment-list',
+  },
+  {
+    path: '/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999',
+    fixture: 'quiz-list',
+    expect: 'quiz-list',
+  },
+  {
+    path: '/d2l/lms/quizzing/user/quiz_summary.d2l?ou=999999&qi=201',
+    fixture: 'quiz-list',
+    expect: 'quiz-list',
+  },
+  {
+    path: '/d2l/le/999999/discussions/List?ou=999999',
+    fixture: 'discussion-list',
+    expect: 'discussion-list',
+  },
+  {
+    path: '/d2l/lms/grades/my_grades/main.d2l?ou=999999',
+    fixture: 'course-home-navbar',
+    expect: 'grades',
+  },
+  {
+    path: '/d2l/lms/quizzing/user/attempt/201?ou=999999',
+    fixture: 'quiz-attempt',
+    expect: 'quiz-attempt',
+    restricted: true,
+  },
+  {
+    path: '/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101',
+    fixture: 'assignment',
+    expect: 'assignment',
+  },
   { path: '/d2l/lp/whatever/unknown', fixture: 'broken', expect: 'unsupported' },
   // The document a signed-out D2L serves for any route.
   { path: '/d2l/home/424242?ou=424242', fixture: 'signed-out-redirect', expect: 'signed-out' },
@@ -64,7 +99,10 @@ const REGRESSION_ROUTES = [
   { path: '/d2l/home/1234?ou=1234', fixture: 'e2e-prefix-course' },
   { path: '/d2l/home/12345?ou=12345', fixture: 'e2e-prefix-course' },
   { path: '/d2l/lp/ouHome/home?ou=999999', fixture: 'e2e-course-heading-title' },
-  { path: '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1', fixture: 'e2e-delayed-assignment-list' },
+  {
+    path: '/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1',
+    fixture: 'e2e-delayed-assignment-list',
+  },
   { path: '/d2l/lp/ouHome/home?ou=999999&slow=1', fixture: 'e2e-slow-course-home' },
 ];
 
@@ -91,7 +129,11 @@ try {
   let [worker] = context.serviceWorkers();
   if (!worker) worker = await context.waitForEvent('serviceworker', { timeout: 20_000 });
   const extensionId = new URL(worker.url()).host;
-  check('service worker registers from the unpacked build', Boolean(extensionId), `extension id ${extensionId}`);
+  check(
+    'service worker registers from the unpacked build',
+    Boolean(extensionId),
+    `extension id ${extensionId}`,
+  );
 
   const workerErrors = [];
   worker.on('console', (message) => {
@@ -106,32 +148,53 @@ try {
   panel.on('console', (message) => {
     if (message.type() === 'error') panelErrors.push(message.text());
   });
-  await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`, { waitUntil: 'domcontentloaded' });
-  check('side panel document loads and renders', (await panel.innerText('body')).includes('Motion'));
+  await panel.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`, {
+    waitUntil: 'domcontentloaded',
+  });
+  check(
+    'side panel document loads and renders',
+    (await panel.innerText('body')).includes('Motion'),
+  );
 
   const manifest = await panel.evaluate(() => chrome.runtime.getManifest());
   check('manifest loads in the browser as MV3', manifest.manifest_version === 3);
   check('minimum_chrome_version is still 116', manifest.minimum_chrome_version === '116');
   check(
+    'the toolbar action is configured to open the side panel without a popup',
+    !manifest.action?.default_popup &&
+      manifest.side_panel?.default_path === 'src/sidepanel/index.html',
+  );
+  check(
     'host permissions are unchanged',
     JSON.stringify(manifest.host_permissions) ===
-      JSON.stringify([`https://*.brightspace.com/*`, `https://*.desire2learn.com/*`, `${ORIGIN}/*`]),
+      JSON.stringify([
+        `https://*.brightspace.com/*`,
+        `https://*.desire2learn.com/*`,
+        `${ORIGIN}/*`,
+      ]),
     JSON.stringify(manifest.host_permissions),
   );
 
   // Role inference hands `extension-ui` to anything served from the extension
   // origin, which is safe only while no HTML page is web-accessible: a page
   // could then be opened by a website and would carry that role.
-  const webAccessible = (manifest.web_accessible_resources ?? []).flatMap((entry) => entry.resources ?? []);
+  const webAccessible = (manifest.web_accessible_resources ?? []).flatMap(
+    (entry) => entry.resources ?? [],
+  );
   check(
     'only script bundles are web-accessible',
-    webAccessible.length > 0 && webAccessible.every((resource) => /\.(?:js|mjs|css|woff2?|png|svg)$/i.test(resource)) &&
-      webAccessible.every((resource) => !/\.(?:html?|xht(?:ml)?|svg)$/i.test(resource) && !resource.includes('*')),
+    webAccessible.length > 0 &&
+      webAccessible.every((resource) => /\.(?:js|mjs|css|woff2?|png|svg)$/i.test(resource)) &&
+      webAccessible.every(
+        (resource) => !/\.(?:html?|xht(?:ml)?|svg)$/i.test(resource) && !resource.includes('*'),
+      ),
     webAccessible.join(', ') || 'none',
   );
 
   const options = await context.newPage();
-  await options.goto(`chrome-extension://${extensionId}/src/options/index.html`, { waitUntil: 'domcontentloaded' });
+  await options.goto(`chrome-extension://${extensionId}/src/options/index.html`, {
+    waitUntil: 'domcontentloaded',
+  });
   check('options page loads without a runtime error', (await options.innerText('body')).length > 0);
   await options.close();
 
@@ -139,18 +202,37 @@ try {
   await context.route(`${ORIGIN}/**`, (route) => {
     const requestUrl = new URL(route.request().url());
     if (requestUrl.pathname === '/d2l/api/versions/') {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ Items: [{ ProductCode: 'lp', LatestVersion: '1.48' }, { ProductCode: 'le', LatestVersion: '1.48' }] }) });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          Items: [
+            { ProductCode: 'lp', LatestVersion: '1.48' },
+            { ProductCode: 'le', LatestVersion: '1.48' },
+          ],
+        }),
+      });
     }
     if (requestUrl.pathname.includes('/enrollments/myenrollments/')) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-enrollments') });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: jsonFixture('discovery-enrollments'),
+      });
     }
     if (requestUrl.pathname.includes('/calendar/events/myEvents/')) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-calendar-events') });
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: jsonFixture('discovery-calendar-events'),
+      });
     }
     const match = ALL_ROUTES.find((candidate) => {
       const candidateUrl = new URL(candidate.path, ORIGIN);
-      return candidateUrl.pathname === requestUrl.pathname &&
-        (!candidateUrl.search || candidateUrl.search === requestUrl.search);
+      return (
+        candidateUrl.pathname === requestUrl.pathname &&
+        (!candidateUrl.search || candidateUrl.search === requestUrl.search)
+      );
     });
     return route.fulfill({
       status: match ? 200 : 404,
@@ -170,7 +252,11 @@ try {
       let lastError = 'never attempted';
       for (let attempt = 0; attempt < 6; attempt += 1) {
         try {
-          return await chrome.tabs.sendMessage(tab.id, { type: 'motion:extract-content' }, { frameId: 0 });
+          return await chrome.tabs.sendMessage(
+            tab.id,
+            { type: 'motion:extract-content' },
+            { frameId: 0 },
+          );
         } catch (error) {
           lastError = error instanceof Error ? error.message : String(error);
           await sleep(250);
@@ -180,37 +266,60 @@ try {
     }, ORIGIN);
 
   const requestExtractionForTab = (tabId) =>
-    panel.evaluate((id) => chrome.runtime.sendMessage({ type: 'request-extraction', tabId: id }), tabId);
+    panel.evaluate(
+      (id) => chrome.runtime.sendMessage({ type: 'request-extraction', tabId: id }),
+      tabId,
+    );
 
   const activeTabId = () =>
-    panel.evaluate(async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id ?? null);
+    panel.evaluate(
+      async () => (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id ?? null,
+    );
 
   const getState = () => panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
 
   const getObservation = (tabId) =>
-    panel.evaluate(async (id) => (await chrome.storage.session.get(`observation:${id}`))[`observation:${id}`] ?? null, tabId);
+    panel.evaluate(
+      async (id) =>
+        (await chrome.storage.session.get(`observation:${id}`))[`observation:${id}`] ?? null,
+      tabId,
+    );
 
   const storedCourseExternalIds = () =>
-    panel.evaluate(() => new Promise((resolve) => {
-      const request = indexedDB.open('motion');
-      request.onerror = () => resolve([]);
-      request.onsuccess = () => {
-        const db = request.result;
-        const read = db.transaction('courses', 'readonly').objectStore('courses').getAll();
-        read.onerror = () => { db.close(); resolve([]); };
-        read.onsuccess = () => {
-          db.close();
-          resolve(read.result.map((course) => course.externalId).filter((id) => typeof id === 'string'));
-        };
-      };
-    }));
+    panel.evaluate(
+      () =>
+        new Promise((resolve) => {
+          const request = indexedDB.open('motion');
+          request.onerror = () => resolve([]);
+          request.onsuccess = () => {
+            const db = request.result;
+            const read = db.transaction('courses', 'readonly').objectStore('courses').getAll();
+            read.onerror = () => {
+              db.close();
+              resolve([]);
+            };
+            read.onsuccess = () => {
+              db.close();
+              resolve(
+                read.result
+                  .map((course) => course.externalId)
+                  .filter((id) => typeof id === 'string'),
+              );
+            };
+          };
+        }),
+    );
 
   for (const route of ROUTES) {
     await page.goto(`${ORIGIN}${route.path}`, { waitUntil: 'load' });
     const reply = await askContentScript();
 
     if (route.restricted) {
-      check(`${route.path} — restricted page refuses to hand over content`, typeof reply?.refused === 'string', reply?.refused ?? JSON.stringify(reply).slice(0, 120));
+      check(
+        `${route.path} — restricted page refuses to hand over content`,
+        typeof reply?.refused === 'string',
+        reply?.refused ?? JSON.stringify(reply).slice(0, 120),
+      );
       continue;
     }
 
@@ -223,31 +332,45 @@ try {
 
   // Full path: panel asks the worker, the worker asks the content script, the
   // content script extracts, the worker stores, the panel reads it back.
-  await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, { waitUntil: 'load' });
+  await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, {
+    waitUntil: 'load',
+  });
   const requested = await panel.evaluate(async (origin) => {
     const [tab] = await chrome.tabs.query({ url: `${origin}/*` });
     return chrome.runtime.sendMessage({ type: 'request-extraction', tabId: tab?.id });
   }, ORIGIN);
-  check('the worker accepts an extraction request from the panel', requested?.result?.requested === true, JSON.stringify(requested).slice(0, 200));
+  check(
+    'the worker accepts an extraction request from the panel',
+    requested?.result?.requested === true,
+    JSON.stringify(requested).slice(0, 200),
+  );
 
   await panel.waitForTimeout(1_000);
   const extracted = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
   const extractedTasks = extracted?.result?.tasks ?? [];
   check(
     'extracted assignments reach the panel with their due dates',
-    extractedTasks.length === 2 && extractedTasks.every((task) => typeof task.due?.iso === 'string'),
+    extractedTasks.length === 2 &&
+      extractedTasks.every((task) => typeof task.due?.iso === 'string'),
     extractedTasks.map((task) => `${task.title} @ ${task.due?.iso}`).join(' | ') || 'none',
   );
   check(
     'every extracted task carries provenance back to the page it came from',
-    extractedTasks.every((task) => typeof task.provenance?.sourceUrl === 'string' && task.provenance.platformId === 'd2l'),
+    extractedTasks.every(
+      (task) =>
+        typeof task.provenance?.sourceUrl === 'string' && task.provenance.platformId === 'd2l',
+    ),
   );
 
   // The worker's stored view, read the way the panel reads it.
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(800);
   const state = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
-  check('side panel gets state from the worker', state?.ok === true, JSON.stringify(state?.error ?? '').slice(0, 200));
+  check(
+    'side panel gets state from the worker',
+    state?.ok === true,
+    JSON.stringify(state?.error ?? '').slice(0, 200),
+  );
   check(
     'the observed page reaches the panel state',
     state?.result?.page?.pageType === 'course-home',
@@ -266,7 +389,11 @@ try {
   const tasks = afterNavbar?.result?.tasks ?? [];
   check(
     'no navigation link became a task',
-    !tasks.some((task) => /^(Assignments|Quizzes|Discussions|Grades|Calendar|Course Home|Content)$/i.test((task.title ?? '').trim())),
+    !tasks.some((task) =>
+      /^(Assignments|Quizzes|Discussions|Grades|Calendar|Course Home|Content)$/i.test(
+        (task.title ?? '').trim(),
+      ),
+    ),
     tasks.map((task) => task.title).join(', ') || 'no tasks stored',
   );
 
@@ -280,11 +407,17 @@ try {
       return { blocked: error instanceof Error ? error.message : String(error) };
     }
   }, extensionId);
-  check('a page script cannot reach the worker', fromPage?.reply?.ok !== true, JSON.stringify(fromPage).slice(0, 160));
+  check(
+    'a page script cannot reach the worker',
+    fromPage?.reply?.ok !== true,
+    JSON.stringify(fromPage).slice(0, 160),
+  );
 
   // Client-side navigation: the URL changes with no load, and Motion must notice.
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
-  await page.evaluate(() => history.pushState({}, '', '/d2l/lms/grades/my_grades/main.d2l?ou=999999'));
+  await page.evaluate(() =>
+    history.pushState({}, '', '/d2l/lms/grades/my_grades/main.d2l?ou=999999'),
+  );
   await panel.waitForTimeout(1_600);
   const afterSpa = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
   check(
@@ -299,7 +432,9 @@ try {
   await panel.waitForTimeout(900);
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(900);
-  const duringAttempt = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  const duringAttempt = await panel.evaluate(() =>
+    chrome.runtime.sendMessage({ type: 'get-state' }),
+  );
   check(
     'a graded attempt puts the panel in restricted mode',
     duringAttempt?.result?.connection === 'restricted',
@@ -317,10 +452,14 @@ try {
   await courseTab.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(900);
   const attemptTab = await context.newPage();
-  await attemptTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await attemptTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, {
+    waitUntil: 'load',
+  });
   await attemptTab.bringToFront();
   await panel.waitForTimeout(900);
-  const onAttemptTab = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  const onAttemptTab = await panel.evaluate(() =>
+    chrome.runtime.sendMessage({ type: 'get-state' }),
+  );
   check(
     'a second tab on a graded attempt does not inherit the first tab workspace',
     onAttemptTab?.result?.connection === 'restricted',
@@ -339,7 +478,9 @@ try {
 
   await courseTab.bringToFront();
   await panel.waitForTimeout(1_200);
-  const backOnCourseTab = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
+  const backOnCourseTab = await panel.evaluate(() =>
+    chrome.runtime.sendMessage({ type: 'get-state' }),
+  );
   check(
     'returning to the course tab restores its state',
     backOnCourseTab?.result?.connection === 'supported',
@@ -352,7 +493,9 @@ try {
 
   // A same-tab navigation into an attempt: the tab events fire before the
   // content script reports, so only an observation-driven refresh catches it.
-  await courseTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
+  await courseTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, {
+    waitUntil: 'load',
+  });
   await panel.waitForTimeout(1_200);
   check(
     'navigating the same tab into an attempt reaches the rendered panel',
@@ -377,7 +520,11 @@ try {
     await page.goto(`${ORIGIN}${path}`, { waitUntil: 'load' });
     await panel.waitForTimeout(900);
     const current = await panel.evaluate(() => chrome.runtime.sendMessage({ type: 'get-state' }));
-    check(`${path} — panel connection state is ${connection}`, current?.result?.connection === connection, `got ${current?.result?.connection}`);
+    check(
+      `${path} — panel connection state is ${connection}`,
+      current?.result?.connection === connection,
+      `got ${current?.result?.connection}`,
+    );
 
     const body = await panel.innerText('body');
     check(
@@ -401,18 +548,43 @@ try {
   const offMachine = [];
   const recordRequest = (request) => {
     const url = request.url();
-    if (!/^(?:chrome-extension|data|blob|about):/.test(url) && !url.startsWith(ORIGIN)) offMachine.push(url);
+    if (!/^(?:chrome-extension|data|blob|about):/.test(url) && !url.startsWith(ORIGIN))
+      offMachine.push(url);
   };
   context.on('request', recordRequest);
 
-  const settings = await context.newPage();
-  await settings.goto(`chrome-extension://${extensionId}/src/options/index.html#privacy`, { waitUntil: 'load' });
+  await panel.bringToFront();
+  const settingsPage = context.waitForEvent('page');
+  await panel.getByRole('button', { name: 'Settings' }).click();
+  const settings = await settingsPage;
+  const settingsErrors = [];
+  settings.on('pageerror', (error) => settingsErrors.push(error.message));
+  settings.on('console', (message) => {
+    if (message.type() === 'error') settingsErrors.push(message.text());
+  });
+  await settings.waitForLoadState('load');
+  check(
+    'the side-panel Settings button opens the shipped options page',
+    settings.url() === `chrome-extension://${extensionId}/src/options/index.html` &&
+      (await settings.getByRole('heading', { name: 'Settings' }).isVisible()),
+    settings.url(),
+  );
+  await settings.goto(`chrome-extension://${extensionId}/src/options/index.html#privacy`, {
+    waitUntil: 'load',
+  });
   check(
     'the settings page opens on the section named in its address',
     await settings.getByRole('heading', { name: 'Privacy & data' }).isVisible(),
   );
-  const sectionNames = await settings.getByRole('navigation', { name: 'Settings sections' }).getByRole('button').allInnerTexts();
-  check('the settings page lists every rendered section', sectionNames.join('|') === 'AI|Browser access|Agent behaviour|Reminders|Privacy & data|About', sectionNames.join('|'));
+  const sectionNames = await settings
+    .getByRole('navigation', { name: 'Settings sections' })
+    .getByRole('button')
+    .allInnerTexts();
+  check(
+    'the settings page lists every rendered section',
+    sectionNames.join('|') === 'AI|Browser access|Agent behaviour|Reminders|Privacy & data|About',
+    sectionNames.join('|'),
+  );
   const serif = await settings.evaluate(async () => {
     const faces = await document.fonts.load('600 28px "Source Serif 4"');
     return {
@@ -420,7 +592,11 @@ try {
       title: getComputedStyle(document.querySelector('h1')).fontFamily,
     };
   });
-  check('the bundled serif loads and titles the settings page', serif.loaded && serif.title.includes('Source Serif 4'), JSON.stringify(serif));
+  check(
+    'the bundled serif loads and titles the settings page',
+    serif.loaded && serif.title.includes('Source Serif 4'),
+    JSON.stringify(serif),
+  );
   await settings.getByRole('button', { name: 'Reminders' }).click();
   const reminderOptIn = settings.getByRole('checkbox', { name: 'Send deadline reminders' });
   if (!(await reminderOptIn.isChecked())) {
@@ -430,23 +606,41 @@ try {
   check('reminder opt-in toggle responds in the settings UI', await reminderOptIn.isChecked());
   await settings.reload({ waitUntil: 'load' });
   await settings.getByRole('heading', { name: 'Reminders' }).waitFor();
-  check('reminder opt-in persists through the settings reload', await settings.getByRole('checkbox', { name: 'Send deadline reminders' }).isChecked());
+  check(
+    'reminder opt-in persists through the settings reload',
+    await settings.getByRole('checkbox', { name: 'Send deadline reminders' }).isChecked(),
+  );
+  check(
+    'settings interactions raise no page or console errors',
+    settingsErrors.length === 0,
+    settingsErrors.join(' | '),
+  );
   await settings.close();
 
   await page.bringToFront();
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
-  check('the composer is offered on a readable course page', (await panel.locator('textarea').count()) === 1);
+  check(
+    'the composer is offered on a readable course page',
+    (await panel.locator('textarea').count()) === 1,
+  );
   const discoveryState = await getState();
   if (discoveryState?.result?.discovery?.optedIn === null) {
     await panel.getByRole('button', { name: 'Enable scanning' }).first().click();
     await panel.waitForTimeout(600);
   }
   const enabledDiscovery = await getState();
-  check('deadline discovery requires and records explicit opt-in', enabledDiscovery?.result?.discovery?.optedIn === true);
+  check(
+    'deadline discovery requires and records explicit opt-in',
+    enabledDiscovery?.result?.discovery?.optedIn === true,
+  );
   await panel.getByRole('button', { name: 'Scan all courses' }).first().click();
   let discovered = await getState();
-  for (let attempt = 0; attempt < 60 && (discovered?.result?.discovery?.result?.deadlines ?? 0) < 2; attempt += 1) {
+  for (
+    let attempt = 0;
+    attempt < 60 && (discovered?.result?.discovery?.result?.deadlines ?? 0) < 2;
+    attempt += 1
+  ) {
     await panel.waitForTimeout(250);
     discovered = await getState();
   }
@@ -454,7 +648,13 @@ try {
   check(
     'synthetic course discovery stores canonical high-confidence deadlines',
     discovered?.result?.discovery?.result?.courses === 1 &&
-      discoveredTasks.some((task) => task.title === 'Chapter 1 Quiz' && task.courseId === 'd2l:101' && task.due?.confidence === 'high' && task.provenance?.strategy === 'lms-api') &&
+      discoveredTasks.some(
+        (task) =>
+          task.title === 'Chapter 1 Quiz' &&
+          task.courseId === 'd2l:101' &&
+          task.due?.confidence === 'high' &&
+          task.provenance?.strategy === 'lms-api',
+      ) &&
       discoveredTasks.some((task) => task.title === 'Discussion 1' && task.courseId === 'd2l:101'),
     `${discovered?.result?.discovery?.result?.courses ?? 0} course(s), ${discoveredTasks.length} task(s)`,
   );
@@ -464,53 +664,81 @@ try {
   // switching the deadline view.
   await panel.getByRole('button', { name: 'Week', exact: true }).first().click();
   const weekText = await panel.innerText('body');
-  check('deadline week view shows this week and later without uncertainty labels', /This week/i.test(weekText) && /Later/i.test(weekText) && !/Needs review/i.test(weekText));
+  check(
+    'deadline week view shows this week and later without uncertainty labels',
+    /This week/i.test(weekText) && /Later/i.test(weekText) && !/Needs review/i.test(weekText),
+  );
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
   const restrictedBody = await panel.innerText('body');
-  const restrictedControls = await panel.locator('button, a, textarea, input, select, form').allInnerTexts();
+  const restrictedControls = await panel
+    .locator('button, a, textarea, input, select, form')
+    .allInnerTexts();
   check(
     'restricted mode explains the boundary and offers no page action affordance',
     /Restricted mode/i.test(restrictedBody) &&
       /will not read this page|will not .*draft/i.test(restrictedBody) &&
-      restrictedControls.every((text) => !/read|draft|act|capture|submit|send|fill|click/i.test(text)),
+      restrictedControls.every(
+        (text) => !/read|draft|act|capture|submit|send|fill|click/i.test(text),
+      ),
     `${restrictedControls.join('|')} — ${restrictedBody.replace(/\s+/g, ' ').slice(0, 180)}`,
   );
 
   // Chrome creates the group here, and closing it must close Motion's tab and
   // leave the student's.
-  await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, { waitUntil: 'load' });
+  await page.goto(`${ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, {
+    waitUntil: 'load',
+  });
   await panel.waitForTimeout(1_200);
   const prepared = await panel.evaluate(async (origin) => {
     const [tab] = await chrome.tabs.query({ url: `${origin}/d2l/lms/dropbox/*` });
     const reply = await chrome.runtime.sendMessage({ type: 'prepare-workspace', tabId: tab.id });
     await new Promise((done) => setTimeout(done, 1_500));
-    const group = (await chrome.tabGroups.query({})).find((candidate) => candidate.title?.startsWith('Motion'));
+    const group = (await chrome.tabGroups.query({})).find((candidate) =>
+      candidate.title?.startsWith('Motion'),
+    );
     const members = group ? await chrome.tabs.query({ groupId: group.id }) : [];
-    return { reply, studentTabId: tab.id, title: group?.title ?? null, members: members.map((member) => ({ id: member.id, url: member.url })) };
+    return {
+      reply,
+      studentTabId: tab.id,
+      title: group?.title ?? null,
+      members: members.map((member) => ({ id: member.id, url: member.url })),
+    };
   }, ORIGIN);
   check(
     'Prepare workspace creates a titled Motion tab group in a real browser',
-    typeof prepared.reply?.result?.workflowId === 'string' && /^Motion · /.test(prepared.title ?? '') && prepared.members.length > 0,
+    typeof prepared.reply?.result?.workflowId === 'string' &&
+      /^Motion · /.test(prepared.title ?? '') &&
+      prepared.members.length > 0,
     `${prepared.title} with ${prepared.members.length} tab(s); ${JSON.stringify(prepared.reply).slice(0, 160)}`,
   );
   // Asserted by tab id, not by the `motion_op` marker in the URL: a redirect can
   // drop the marker (docs/THREAT_MODEL.md T14), and ownership is recorded by id.
   check(
     'the group holds only tabs Motion opened, never the student’s tab',
-    prepared.members.length > 0 && prepared.members.every((member) => member.id !== prepared.studentTabId),
+    prepared.members.length > 0 &&
+      prepared.members.every((member) => member.id !== prepared.studentTabId),
     prepared.members.map((member) => `${member.id} ${member.url}`).join(', '),
   );
 
-  const closed = await panel.evaluate(async ({ workflowId, studentTabId }) => {
-    const reply = await chrome.runtime.sendMessage({ type: 'close-workspace', workflowId });
-    const student = await chrome.tabs.get(studentTabId).catch(() => null);
-    const groups = await chrome.tabGroups.query({});
-    return { reply, studentStillOpen: Boolean(student), motionGroups: groups.filter((group) => group.title?.startsWith('Motion')).length };
-  }, { workflowId: prepared.reply?.result?.workflowId, studentTabId: prepared.studentTabId });
+  const closed = await panel.evaluate(
+    async ({ workflowId, studentTabId }) => {
+      const reply = await chrome.runtime.sendMessage({ type: 'close-workspace', workflowId });
+      const student = await chrome.tabs.get(studentTabId).catch(() => null);
+      const groups = await chrome.tabGroups.query({});
+      return {
+        reply,
+        studentStillOpen: Boolean(student),
+        motionGroups: groups.filter((group) => group.title?.startsWith('Motion')).length,
+      };
+    },
+    { workflowId: prepared.reply?.result?.workflowId, studentTabId: prepared.studentTabId },
+  );
   check(
     'closing the workspace closes Motion’s tabs and leaves the student’s tab open',
-    closed.reply?.result?.closed === prepared.members.length && closed.studentStillOpen && closed.motionGroups === 0,
+    closed.reply?.result?.closed === prepared.members.length &&
+      closed.studentStillOpen &&
+      closed.motionGroups === 0,
     JSON.stringify(closed),
   );
 
@@ -532,12 +760,15 @@ try {
   const spaState = await getState();
   check(
     'SPA navigation updates the stored observation and panel page type',
-    spaObservation?.pageType === 'assignment-list' && spaState?.result?.page?.pageType === 'assignment-list',
+    spaObservation?.pageType === 'assignment-list' &&
+      spaState?.result?.page?.pageType === 'assignment-list',
     `stored ${spaObservation?.pageType}, panel ${spaState?.result?.page?.pageType}`,
   );
 
   const delayedPage = await context.newPage();
-  await delayedPage.goto(`${ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1`, { waitUntil: 'load' });
+  await delayedPage.goto(`${ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999&delayed=1`, {
+    waitUntil: 'load',
+  });
   await delayedPage.bringToFront();
   await delayedPage.waitForTimeout(2_300);
   const delayedTabId = await activeTabId();
@@ -547,7 +778,10 @@ try {
   const delayedTasks = (delayedState?.result?.tasks ?? []).filter(
     // sourceUrl is canonical (query stripped), so the rows are told apart by the
     // due dates only this fixture uses.
-    (task) => task.courseId === 'd2l:999999' && task.title === 'Example Assignment' && /^2099-0[12]-2/.test(task.due?.iso ?? ''),
+    (task) =>
+      task.courseId === 'd2l:999999' &&
+      task.title === 'Example Assignment' &&
+      /^2099-0[12]-2/.test(task.due?.iso ?? ''),
   );
   check(
     'delayed rendering yields one extracted task per rendered row',
@@ -559,12 +793,14 @@ try {
   await courseTab1.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await courseTab1.bringToFront();
   const courseTab1Id = await activeTabId();
-  const courseTab1Request = courseTab1Id === null ? null : await requestExtractionForTab(courseTab1Id);
+  const courseTab1Request =
+    courseTab1Id === null ? null : await requestExtractionForTab(courseTab1Id);
   const courseTab2 = await context.newPage();
   await courseTab2.goto(`${ORIGIN}/d2l/home/888888?ou=888888`, { waitUntil: 'load' });
   await courseTab2.bringToFront();
   const courseTab2Id = await activeTabId();
-  const courseTab2Request = courseTab2Id === null ? null : await requestExtractionForTab(courseTab2Id);
+  const courseTab2Request =
+    courseTab2Id === null ? null : await requestExtractionForTab(courseTab2Id);
   await panel.waitForTimeout(900);
   await courseTab1.bringToFront();
   await panel.waitForTimeout(450);
@@ -574,9 +810,12 @@ try {
   const courseTab2State = await getState();
   check(
     'active tabs retain their own extracted course context',
-    courseTab1Request?.result?.requested === true && courseTab2Request?.result?.requested === true &&
-      courseTab1State?.result?.course?.externalId === '999999' && courseTab1State?.result?.course?.code === 'CS101' &&
-      courseTab2State?.result?.course?.externalId === '888888' && courseTab2State?.result?.course?.code === 'CS202',
+    courseTab1Request?.result?.requested === true &&
+      courseTab2Request?.result?.requested === true &&
+      courseTab1State?.result?.course?.externalId === '999999' &&
+      courseTab1State?.result?.course?.code === 'CS101' &&
+      courseTab2State?.result?.course?.externalId === '888888' &&
+      courseTab2State?.result?.course?.code === 'CS202',
     `tab 1 ${courseTab1State?.result?.course?.externalId ?? 'none'}, tab 2 ${courseTab2State?.result?.course?.externalId ?? 'none'}`,
   );
 
@@ -606,7 +845,9 @@ try {
   const prefixCourseIds = await storedCourseExternalIds();
   check(
     'course IDs that are prefixes resolve to the exact stored course',
-    prefixCourseIds.includes('1234') && prefixCourseIds.includes('12345') && prefixState?.result?.course?.externalId === '12345',
+    prefixCourseIds.includes('1234') &&
+      prefixCourseIds.includes('12345') &&
+      prefixState?.result?.course?.externalId === '12345',
     `stored ${prefixCourseIds.join(',')}, panel ${prefixState?.result?.course?.externalId ?? 'none'}`,
   );
 
@@ -620,7 +861,8 @@ try {
   const headingState = await getState();
   check(
     'course home heading and title produce the course name',
-    headingRequest?.result?.requested === true && headingState?.result?.course?.name === 'CS101 Example Course' &&
+    headingRequest?.result?.requested === true &&
+      headingState?.result?.course?.name === 'CS101 Example Course' &&
       headingState?.result?.course?.name !== 'Homepage',
     `course ${headingState?.result?.course?.name ?? 'none'}`,
   );
@@ -629,7 +871,9 @@ try {
     const cdp = await context.newCDPSession(page);
     const targets = await cdp.send('Target.getTargets');
     const target = targets.targetInfos.find(
-      (candidate) => candidate.type === 'service_worker' && candidate.url.startsWith(`chrome-extension://${extensionId}/`),
+      (candidate) =>
+        candidate.type === 'service_worker' &&
+        candidate.url.startsWith(`chrome-extension://${extensionId}/`),
     );
     if (!target) throw new Error('extension service-worker target not found');
     await cdp.send('Target.closeTarget', { targetId: target.targetId });
@@ -645,7 +889,8 @@ try {
   const restartedState = await getState();
   check(
     'service-worker restart preserves active page type and course',
-    stoppedWorker.startsWith('chrome-extension://') && restartedState?.result?.page?.pageType === 'course-home' &&
+    stoppedWorker.startsWith('chrome-extension://') &&
+      restartedState?.result?.page?.pageType === 'course-home' &&
       restartedState?.result?.course?.externalId === '999999',
     `${stoppedWorker || 'not stopped'}; page ${restartedState?.result?.page?.pageType}, course ${restartedState?.result?.course?.externalId ?? 'none'}`,
   );
@@ -656,13 +901,15 @@ try {
   const slowTabId = await activeTabId();
   const slowObservationTypes = [];
   for (let sample = 0; sample < 14; sample += 1) {
-    if (slowTabId !== null) slowObservationTypes.push((await getObservation(slowTabId))?.pageType ?? null);
+    if (slowTabId !== null)
+      slowObservationTypes.push((await getObservation(slowTabId))?.pageType ?? null);
     await panel.waitForTimeout(250);
   }
   const slowState = await getState();
   check(
     'a slow course page with a login redirect script is not signed out',
-    slowObservationTypes.includes('course-home') && !slowObservationTypes.includes('signed-out') &&
+    slowObservationTypes.includes('course-home') &&
+      !slowObservationTypes.includes('signed-out') &&
       slowState?.result?.connection !== 'signed-out',
     `observed ${slowObservationTypes.join(',')}; connection ${slowState?.result?.connection}`,
   );
@@ -672,7 +919,8 @@ try {
   await panel.waitForTimeout(700);
   await slowPage.evaluate(() => {
     history.pushState({}, '', '/d2l/home/999999?ou=999999&sessionExpired=1');
-    document.body.innerHTML = '<script>window.location.replace(\'/d2l/login?sessionExpired=0\')</script>';
+    document.body.innerHTML =
+      "<script>window.location.replace('/d2l/login?sessionExpired=0')</script>";
   });
   const expiryTabId = await activeTabId();
   await panel.waitForTimeout(1_100);
@@ -680,7 +928,8 @@ try {
   const expiryState = await getState();
   check(
     'SPA session expiry surfaces signed-out state',
-    expiryObservation?.pageType === 'signed-out' && expiryState?.result?.connection === 'signed-out',
+    expiryObservation?.pageType === 'signed-out' &&
+      expiryState?.result?.connection === 'signed-out',
     `stored ${expiryObservation?.pageType}, connection ${expiryState?.result?.connection}`,
   );
 
@@ -692,10 +941,22 @@ try {
   await slowPage.close();
 
   context.off('request', recordRequest);
-  check('no request left the machine except to the synthetic LMS', offMachine.length === 0, offMachine.slice(0, 3).join(', '));
+  check(
+    'no request left the machine except to the synthetic LMS',
+    offMachine.length === 0,
+    offMachine.slice(0, 3).join(', '),
+  );
 
-  check('side panel raised no uncaught error', panelErrors.length === 0, panelErrors.join('; ').slice(0, 300));
-  check('service worker logged no error', workerErrors.length === 0, workerErrors.join('; ').slice(0, 300));
+  check(
+    'side panel raised no uncaught error',
+    panelErrors.length === 0,
+    panelErrors.join('; ').slice(0, 300),
+  );
+  check(
+    'service worker logged no error',
+    workerErrors.length === 0,
+    workerErrors.join('; ').slice(0, 300),
+  );
 } finally {
   await context.close();
   await rm(userDataDir, { recursive: true, force: true });
