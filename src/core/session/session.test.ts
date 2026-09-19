@@ -134,6 +134,26 @@ describe('workspace ownership and tab helpers', () => {
     expect(reattempt).toBe(s);
   });
 
+  it('records an untracked tab as released so a later scan cannot adopt it', () => {
+    const s = session();
+    const released = releaseTab(s, 19, 'student moved tab 19', NOW);
+
+    expect(released.workspace.releasedTabIds).toEqual([19]);
+    expect(released.activity).toContainEqual(
+      expect.objectContaining({
+        kind: 'user-override',
+        summary: 'student moved tab 19',
+      }),
+    );
+    expect(adoptTab(released, 19, NOW)).toBe(released);
+  });
+
+  it('does not duplicate a release event for a tab already released', () => {
+    const released = releaseTab(session(), 19, 'student moved tab 19', NOW);
+
+    expect(releaseTab(released, 19, 'student moved tab 19', NOW)).toBe(released);
+  });
+
   it('isMotionOwned is scoped to the session key, like workspace ownership.ts', () => {
     const s = session({
       workspace: {
@@ -154,7 +174,13 @@ describe('workspace ownership and tab helpers', () => {
     const s = session({
       context: {
         sources: [
-          { url: 'https://lms.example.com/rubric', title: 'Rubric', kind: 'rubric', excluded: false, provenance: '' },
+          {
+            url: 'https://lms.example.com/rubric',
+            title: 'Rubric',
+            kind: 'rubric',
+            excluded: false,
+            provenance: '',
+          },
         ],
       },
     });
@@ -198,8 +224,22 @@ describe('plan helpers', () => {
 
 describe('resolveTaskForGoal', () => {
   const courses: Course[] = [
-    { id: 'c1', platformId: 'd2l', name: 'Database II', code: 'CP363', lastVerifiedAt: NOW, archived: false },
-    { id: 'c2', platformId: 'd2l', name: 'Software Design', code: 'CP312', lastVerifiedAt: NOW, archived: false },
+    {
+      id: 'c1',
+      platformId: 'd2l',
+      name: 'Database II',
+      code: 'CP363',
+      lastVerifiedAt: NOW,
+      archived: false,
+    },
+    {
+      id: 'c2',
+      platformId: 'd2l',
+      name: 'Software Design',
+      code: 'CP312',
+      lastVerifiedAt: NOW,
+      archived: false,
+    },
   ];
 
   function task(overrides: Partial<CourseTask>): CourseTask {
@@ -240,6 +280,19 @@ describe('resolveTaskForGoal', () => {
     expect(result.task?.id).toBe('t1');
     expect(result.confidence).toBe('high');
     expect(result.ambiguous).toHaveLength(0);
+  });
+
+  it('matches course-code punctuation variants before choosing between duplicate tasks', () => {
+    const hyphenatedCourses = [{ ...courses[0]!, code: 'CP-363' }, courses[1]!];
+    const tasks = [
+      task({ id: 't1', courseId: 'c1', title: 'Assignment 2' }),
+      task({ id: 't2', courseId: 'c2', title: 'Assignment 2' }),
+    ];
+
+    const result = resolveTaskForGoal('CP363 assignment 2', tasks, hyphenatedCourses);
+
+    expect(result.task?.id).toBe('t1');
+    expect(result.confidence).toBe('high');
   });
 
   it('matches "lab 3" by kind + number without a course', () => {
