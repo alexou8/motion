@@ -33,7 +33,7 @@
  *
  * Run with: npm run build:e2e-provider-hosts && npm run test:provider-stream
  */
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -121,15 +121,64 @@ try {
   await send({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: true });
   await send({ type: 'set-ai-preferences', providerId: 'openai', model: 'gpt-5' });
 
+  const settings = await context.newPage();
+  const settingsUrl = `chrome-extension://${extensionId}/src/options/index.html#ai`;
+  await settings.goto(settingsUrl, { waitUntil: 'domcontentloaded' });
+  await settings.getByRole('button', { name: 'Refresh models', exact: true }).click();
+  await settings.getByText('Loaded 4 models available to this account.').waitFor();
+  const modelSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
+  const listedOptions = await modelSelect.locator('option').allTextContents();
+  check('settings refresh lists current account text models and economical alternatives',
+    listedOptions.some((label) => label.includes('GPT-6 Luna')) &&
+    listedOptions.some((label) => label.includes('GPT-6 Sol')) &&
+    listedOptions.some((label) => label.includes('gpt-5.4-nano')) &&
+    !listedOptions.some((label) => /whisper|embedding/.test(label)), listedOptions.join('; '));
+  await modelSelect.selectOption('gpt-6-luna');
+  await waitFor(async () => (await send({ type: 'ai-status' }))?.result?.model === 'gpt-6-luna');
+  await settings.reload({ waitUntil: 'domcontentloaded' });
+  await settings.getByRole('combobox', { name: 'Model', exact: true }).waitFor();
+  check('the exact OpenAI model choice survives a settings reload',
+    await settings.getByRole('combobox', { name: 'Model', exact: true }).inputValue() === 'gpt-6-luna');
+
+  // Claude's catalogue can be inspected without contacting its cloud service.
+  await send({ type: 'set-ai-preferences', providerId: 'anthropic', model: 'recommended' });
+  await settings.reload({ waitUntil: 'domcontentloaded' });
+  const claudeSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
+  await claudeSelect.waitFor();
+  const claudeOptions = await claudeSelect.locator('option').allTextContents();
+  check('settings offers current Claude Opus and the lower-cost Haiku option',
+    claudeOptions.some((label) => label.includes('Opus 5.5')) &&
+    claudeOptions.some((label) => label.includes('Haiku 4.5')));
+  await claudeSelect.selectOption('claude-opus-5-5');
+  await waitFor(async () => (await send({ type: 'ai-status' }))?.result?.model === 'claude-opus-5-5');
+  await settings.reload({ waitUntil: 'domcontentloaded' });
+  await settings.getByRole('combobox', { name: 'Model', exact: true }).waitFor();
+  check('the exact Claude model choice survives a settings reload',
+    await settings.getByRole('combobox', { name: 'Model', exact: true }).inputValue() === 'claude-opus-5-5');
+  await send({ type: 'set-ai-preferences', providerId: 'openai', model: 'gpt-6-luna' });
+  await settings.close();
+
+  // The shipped home composer is available on supported coursework pages.
+  // Drive that UI with a synthetic course rather than bypassing it by RPC.
+  const origin = 'https://mylearningspace.wlu.ca';
+  await context.route(`${origin}/**`, (route) => route.fulfill({
+    status: 200, contentType: 'text/html',
+    body: readFileSync(resolve(here, '../../src/test/fixtures/d2l/course-home.html'), 'utf8'),
+  }));
+  const course = await context.newPage();
+  await course.goto(`${origin}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
+
   // `session-create` with no related resources runs a model turn immediately
   // (src/background/sessions.ts createSession -> runModelTurn), so this alone
   // drives the first real provider request. The build under test
   // (dist-e2e-provider, MOTION_E2E_PROVIDER_HOSTS=1) points OpenAI's base URL
   // at `providerBaseUrl` (see src/platform/ai/http.ts), so this is a real
   // fetch from the service worker to `localServer`, over a real socket.
-  const created = await send({ type: 'session-create', goal: 'Use the connected provider.', tabId: null });
-  const sessionId = created?.result?.session?.id;
-  check('session-create resolves without needing a runtime permission prompt', Boolean(sessionId));
+  await panel.getByLabel('What do you want to work on?').fill('Use the connected provider.');
+  await panel.getByRole('button', { name: 'Start', exact: true }).click();
+  const created = await waitFor(async () => (await state())?.activeSession);
+  const sessionId = created?.id;
+  check('panel Start creates a provider-backed session without a runtime permission prompt', Boolean(sessionId));
 
   const streamed = await waitFor(async () => {
     const current = await state();
@@ -140,16 +189,51 @@ try {
     Boolean(streamed) && localServer.responseCount === 1,
     JSON.stringify(streamed?.conversation?.map((entry) => entry.text)),
   );
+  await panel.getByRole('log').getByText('Streamed from OpenAI').waitFor();
+  check('the panel renders the completed reply and records the initial message once',
+    streamed?.conversation?.filter((entry) => entry.role === 'student' && entry.text === 'Use the connected provider.').length === 1);
+  check('the provider request uses the exact model selected in settings',
+    localServer.requestedModels[0] === 'gpt-6-luna' && streamed?.agent?.model === 'gpt-6-luna');
 
-  const stopMessage = send({ type: 'session-message', sessionId, text: 'Hold this response.', tabId: null });
+  await panel.getByLabel('Message Motion').fill('Hold this response.');
+  await panel.getByRole('button', { name: 'Send', exact: true }).click();
   await waitFor(() => localServer.secondRequestSeen, 10_000);
-  await send({ type: 'session-command', sessionId, command: 'stop-generation' });
-  await stopMessage.catch(() => undefined);
+  await panel.getByRole('button', { name: 'Stop', exact: true }).click();
   await waitFor(() => localServer.secondRequestAborted, 10_000);
   check(
     'stopping an extension-page-driven stream aborts the in-flight provider request',
     localServer.responseCount === 2 && localServer.secondRequestAborted,
   );
+  const stopped = await waitFor(async () => {
+    const current = await state();
+    return current?.activeSession?.status === 'waiting' && !current?.streaming && !current.activeSession.pendingModelRequest ? current : null;
+  });
+  check('Stop clears the preview and durable claim and leaves the composer usable', Boolean(stopped) && await panel.getByLabel('Message Motion').isEnabled());
+
+  for (const [index, scenario] of ['failed', 'incomplete', 'truncated'].entries()) {
+    await panel.getByLabel('Message Motion').fill(`Exercise the synthetic ${scenario} response.`);
+    await panel.getByRole('button', { name: 'Send', exact: true }).click();
+    await waitFor(() => localServer.responseCount === 3 + index);
+    const failed = await waitFor(async () => {
+      const current = await state();
+      const session = current?.activeSession;
+      return session?.blockers?.length > 0 && !session.pendingModelRequest && !current.streaming ? session : null;
+    });
+    const rendered = await panel.innerText('body');
+    check(`a ${scenario} provider stream shows a blocker without committing partial output`,
+      Boolean(failed) && failed.plan.steps.length === 0 &&
+      !failed.conversation.some((entry) => entry.text.includes('UNCONFIRMED_PROVIDER_REPLY')) &&
+      !rendered.includes('UNCONFIRMED_PROVIDER_REPLY') &&
+      !rendered.includes('SYNTHETIC_PRIVATE_PROVIDER_ERROR') && rendered.includes('Needs you'));
+  }
+
+  await panel.getByLabel('Message Motion').fill('Recover with a completed response.');
+  await panel.getByRole('button', { name: 'Send', exact: true }).click();
+  await panel.getByRole('log').getByText('Recovered after provider failure').waitFor();
+  const recovered = await state();
+  check('the panel can send another message after provider failure',
+    localServer.responseCount === 6 && recovered?.activeSession?.status === 'waiting' &&
+    !recovered.activeSession.pendingModelRequest && recovered.activeSession.blockers.length === 0);
 } finally {
   await context.close();
   await rm(userDataDir, { recursive: true, force: true });

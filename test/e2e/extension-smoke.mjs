@@ -42,6 +42,16 @@ function check(name, passed, detail = '') {
 const fixture = (name) => readFileSync(join(fixtureDir, `${name}.html`), 'utf8');
 const jsonFixture = (name) => readFileSync(join(fixtureDir, `${name}.json`), 'utf8');
 
+// Keep the week-view scenario meaningful whenever this suite runs. Fixed
+// fixture dates eventually become overdue and stop exercising these buckets.
+const calendarFixture = JSON.parse(jsonFixture('discovery-calendar-events'));
+const thisWeek = new Date();
+thisWeek.setHours(12, 0, 0, 0);
+const later = new Date(thisWeek);
+later.setDate(later.getDate() + 14);
+calendarFixture.Items[0].EndDateTime = thisWeek.toISOString();
+calendarFixture.Items[1].EndDateTime = later.toISOString();
+
 /** Route shapes served to the browser. Every page is synthetic. */
 const ROUTES = [
   { path: '/d2l/home', fixture: 'course-home', expect: 'dashboard' },
@@ -145,7 +155,7 @@ try {
       return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-enrollments') });
     }
     if (requestUrl.pathname.includes('/calendar/events/myEvents/')) {
-      return route.fulfill({ status: 200, contentType: 'application/json', body: jsonFixture('discovery-calendar-events') });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(calendarFixture) });
     }
     const match = ALL_ROUTES.find((candidate) => {
       const candidateUrl = new URL(candidate.path, ORIGIN);

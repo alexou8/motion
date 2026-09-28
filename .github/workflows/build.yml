@@ -34,8 +34,27 @@ jobs:
       - name: Test
         run: npm test
 
+      - name: Test native keychain protocol and installer
+        run: npm run test:keychain
+
+      - name: Lint
+        run: npm run lint
+
       - name: Build
         run: npm run build
+
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify extension and agent in Chromium
+        run: |
+          npm run test:extension
+          npm run test:agent
+
+      - name: Verify provider settings, streaming, cancellation and recovery
+        run: |
+          npm run build:e2e-provider-hosts
+          npm run test:provider-stream
 
       # Fail loudly here rather than shipping an artifact that Chrome rejects
       # on load for a missing file.
@@ -67,6 +86,17 @@ jobs:
         with:
           name: motion-extension-${{ github.sha }}
           path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Package optional keychain companion
+        run: npm run package:keychain
+
+      - name: Upload optional keychain companion
+        uses: actions/upload-artifact@v4
+        with:
+          name: motion-keychain-companion-${{ github.sha }}
+          path: motion-keychain-companion-*.zip
           if-no-files-found: error
           retention-days: 30
 

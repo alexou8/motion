@@ -31,7 +31,7 @@ HOW TO USE
 3. Choose what to read, organize, or review.
 
 PRIVACY
-Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's message, session plan/state labels, relevant notes, and bounded page excerpts directly to the selected provider only. Each source excerpt is at most 8,000 characters and each request is at most 24,000 characters; excluded sources are omitted. Motion has no server or telemetry; provider keys remain in session memory and are not persisted.
+Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's message, session plan/state labels, relevant notes, and bounded page excerpts directly to the selected provider only. Each source excerpt is at most 8,000 characters and each request is at most 24,000 characters; excluded sources are omitted. Motion has no server or telemetry; provider keys stay in trusted session storage by default. With explicit opt-in and a separately installed local companion, keys can be remembered in the operating system’s credential vault; they are never saved in browser local/sync storage.
 
 SUPPORT
 Report bugs or request features at https://github.com/alexou8/motion/issues.
@@ -61,10 +61,15 @@ English
 
 Show the side panel beside a synthetic course page with extracted work and source links visible. Do not include real student names, course identifiers, grades, or coursework.
 
+Refresh listing screenshots before publishing: Motion now uses its continuous
+M path in the panel, Settings and extension icons. Settings also includes
+named model choices and account model refresh for both cloud providers.
+
 ## Permissions Justification
 
 | Permission | Type | Justification |
 |------------|------|---------------|
+| `nativeMessaging` | optional_permissions | Connects to the separately installed OS keychain companion only when the student chooses remembered keys or checks the companion. |
 | `storage` | permissions | Keeps the student's courses, tasks, notes, checklists, workflow progress, and approvals in the local browser profile. |
 | `sidePanel` | permissions | Provides the persistent coursework workspace beside the LMS page the student is reading. |
 | `tabs` | permissions | Identifies the active supported LMS page, reads its title and URL, and communicates with Motion's reader on that tab. |

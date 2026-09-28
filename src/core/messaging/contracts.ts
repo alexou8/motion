@@ -215,6 +215,8 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'session-source': ['extension-ui'],
   'session-tab': ['extension-ui'],
   'ai-status': ['extension-ui'],
+  'keychain-status': ['extension-ui'],
+  'list-provider-models': ['extension-ui'],
   'set-provider-key': ['extension-ui'],
   'forget-provider-key': ['extension-ui'],
   'test-provider': ['extension-ui'],

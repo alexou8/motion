@@ -61,6 +61,8 @@ export interface AIProvider {
    */
   capabilities(): Promise<ProviderCapabilities>;
   availability(): Promise<ProviderAvailability>;
+  /** Account-visible model IDs, fetched only after the settings gates pass. */
+  listModels?(): Promise<string[]>;
   generate(req: GenerateRequest): Promise<string>;
   stream(req: GenerateRequest): AsyncIterable<string>;
   healthCheck?(): Promise<ProviderAvailability>;

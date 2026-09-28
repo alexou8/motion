@@ -8,6 +8,10 @@ pages you are already authorized to see, pulls out what is due and what is asked
 of you, keeps notes linked back to their source, and runs longer jobs in the
 background while showing you every step it takes.
 
+Its terracotta M is one continuous path from the first coursework step to
+completion. The same mark appears in the toolbar, side panel, settings page and
+browser tabs; the workflow track inside the panel carries the detailed state.
+
 > Motion can prepare coursework and perform supported consequential actions only
 > after a fresh, target-specific confirmation each time. It never acts inside a
 > graded, timed or proctored attempt. That boundary is enforced in code and
@@ -42,6 +46,10 @@ Motion knows what an assignment page is.
   explicitly configure BYOK cloud mode, the provider you selected.
   Anything the material could not support comes back marked
   `[needs a source]` so you can see exactly what to check.
+- **Lets you choose the AI model.** Settings offers named OpenAI and Claude
+  models, including economical choices for routine coursework. Refresh models
+  checks the models available to your API account; explicit unavailable choices
+  are blocked rather than replaced. API keys last only for the browser session.
 - **Checks your draft against the rubric** before you hand it in, and tells you
   where it compared wording only rather than pretending to grade you.
 - **Extracts deadlines with their receipts.** Every due date keeps the raw text
@@ -131,8 +139,9 @@ model turn after disclosure acceptance, Motion sends your message, session
 plan/state labels, relevant notes, and bounded excerpts from pages Motion read
 for that session to the selected provider. Each source excerpt is at most
 8,000 characters and each request is at most 24,000 characters; excluded
-sources are omitted. IndexedDB data, provider keys and telemetry remain local;
-keys are never persisted. Motion never stores passwords or session tokens, and
+sources are omitted. Coursework data stays in IndexedDB; provider keys default
+to trusted session storage. Explicit opt-in stores keys only in the OS vault
+through the optional companion. Motion never stores LMS passwords or session tokens, and
 never bypasses institutional authentication. See [DATA](docs/DATA.md).
 
 Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
@@ -156,3 +165,12 @@ Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 
 MIT for Motion's own source. Bundled fonts are licensed separately — see
 [`LICENSES.md`](LICENSES.md).
+
+### Remember API keys securely
+
+Motion defaults to keys that last for the browser session. If you prefer to
+enter a key once, install the optional local [keychain companion](docs/keychain-companion.md)
+and choose **Remember key securely on this device** in Settings. The companion
+is a small local program that stores the key in your OS credential vault and
+lets Motion retrieve it after a restart. It has no server. **Forget key** removes
+both the remembered key and the current session copy.

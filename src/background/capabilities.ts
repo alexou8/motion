@@ -21,7 +21,7 @@ import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
 import type { StepCapability, StepContext, StepOutcome } from '@/core/workflows';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
-import { SessionSecretStore } from '@/platform/ai/secrets';
+import { HybridSecretStore } from '@/platform/ai/secrets';
 import { ChromeTabs, groupTitle, isOpenableUrl, type TabsCapability } from '@/platform/tabs';
 import { actInContentScript, askContentScript, snapshotContentScript } from './contentBridge';
 import {
@@ -52,7 +52,7 @@ function defaults(tabs: TabsCapability): CapabilityServices {
     resolveProvider: () =>
       resolveSessionProvider({
         preferencesStore: new ChromePreferencesStore(),
-        secrets: new SessionSecretStore(),
+        secrets: new HybridSecretStore(),
       }),
     now: () => new Date(),
   };

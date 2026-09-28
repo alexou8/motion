@@ -51,8 +51,11 @@ change and why it was made, and stop there.
 - Content is an observer plus typed actor. It may perform only validated,
   handle-based actions authorized by the worker; it never receives selectors,
   scripts or arbitrary URLs. Actor and policy defenses are both required.
-- Provider keys are session-only in `chrome.storage.session` with
-  `TRUSTED_CONTEXTS`; never persist, log, echo or fake-encrypt them. Cloud
+- Provider keys default to `chrome.storage.session` with `TRUSTED_CONTEXTS`.
+  Explicit opt-in may persist them only in the OS credential vault through the
+  optional native companion (ADR 0009). Never persist keys in browser
+  local/sync storage, files, IndexedDB, logs or process arguments; never echo
+  or fake-encrypt them. Cloud
   requests use fixed selected-provider endpoints after disclosure and
   just-in-time permission.
 - Never weaken, skip, or delete a test to make a build pass.

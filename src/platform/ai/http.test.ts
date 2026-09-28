@@ -41,6 +41,11 @@ describe('assertAllowlisted', () => {
     expect(() => assertAllowlisted('https://api.anthropic.com/v1/messages')).not.toThrow();
   });
 
+  it('accepts only documented Anthropic Models pagination parameters', () => {
+    expect(() => assertAllowlisted('https://api.anthropic.com/v1/models?limit=20')).not.toThrow();
+    expect(() => assertAllowlisted('https://api.anthropic.com/v1/models?limit=20&after_id=claude-haiku-4-5')).not.toThrow();
+  });
+
   it('rejects any other host, including a look-alike', () => {
     expect(() => assertAllowlisted('https://api.openai.com.evil.com/v1/responses')).toThrow(EndpointNotAllowedError);
     expect(() => assertAllowlisted('https://evil.example/v1/responses')).toThrow(EndpointNotAllowedError);
@@ -48,6 +53,19 @@ describe('assertAllowlisted', () => {
 
   it('rejects a non-https scheme even for an allowlisted-looking host', () => {
     expect(() => assertAllowlisted('http://api.openai.com/v1/responses')).toThrow(EndpointNotAllowedError);
+  });
+
+  it.each([
+    'https://api.anthropic.com/v1/models?limit=0',
+    'https://api.anthropic.com/v1/models?limit=1001',
+    'https://api.anthropic.com/v1/models?after_id=claude-haiku-4-5',
+    'https://api.anthropic.com/v1/models?limit=20&before_id=claude-haiku-4-5',
+    'https://api.anthropic.com/v1/models?limit=20&limit=10',
+    'https://api.anthropic.com/v1/models?limit=20&after_id=',
+    'https://api.anthropic.com/v1/models?limit=20#fragment',
+    'https://api.anthropic.com/v1/models/other?limit=20',
+  ])('rejects an invalid Anthropic Models pagination URL: %s', (url) => {
+    expect(() => assertAllowlisted(url)).toThrow(EndpointNotAllowedError);
   });
 });
 

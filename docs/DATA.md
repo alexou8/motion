@@ -96,11 +96,13 @@ that a future screen might forget.
 
 ## What is never stored
 
-Passwords. Session tokens or cookies copied from pages. Model API keys. Page
-HTML. Browsing history unrelated to a supported course page. Anything from a
-page detected as a graded attempt. Provider keys are held only in
-`chrome.storage.session` in trusted extension contexts and disappear when the
-browser restarts; they are never persisted, logged, or fake-encrypted.
+LMS passwords. Session tokens or cookies copied from pages. Page HTML. Browsing
+history unrelated to a supported course page. Anything from a page detected as
+a graded attempt. Provider keys default to `chrome.storage.session` in trusted
+extension contexts and disappear when the browser restarts. Explicit opt-in
+may store them only in the OS credential vault through the optional companion
+([ADR 0009](adr/0009-optional-os-keychain-companion.md)); browser local/sync
+storage and IndexedDB never contain keys. Keys are never logged or fake-encrypted.
 
 ## Cloud model turns
 

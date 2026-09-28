@@ -97,9 +97,11 @@ beforeEach(() => {
         return { ok: true };
       }
       case 'test-provider':
-        return { ok: true };
+        return { ok: true, result: { availability: { status: 'available', message: 'Ready.' } } };
+      case 'list-provider-models':
+        return { ok: true, result: { providerId: msg.providerId, models: ['gpt-6-luna', 'gpt-6-sol'], source: 'account' } };
       case 'delete-local-data':
-        return { ok: true };
+        return { ok: true, result: { deleted: true } };
       default:
         return { ok: true };
     }
@@ -156,53 +158,46 @@ describe('browser access', () => {
 });
 
 describe('privacy & data', () => {
-  it('requires confirmation and deletes the database and storage', async () => {
-    const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const r = indexedDB.open('motion', 1);
-      r.onupgradeneeded = () => r.result.createObjectStore('items');
-      r.onsuccess = () => resolve(r.result);
-      r.onerror = () => reject(r.error);
-    });
-    db.close();
+  it('requires confirmation and delegates deletion before clearing any UI storage', async () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole('button', { name: 'Privacy & data' }));
     await user.click(screen.getByRole('button', { name: 'Delete all Motion data' }));
-    expect(sessionClear).not.toHaveBeenCalled();
+    expect(vi.mocked(sendMessage).mock.calls.some(([msg]) => (msg as { type: string }).type === 'delete-local-data')).toBe(false);
     await user.click(screen.getByRole('button', { name: 'Delete everything' }));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('Deleted every course'),
-    );
-    expect(sessionClear).toHaveBeenCalled();
-    expect(localClear).toHaveBeenCalled();
-    const reopened = await new Promise<IDBOpenDBRequest>((resolve) => {
-      const r = indexedDB.open('motion');
-      r.onsuccess = () => resolve(r);
-    });
-    expect(reopened.result.objectStoreNames).toHaveLength(0);
-    reopened.result.close();
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Deleted every course'));
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'delete-local-data', confirm: 'DELETE' });
+    expect(sessionClear).not.toHaveBeenCalled();
+    expect(localClear).not.toHaveBeenCalled();
   });
 
-  it('does not claim deletion when the database is blocked', async () => {
-    vi.spyOn(indexedDB, 'deleteDatabase').mockImplementation(() => {
-      const request = {
-        onblocked: null,
-        onerror: null,
-        onsuccess: null,
-      } as unknown as IDBOpenDBRequest;
-      setTimeout(() => request.onblocked?.(new Event('blocked') as IDBVersionChangeEvent), 0);
-      return request;
-    });
+  it('preserves retry metadata and reports worker deletion failure', async () => {
+    const original = vi.mocked(sendMessage).getMockImplementation()!;
+    vi.mocked(sendMessage).mockImplementation(async (msg) => (msg as { type: string }).type === 'delete-local-data'
+      ? { ok: false, error: 'The secure storage companion is unavailable. Try again.' }
+      : original(msg));
     const user = userEvent.setup();
     render(<App />);
     await user.click(screen.getByRole('button', { name: 'Privacy & data' }));
     await user.click(screen.getByRole('button', { name: 'Delete all Motion data' }));
     await user.click(screen.getByRole('button', { name: 'Delete everything' }));
-    await waitFor(() =>
-      expect(screen.getByRole('status')).toHaveTextContent('another Motion page is open'),
-    );
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('companion is unavailable'));
     expect(screen.getByRole('status')).not.toHaveTextContent('Deleted every course');
-    vi.restoreAllMocks();
+    expect(sessionClear).not.toHaveBeenCalled();
+    expect(localClear).not.toHaveBeenCalled();
+  });
+
+  it('does not claim deletion from a malformed success response', async () => {
+    const original = vi.mocked(sendMessage).getMockImplementation()!;
+    vi.mocked(sendMessage).mockImplementation(async (msg) => (msg as { type: string }).type === 'delete-local-data'
+      ? { ok: true, result: { deleted: false } }
+      : original(msg));
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Privacy & data' }));
+    await user.click(screen.getByRole('button', { name: 'Delete all Motion data' }));
+    await user.click(screen.getByRole('button', { name: 'Delete everything' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('could not delete'));
   });
 
   it('cancels deletion with Keep my data', async () => {
@@ -268,6 +263,82 @@ describe('AI settings', () => {
     );
   });
 
+  it('requests native messaging in the save gesture before saving a remembered key', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    const form = openaiKey.closest('form')!;
+    await user.click(within(form).getByRole('checkbox', { name: 'Remember key securely on this device' }));
+    await user.type(openaiKey, 'sk-keychain-secret-value');
+    await user.click(within(form).getByRole('button', { name: 'Save in OS keychain' }));
+    await waitFor(() => expect(permissionsRequest).toHaveBeenCalledWith({ permissions: ['nativeMessaging'] }));
+    expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'set-provider-key', providerId: 'openai', key: 'sk-keychain-secret-value', storage: 'keychain',
+    }));
+    expect(screen.getByRole('status')).toHaveTextContent('saved in your OS keychain');
+  });
+
+  it('does not send a remembered key when native messaging permission is denied', async () => {
+    permissionsRequest.mockResolvedValueOnce(false);
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    const form = openaiKey.closest('form')!;
+    await user.click(within(form).getByRole('checkbox', { name: 'Remember key securely on this device' }));
+    await user.type(openaiKey, 'sk-denied-key-value');
+    await user.click(within(form).getByRole('button', { name: 'Save in OS keychain' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('key was not saved'));
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'set-provider-key' }));
+  });
+
+  it('does not report a failed key save as successful', async () => {
+    sendMessage = vi.fn(async (message: unknown) => {
+      const msg = message as { type: string };
+      if (msg.type === 'ai-status') return { ok: true, result: structuredClone(aiStatus) };
+      if (msg.type === 'set-provider-key') return { ok: false, error: 'Secure storage is unavailable.' };
+      return { ok: true };
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    await user.type(openaiKey, 'sk-failed-save-value');
+    await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Save for this browser session' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Secure storage is unavailable.'));
+    expect(screen.getByRole('status')).not.toHaveTextContent('key saved');
+  });
+
+  it('only reports a key as forgotten after the worker confirms it', async () => {
+    sendMessage = vi.fn(async (message: unknown) => {
+      const msg = message as { type: string };
+      if (msg.type === 'ai-status') return { ok: true, result: structuredClone(aiStatus) };
+      if (msg.type === 'forget-provider-key') return { ok: false, error: 'Secure storage is unavailable.' };
+      return { ok: true };
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Forget key' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Secure storage is unavailable.'));
+    expect(screen.getByRole('status')).not.toHaveTextContent('key forgotten');
+  });
+
+  it('checks the companion through a user-triggered native messaging permission', async () => {
+    sendMessage = vi.fn(async (message: unknown) => {
+      const msg = message as { type: string };
+      if (msg.type === 'ai-status') return { ok: true, result: structuredClone(aiStatus) };
+      if (msg.type === 'keychain-status') return { ok: true, result: { available: true, backend: 'macos-keychain', message: 'Secure storage companion is ready.' } };
+      return { ok: true };
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    const form = openaiKey.closest('form')!;
+    await user.click(within(form).getByRole('button', { name: 'Check secure storage companion' }));
+    await waitFor(() => expect(permissionsRequest).toHaveBeenCalledWith({ permissions: ['nativeMessaging'] }));
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'keychain-status', providerId: 'openai' });
+    expect(within(form).getByText('Secure storage companion is ready.')).toBeInTheDocument();
+  });
+
   it('forgets a saved key', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -275,6 +346,20 @@ describe('AI settings', () => {
     const form = openaiKey.closest('form')!;
     await user.click(within(form).getByRole('button', { name: 'Forget key' }));
     await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('key forgotten'));
+  });
+
+  it('reports a malformed provider-health response as a failed connection check', async () => {
+    sendMessage = vi.fn(async (message: unknown) => {
+      const msg = message as { type: string };
+      if (msg.type === 'test-provider') return { ok: true, result: { availability: { status: 'available' } } };
+      if (msg.type === 'ai-status') return { ok: true, result: structuredClone(aiStatus) };
+      return { ok: true };
+    });
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Test connection' }));
+    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('OpenAI connection test failed.'));
   });
 
   it('requires the disclosure before selecting a cloud provider', async () => {
@@ -293,6 +378,32 @@ describe('AI settings', () => {
     await user.click(checkbox);
     await user.click(openaiRadio);
     await waitFor(() => expect(permissionsRequest).toHaveBeenCalledWith({ origins: ['https://api.openai.com/*'] }));
+  });
+
+  it('refreshes exact account models and saves the selected ID', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiCard = (await screen.findByLabelText('API key', { selector: '#openai-key' })).closest('div.grid') as HTMLElement;
+    const disclosure = within(openaiCard).getByText('This provider processes the content you send using its cloud service.').closest('label')!.querySelector('input')!;
+    await user.click(disclosure);
+    await user.click(within(openaiCard).getByRole('radio'));
+    await user.click(await within(openaiCard).findByRole('button', { name: 'Refresh models' }));
+    await waitFor(() => expect(within(openaiCard).getByRole('option', { name: /gpt-6-sol/ })).toBeInTheDocument());
+    expect(sendMessage).toHaveBeenCalledWith({ type: 'list-provider-models', providerId: 'openai' });
+    await user.selectOptions(within(openaiCard).getByLabelText('Model'), 'gpt-6-sol');
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: 'set-ai-preferences', providerId: 'openai', model: 'gpt-6-sol' }));
+  });
+
+  it('keeps a saved unavailable model visible but prevents selecting it again', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiCard = (await screen.findByLabelText('API key', { selector: '#openai-key' })).closest('div.grid') as HTMLElement;
+    const disclosure = within(openaiCard).getByText('This provider processes the content you send using its cloud service.').closest('label')!.querySelector('input')!;
+    await user.click(disclosure);
+    await user.click(within(openaiCard).getByRole('radio'));
+    await user.selectOptions(within(openaiCard).getByLabelText('Model'), 'gpt-6-astra');
+    await user.click(within(openaiCard).getByRole('button', { name: 'Refresh models' }));
+    await waitFor(() => expect(within(openaiCard).getByRole('option', { name: /gpt-6-astra.*unavailable/ })).toBeDisabled());
   });
 });
 

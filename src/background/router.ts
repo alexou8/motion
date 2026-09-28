@@ -67,6 +67,8 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
     case 'session-tab':
       return handleSessionMessage(message);
     case 'ai-status':
+    case 'keychain-status':
+    case 'list-provider-models':
     case 'set-provider-key':
     case 'forget-provider-key':
     case 'test-provider':

@@ -62,6 +62,7 @@ describe('resolveSessionProvider', () => {
   });
 
   it('resolves a configured provider without silently choosing another one', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 }));
     const result = await resolveSessionProvider({
       preferencesStore: preferences({
         ...DEFAULT_AI_PREFERENCES,
@@ -70,16 +71,36 @@ describe('resolveSessionProvider', () => {
       }),
       secrets: secrets({ openai: 'sk-test-CANARY1234567890' }),
       permissions: { contains: vi.fn(async () => true) },
-      fetchImpl: vi.fn(async () => new Response(JSON.stringify({ data: [] }), { status: 200 })),
+      fetchImpl,
     });
 
     expect(result).toEqual({
       kind: 'blocked',
       blocker: expect.objectContaining({
         kind: 'provider',
-        message: expect.stringContaining('No supported general-purpose OpenAI model'),
+        message: expect.stringContaining('No supported OpenAI text model'),
       }),
     });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports a disclosed configured cloud provider without enumerating models for diagnostics', async () => {
+    const fetchImpl = vi.fn();
+    const result = await resolveSessionProvider({
+      preferencesStore: preferences({
+        ...DEFAULT_AI_PREFERENCES,
+        providerId: 'openai',
+        model: 'account-specific-model',
+        cloudDisclosureAccepted: ['openai'],
+      }),
+      secrets: secrets({ openai: 'sk-test-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => true) },
+      fetchImpl,
+      resolveModelListing: false,
+    });
+
+    expect(result).toEqual(expect.objectContaining({ kind: 'ready', providerId: 'openai', model: 'account-specific-model' }));
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('fails closed when Chrome local availability does not answer in time', async () => {

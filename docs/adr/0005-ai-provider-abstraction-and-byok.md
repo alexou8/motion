@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-09-16
+- **Amended:** 2026-09-28 by [ADR 0009](0009-optional-os-keychain-companion.md), allowing explicit opt-in OS-vault storage.
 
 ## Decision
 

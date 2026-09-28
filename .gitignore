@@ -17,3 +17,9 @@ motion-extension-*.zip
 .claude/
 *.code-workspace
 docs/development/
+
+# Optional native companion build output
+motion-keychain-companion-*.zip
+native/__pycache__/
+dist-e2e-keychain/
+native/tests/__pycache__/

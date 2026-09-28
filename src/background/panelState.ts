@@ -2,6 +2,7 @@ import {
   courseSchema,
   courseTaskSchema,
 } from '@/core/domain';
+import { z } from 'zod';
 import { deadlineBuckets, EMPTY_PANEL_STATE, type PanelState } from '@/core/view';
 import { approvalRequestSchema } from '@/core/policy';
 import { openDatabase } from '@/core/storage/db';
@@ -17,6 +18,11 @@ import { recoverWorkflows } from './recovery';
 
 const ACTIVE_SESSION_KEY = 'motion.activeSessionId';
 const STREAMING_KEY = 'motion.streaming';
+const storedStreamingSchema = z.object({
+  sessionId: z.string().min(1),
+  requestKey: z.string().min(1),
+  text: z.string().max(40_000),
+});
 
 type StoredObservation = PanelState['page'] & { restricted?: boolean };
 
@@ -76,14 +82,21 @@ export async function buildPanelState(): Promise<PanelState> {
   const discoveryStored = discoveryKey ? (await chrome.storage.local.get(discoveryKey))[discoveryKey] : null;
   const discovery = typeof discoveryStored === 'object' && discoveryStored !== null ? discoveryStored as { optedIn?: unknown; busy?: unknown; result?: unknown; blocker?: unknown } : {};
   const buckets = deadlineBuckets(tasks.records, new Date(), timeZone);
-  const resolution = await resolveSessionProvider().catch(() => null);
+  // This path runs for every panel state refresh, including each streaming
+  // preview update. Readiness needs no model catalogue request; model turns
+  // and the explicit settings refresh verify account model availability.
+  const resolution = await resolveSessionProvider({ resolveModelListing: false }).catch(() => null);
   const selected = preferences.providerId;
   const provider = resolution?.kind === 'ready' ? resolution : null;
-  const streamingRaw = storedState[STREAMING_KEY];
-  const streaming = typeof streamingRaw === 'object' && streamingRaw !== null
-    && typeof (streamingRaw as { sessionId?: unknown }).sessionId === 'string'
-    && typeof (streamingRaw as { text?: unknown }).text === 'string'
-    ? streamingRaw as PanelState['streaming']
+  const storedStreaming = storedStreamingSchema.safeParse(storedState[STREAMING_KEY]);
+  const streaming = storedStreaming.success
+    && storedStreaming.data.sessionId === activeSession?.id
+    && storedStreaming.data.requestKey === activeSession?.pendingModelRequest?.key
+    && activeSession.pendingModelRequest?.generation === activeSession.modelTurnGeneration
+    ? {
+        sessionId: storedStreaming.data.sessionId,
+        text: storedStreaming.data.text,
+      }
     : null;
 
   return {
@@ -129,7 +142,7 @@ export async function buildPanelState(): Promise<PanelState> {
       status: provider ? 'available' : resolution?.kind === 'blocked' ? resolution.blocker.kind : 'unavailable',
       message: provider ? `${provider.displayName} is ready.` : resolution?.kind === 'blocked' ? resolution.blocker.message : '',
     },
-    streaming: streaming?.sessionId === activeSession?.id ? streaming : null,
+    streaming,
     discovery: { host: origin, optedIn: typeof discovery.optedIn === 'boolean' ? discovery.optedIn : null, busy: discovery.busy === true, result: discovery.result as PanelState['discovery']['result'], blocker: typeof discovery.blocker === 'string' ? discovery.blocker : null },
   };
 }

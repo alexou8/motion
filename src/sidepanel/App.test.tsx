@@ -300,7 +300,7 @@ describe('SessionView', () => {
     const commands: MotionCommand[] = [];
     render(
       <App
-        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }), commands)}
+        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: '{"reply":"Drafting the outline…"' } }), commands)}
         now={NOW}
       />,
     );
@@ -309,16 +309,65 @@ describe('SessionView', () => {
     expect(commands).toContainEqual({ type: 'session-command', sessionId: session.id, command: 'stop-generation' });
   });
 
+  it('shows Stop for a claimed model turn before the first streamed delta', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    const pendingSession = {
+      ...session,
+      status: 'working' as const,
+      pendingModelRequest: {
+        key: 'request-1', providerId: 'openai' as const, startedAt: NOW.toISOString(), generation: 1,
+      },
+    };
+    render(
+      <App
+        bridge={bridgeFor(withSession({ activeSession: pendingSession }), commands)}
+        now={NOW}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Stop' }));
+    expect(commands).toContainEqual({ type: 'session-command', sessionId: session.id, command: 'stop-generation' });
+  });
+
   it('announces streaming text in the live log', () => {
     render(
       <App
-        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: 'Drafting the outline…' } }))}
+        bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: '{"reply":"Drafting the outline…"' } }))}
         now={NOW}
       />,
     );
     const log = screen.getByRole('log');
     expect(log).toHaveAttribute('aria-live', 'polite');
     expect(within(log).getByText('Drafting the outline…')).toBeInTheDocument();
+  });
+
+  it('shows only the partial top-level reply and decodes JSON escapes', () => {
+    const raw = '{"plan":[{"id":"synthetic-secret-step","action":"submit-assignment"}],"reply":"I can explain \\"why\\" and \\u00A9';
+    render(<App bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: raw } }))} now={NOW} />);
+
+    const log = screen.getByRole('log');
+    expect(log).toHaveTextContent('I can explain "why" and ©');
+    expect(within(log).queryByText(/synthetic-secret-step|submit-assignment|"plan"/)).not.toBeInTheDocument();
+  });
+
+  it('keeps partial trailing escapes hidden and shows status before the reply field arrives', () => {
+    const { rerender } = render(
+      <App bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: '' } }))} now={NOW} />,
+    );
+    expect(screen.getByRole('log')).toHaveTextContent('Motion is responding…');
+
+    rerender(<App bridge={bridgeFor(withSession({ streaming: { sessionId: session.id, text: '{"plan":[],"reply":"Text \\"quoted\\" and partial \\u00A' } }))} now={NOW} />);
+    const log = screen.getByRole('log');
+    expect(log).toHaveTextContent('Text "quoted" and partial');
+    expect(within(log).queryByText(/"plan"|\\u00A/)).not.toBeInTheDocument();
+  });
+
+  it('shows the model identifier alongside the selected provider', () => {
+    const activeSession = { ...session, agent: { providerId: 'openai' as const, model: 'gpt-synthetic-model' } };
+    render(<App bridge={bridgeFor(withSession({ activeSession, ai: { providerId: 'openai', displayName: 'OpenAI', cloud: true, status: 'available', message: 'Ready.' } }))} now={NOW} />);
+    expect(screen.getByText('AI · OpenAI')).toBeInTheDocument();
+    expect(screen.getByText('Model · gpt-synthetic-model')).toBeInTheDocument();
   });
 
   it('sends session-message on Enter and a newline on Shift+Enter', async () => {

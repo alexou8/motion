@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SessionSecretStore, type StorageArea } from './secrets';
+import { HybridSecretStore, SessionSecretStore, type StorageArea } from './secrets';
+import type { KeychainVault } from './keychain';
 
 function fakeArea(): StorageArea & { backing: Map<string, unknown> } {
   const backing = new Map<string, unknown>();
@@ -46,6 +47,17 @@ describe('SessionSecretStore', () => {
     expect(area.setAccessLevel).toHaveBeenCalledWith({ accessLevel: 'TRUSTED_CONTEXTS' });
   });
 
+  it('retries access restriction after failure before writing a key', async () => {
+    const area = fakeArea();
+    vi.mocked(area.setAccessLevel!).mockRejectedValueOnce(new Error('synthetic restriction failure'));
+    const store = new SessionSecretStore(area);
+    await expect(store.set('openai', CANARY)).rejects.toThrow();
+    expect(area.backing.size).toBe(0);
+    await store.set('openai', CANARY);
+    expect(area.setAccessLevel).toHaveBeenCalledTimes(2);
+    expect(await store.get('openai')).toBe(CANARY);
+  });
+
   it('sets the access level only once across multiple calls', async () => {
     const area = fakeArea();
     const store = new SessionSecretStore(area);
@@ -78,5 +90,50 @@ describe('SessionSecretStore', () => {
     expect(await store.get('anthropic')).toBe('sk-ant-CANARY1234567890');
     await store.forget('openai');
     expect(await store.get('anthropic')).toBe('sk-ant-CANARY1234567890');
+  });
+});
+
+describe('HybridSecretStore', () => {
+  function setup() {
+    const sessionArea = fakeArea();
+    const localArea = fakeArea();
+    const values = new Map<string, string>();
+    const vault: KeychainVault = {
+      status: vi.fn(async () => ({ available: true, message: 'ready' })),
+      get: vi.fn(async (id) => values.get(id) ?? null),
+      set: vi.fn(async (id, value) => { values.set(id, value); }),
+      delete: vi.fn(async (id) => { values.delete(id); }),
+    };
+    const store = new HybridSecretStore({
+      session: new SessionSecretStore(sessionArea), localStorage: localArea, vault,
+      canUseKeychain: async () => true,
+    });
+    return { store, vault, values, localArea };
+  }
+
+  it('keeps a failed forget revoked and lets a later forget retry vault deletion', async () => {
+    const { store, vault, values } = setup();
+    await store.set('openai', CANARY, 'keychain');
+    vi.mocked(vault.delete).mockRejectedValueOnce(new Error('private host error'));
+    await expect(store.forget('openai')).rejects.toThrow();
+    expect(await store.get('openai')).toBeNull();
+    expect(await store.has('openai')).toBe(false);
+    expect(vault.get).toHaveBeenCalledTimes(0);
+    expect(values.get('openai')).toBe(CANARY);
+    await store.forget('openai');
+    expect(values.has('openai')).toBe(false);
+    expect(await store.storageFor('openai')).toBe('session');
+  });
+
+  it('marks an interrupted keychain save pending so reads cannot expose an orphan and forget can clean it up', async () => {
+    const { store, vault, values, localArea } = setup();
+    vi.mocked(vault.set).mockImplementationOnce(async (id, value) => { values.set(id, value); throw new Error('interrupted after write'); });
+    await expect(store.set('anthropic', CANARY, 'keychain')).rejects.toThrow();
+    expect(await store.get('anthropic')).toBeNull();
+    expect(await store.has('anthropic')).toBe(false);
+    expect(await store.storageFor('anthropic')).toBe('keychain');
+    expect(localArea.backing.get('motion.keychain.providers')).toEqual({ anthropic: 'keychain-save-pending' });
+    await store.forget('anthropic');
+    expect(values.has('anthropic')).toBe(false);
   });
 });

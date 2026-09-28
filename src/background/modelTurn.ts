@@ -115,10 +115,10 @@ interface ModelReplyResult {
  * The plan (and the transition to `waiting` when there is no plan) is only
  * applied when the session is still in the same turn generation and not
  * paused/archived/completed — those are exactly the conditions under which a
- * plan this turn produced is still this session's business. The reply and
- * this turn's own `pendingModelRequest` are applied unconditionally: a
- * received reply is never discarded, and this turn only ever clears its own
- * claim, never a newer one's.
+ * plan this turn produced is still this session's business. Provider results
+ * also require the exact request claim to remain current when they commit, so
+ * Stop during plan preparation cannot append a late reply. A deterministic
+ * fallback has no provider claim and keeps its existing merge behavior.
  */
 async function applyModelTurnResult(
   sessionId: string,
@@ -129,11 +129,20 @@ async function applyModelTurnResult(
   let planApplied = false;
   try {
     const session = await updateSession(db, sessionId, (current) => {
+      if (result.requestKey && (
+        current.pendingModelRequest?.key !== result.requestKey
+        || current.pendingModelRequest.generation !== result.generation
+        || current.modelTurnGeneration !== result.generation
+      )) return null;
       let next = appendMessage(current, { id: crypto.randomUUID(), role: 'motion', text: result.reply }, now);
       for (const activity of result.activities) next = appendActivity(next, activity, now);
       const stillOwnsTurn = current.modelTurnGeneration === result.generation
         && current.status !== 'paused' && current.status !== 'archived' && current.status !== 'completed';
       if (stillOwnsTurn) {
+        // Model-turn blockers belong to the provider/reply path that just
+        // recovered. Keep approvals and other blockers owned by separate
+        // workflows intact, and never clear anything for a stale generation.
+        next = { ...next, blockers: next.blockers.filter((blocker) => !blocker.id.startsWith('model-')) };
         next = result.planSteps
           ? setPlan(next, result.planSteps, now)
           : transitionSession(next, 'waiting', now);
@@ -154,8 +163,18 @@ async function applyModelTurnResult(
   }
 }
 
-async function storeStreaming(sessionId: string, requestKey: string, text: string): Promise<void> {
+async function storeStreaming(sessionId: string, requestKey: string, text: string): Promise<boolean> {
+  const session = await loadSession(sessionId);
+  if (!session || session.pendingModelRequest?.key !== requestKey
+    || session.pendingModelRequest.generation !== session.modelTurnGeneration) return false;
   await chrome.storage.session.set({ [STREAMING_KEY]: { sessionId, requestKey, text: text.slice(-STREAM_MAX_LENGTH) } });
+  const latest = await loadSession(sessionId);
+  if (!latest || latest.pendingModelRequest?.key !== requestKey
+    || latest.pendingModelRequest.generation !== latest.modelTurnGeneration) {
+    await clearStreaming(sessionId, requestKey);
+    return false;
+  }
+  return true;
 }
 
 async function clearStreaming(sessionId: string, requestKey?: string): Promise<void> {
@@ -472,6 +491,12 @@ export async function runModelTurn(
   let lastWrite = 0;
   let lastHeartbeat = 0;
   try {
+    // Publish an empty preview as soon as the durable claim exists. The panel
+    // can then render Stop while provider setup or response headers are slow.
+    if (!await storeStreaming(sessionId, requestKey, '')) {
+      controller.abort();
+      return await loadSession(sessionId);
+    }
     // Setup does I/O too. Keep it inside the ownership/finally envelope so a
     // failed tab lookup or prompt build cannot strand a durable claim and its
     // in-memory abort controller forever.
@@ -517,14 +542,17 @@ export async function runModelTurn(
       const nowMs = Date.now();
       if (nowMs - lastWrite >= STREAM_WRITE_INTERVAL_MS) {
         lastWrite = nowMs;
-        await storeStreaming(sessionId, requestKey, output);
+        if (!await storeStreaming(sessionId, requestKey, output)) {
+          controller.abort();
+          return await loadSession(sessionId);
+        }
       }
       if (nowMs - lastHeartbeat >= HEARTBEAT_INTERVAL_MS) {
         lastHeartbeat = nowMs;
         await refreshHeartbeat(sessionId, requestKey, new Date(nowMs).toISOString());
       }
     }
-    await storeStreaming(sessionId, requestKey, output);
+    if (!await storeStreaming(sessionId, requestKey, output)) return await loadSession(sessionId);
     session = await loadSession(sessionId);
     if (!session || session.pendingModelRequest?.key !== requestKey || session.pendingModelRequest.generation !== session.modelTurnGeneration) return session;
     const parsed = parseAgentResponse(output);

@@ -38,6 +38,12 @@ beforeEach(async () => {
           : Object.fromEntries(key.map((item) => [item, values[item]]))),
         set: vi.fn(async (next: Record<string, unknown>) => Object.assign(values, next)),
       },
+      local: {
+        get: vi.fn(async () => ({})),
+      },
+    },
+    tabs: {
+      query: vi.fn(async () => []),
     },
   });
 });
@@ -46,6 +52,20 @@ describe('session lifecycle', () => {
   it('opens known resources when a resolved task starts from a course home', () => {
     expect(sessionCreateBehavior('course-home', true, true)).toBe('open-related');
     expect(sessionCreateBehavior(undefined, true, true)).toBe('open-related');
+  });
+
+  it('reuses the seeded initial goal for the first model turn', async () => {
+    runModelTurn.mockResolvedValueOnce(null);
+
+    await handleSessionMessage({ type: 'session-create', goal: 'Use the connected provider.', tabId: null });
+
+    expect(runModelTurn).toHaveBeenCalledWith(expect.any(String), 'Use the connected provider.', {}, true);
+    const db = await openDatabase();
+    const [stored] = (await sessionRepository(db).all()).records;
+    expect(stored).toBeDefined();
+    expect(stored?.conversation.filter((message) => message.role === 'student').map((message) => message.text))
+      .toEqual(['Use the connected provider.']);
+    db.close();
   });
 });
 

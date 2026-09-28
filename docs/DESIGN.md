@@ -54,9 +54,20 @@ Shape-first is an accessibility requirement (status must not be carried by
 colour alone), and it is what keeps the redesign honest: the new palette changed
 every colour and no state became ambiguous.
 
-The track is also now Motion's **mark**: a short rule with one filled and one
-ringed marker, drawn in the accent, in the panel header. It is Motion's own
-glyph and imitates no other product's.
+## The mark
+
+Motion's mark is a continuous **M** drawn as one path: it rises, guides through
+the two inner turns, and finishes at the same baseline. It represents moving
+coursework from its first step to completion without borrowing an LMS symbol or
+an assistant's face. The path is deliberately broad, round-capped and simple
+enough to remain legible at Chrome's 16px toolbar size.
+
+`src/assets/motion-mark.svg` is the canonical artwork. Panel and options UI use
+it as a semantic-colour mask, so it follows the light and dark terracotta
+tokens. Both extension documents use it as their favicon, and
+`scripts/make-icons.mjs` rasterizes the 16, 32, 48 and 128px manifest PNGs
+from that same source. Do not redraw the mark inside a component or create a
+surface-specific variant.
 
 ## Colour
 
@@ -100,32 +111,31 @@ party that a student is using Motion, every time the panel opens.
 
 ## The panel
 
-- **Header:** the mark and "Motion" in the serif; *New chat* and *Settings* as
-  icon buttons with accessible names. There is no history button: the
-  conversation is ephemeral (see below), and a button with nothing behind it is
-  a defect, not a placeholder.
-- **Body:** the connection state first, and honestly — idle, unsupported,
-  permission needed, signed out and restricted each keep their own view. On a
-  page that carries coursework, a row of **task buttons** (Workspace, Checklist,
-  Draft review) opens Motion's existing views; below them, the background-work
-  track; then the conversation.
-- **Composer:** pinned to the bottom. Enter sends, Shift+Enter adds a line.
-  Where the chat cannot work, the composer is disabled and says why in a line
-  above it — beside a graded attempt, on a page Motion cannot read, or when
-  Chrome has no on-device model.
+- **Header:** the M mark and "Motion" in the serif, with a *Settings* icon button
+  carrying an accessible name.
+- **Home:** the connection state first — idle, unsupported, permission needed,
+  signed out and restricted each keep their own view. Supported pages offer a
+  goal composer, sessions, course scanning and deadlines.
+- **Session:** a persistent conversation, plan track, workspace, context,
+  artifacts and approvals. The provider and model are visible. The composer
+  supports Enter to send and Shift+Enter for a line break; Stop appears as soon
+  as a model request is pending, including before its first streamed answer.
 
 ## The chat
 
-The chat answers questions about the page in front of the student, using
-Chrome's on-device model (ADR 0004) — nothing leaves the machine. Which hosted
-model a student may bring is still an open product decision
-(`docs/development/ai-account-handoff.md`, Track 2).
+The session conversation uses the student's selected model: Chrome's on-device
+provider or an explicitly configured OpenAI/Anthropic API connection. Cloud
+processing requires disclosure acceptance, provider permission and a
+key stored for the session by default, or in the OS credential vault after
+explicit opt-in and companion installation. Settings provides named models, economical choices and
+an explicit refresh of the account's available text models.
 
-- It is **ephemeral**: held in the panel's memory, forgotten on *New chat* or
-  when the panel closes, stored nowhere.
-- Every answer carries a label saying it was generated and should be checked
-  against the page, and names the page it was about, so an old answer is not
-  read as describing a new page.
+- Sessions and their conversation persist in this browser so coursework can
+  continue after closing the panel. Generated text should be checked against
+  its sources; the session's context keeps those sources inspectable.
+- While an answer streams, the conversation shows its reply text rather than
+  the model's structured plan. Incomplete or failed responses never become
+  completed replies or executable plans.
 - **Beside a graded attempt the chat reads nothing and answers nothing.** The
   worker refuses before it asks the page or the model; the panel only says so.
 - Page text reaches the model fenced as quoted data, through the same
@@ -133,13 +143,14 @@ model a student may bring is still an open product decision
 
 ## Settings
 
-A full page: the serif title, a left navigation of **Permissions**, **Privacy &
-data**, **Capabilities** and **About**, and content in bordered cards. Its job
+A full page: the M mark and serif title, with navigation for **AI**, **Browser
+access**, **Agent behaviour**, **Reminders**, **Privacy & data** and **About**,
+and content in bordered cards. Its job
 is unchanged — to make three promises inspectable: which sites Motion can read,
 that access can be revoked, and that deleting data really deletes it (and says
-so honestly when the browser blocks it). **Capabilities** explains the opt-in
-consent model and shows an honest empty state until an optional capability
-exists; it has no switch with nothing behind it.
+so honestly when the browser blocks it). **Agent behaviour** exposes the
+implemented opt-in configurable actions; consequential actions always require
+their own fresh approval.
 
 ## Motion (the behaviour, not the product)
 

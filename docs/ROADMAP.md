@@ -4,8 +4,32 @@ Status is evidence-based. **Done** means implemented *and* covered by tests that
 run in `npm test`. **Partial** names exactly what is missing. Nothing is marked
 done because it was designed or documented.
 
-Last reconciled for source status on 2026-09-17; final browser-matrix counts
-remain pending.
+Last updated 2026-09-28. The new provider Settings and panel E2E checks cover
+exact model selection, current and economical model choices, stream failures,
+cancellation and recovery. See [browser verification](verification/browser-verification.md)
+for this iteration's evidence and remaining live-account limitations. Older
+phase entries below retain their original scope and evidence.
+
+## Optional remembered provider keys
+
+The student requested secure storage across browser restarts on 2026-09-28.
+[ADR 0009](adr/0009-optional-os-keychain-companion.md) defines an opt-in local
+companion backed by the OS credential vault; session keys remain the default.
+Native transport, installer and restart evidence are tracked in
+[browser verification](verification/browser-verification.md).
+
+## Deadline usability follow-ups
+
+[WATnow’s public listing](https://chromewebstore.google.com/detail/watnow/iikileknbmejmkaonlhkjkpbfnkidibh)
+provides useful comparison points for Motion’s deadline experience. These are
+planned follow-ups, not verified Motion behavior:
+
+- Surface a moved deadline beside its previous date using Motion’s existing
+  correction history.
+- Keep the last successful scan visible during an offline or signed-out retry,
+  with a clear freshness indicator.
+- Recheck submission state before a reminder when the readable LMS page allows
+  it, while preserving the assessment boundary and current permission scope.
 
 ## Phase A — Foundation
 

@@ -122,8 +122,10 @@ backend.
   plan/state labels, relevant notes and bounded page excerpts to the selected
   provider only, during the model turn. Excerpts are capped at 8,000 characters
   per source and 24,000 characters per request, with excluded sources omitted.
-- Keys live only in session storage; IndexedDB, telemetry and Motion servers
-  receive none. Local data can be deleted in full.
+- Keys default to trusted session storage; explicit opt-in may remember them
+  only in the OS credential vault through the optional native companion.
+  Browser local/sync storage, IndexedDB, telemetry and Motion servers receive
+  none. Deletion removes opted-in vault entries before local data.
 
 ## Success
 

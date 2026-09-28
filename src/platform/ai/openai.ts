@@ -10,6 +10,7 @@ import { redactSecrets } from '@/core/ai/redact';
 import { explainProviderError } from '@/core/ai/explain';
 import { ProviderError, type AIProvider, type GenerateRequest, type ProviderAvailability, type ProviderCapabilities } from '@/core/ai/types';
 import { resolveOpenAIRecommended } from '@/core/ai/models';
+import { z } from 'zod';
 import type { SecretStore } from './secrets';
 import {
   classifyHttpError,
@@ -36,12 +37,56 @@ export interface OpenAIProviderDeps {
 }
 
 interface OpenAIInputMessage {
-  role: 'user' | 'assistant';
+  role: 'user' | 'assistant' | 'developer';
   content: string;
 }
 
+const openAIModelsSchema = z.object({
+  data: z.array(z.object({ id: z.string() })),
+});
+
+const openAIResponseSchema = z.object({
+  status: z.literal('completed'),
+  output_text: z.string().optional(),
+  output: z.array(z.object({
+    content: z.array(z.object({
+      type: z.string(),
+      text: z.string().optional(),
+    })).optional(),
+  })).optional(),
+});
+
+const openAITextDeltaSchema = z.object({
+  type: z.literal('response.output_text.delta'),
+  delta: z.string(),
+});
+
+const openAICompletedSchema = z.object({
+  type: z.literal('response.completed'),
+  response: z.object({ status: z.literal('completed') }),
+});
+
+const openAIFailedSchema = z.object({
+  type: z.literal('response.failed'),
+  response: z.object({ status: z.literal('failed') }),
+});
+const openAIIncompleteSchema = z.object({
+  type: z.literal('response.incomplete'),
+  response: z.object({ status: z.literal('incomplete') }),
+});
+const openAIErrorSchema = z.object({ type: z.literal('error') });
+
 function buildBody(req: GenerateRequest, model: string, stream: boolean) {
-  const input: OpenAIInputMessage[] = req.messages.map((m) => ({ role: m.role, content: m.content }));
+  // JSON mode requires an instruction in a system, user, or developer input
+  // message. `instructions` is intentionally retained as the full Motion
+  // policy, but is not an input item for that API validation.
+  const input: OpenAIInputMessage[] = [
+    ...(req.json ? [{
+      role: 'developer' as const,
+      content: 'Return one valid JSON object and no text outside that JSON object.',
+    }] : []),
+    ...req.messages.map((m) => ({ role: m.role, content: m.content })),
+  ];
   return {
     model,
     instructions: req.system,
@@ -94,8 +139,8 @@ export class OpenAIProvider implements AIProvider {
   }
 
   async availability(): Promise<ProviderAvailability> {
-    const key = await this.key();
-    if (!key) return { status: 'not-configured', message: 'OpenAI isn’t set up yet. Add an API key in Motion’s settings to use it.' };
+    const configured = await this.secrets.has('openai');
+    if (!configured) return { status: 'not-configured', message: 'OpenAI isn’t set up yet. Add an API key in Motion’s settings to use it.' };
     return { status: 'available', message: 'OpenAI is ready.' };
   }
 
@@ -110,8 +155,15 @@ export class OpenAIProvider implements AIProvider {
       knownSecrets: [key],
     });
     if (!response.ok) throw await this.toProviderError(response, key, 'GET');
-    const body = (await response.json()) as { data?: { id: string }[] };
-    return (body.data ?? []).map((m) => m.id);
+    let rawBody: unknown;
+    try {
+      rawBody = await response.json();
+    } catch (error) {
+      throw toRequestError(error, key);
+    }
+    const body = openAIModelsSchema.safeParse(rawBody);
+    if (!body.success) throw badResponseError('OpenAI');
+    return body.data.data.map((model) => model.id);
   }
 
   async healthCheck(): Promise<ProviderAvailability> {
@@ -182,14 +234,22 @@ export class OpenAIProvider implements AIProvider {
       throw toRequestError(err, key);
     });
     if (!response.ok) throw await this.toProviderError(response, key, 'POST');
-    let body: { output_text?: string; output?: { content?: { text?: string }[] }[] };
+    let rawBody: unknown;
     try {
-      body = (await response.json()) as { output_text?: string; output?: { content?: { text?: string }[] }[] };
+      rawBody = await response.json();
     } catch (error) {
       throw toRequestError(error, key);
     }
-    if (typeof body.output_text === 'string') return body.output_text;
-    return (body.output ?? []).flatMap((o) => o.content ?? []).map((c) => c.text ?? '').join('');
+    const body = openAIResponseSchema.safeParse(rawBody);
+    if (!body.success) throw badResponseError('OpenAI');
+    const text = typeof body.data.output_text === 'string'
+      ? body.data.output_text
+      : (body.data.output ?? []).flatMap((output) => output.content ?? [])
+      .filter((content) => content.type === 'output_text')
+      .map((content) => content.text ?? '')
+      .join('');
+    if (!text) throw badResponseError('OpenAI');
+    return text;
   }
 
   async *stream(req: GenerateRequest): AsyncIterable<string> {
@@ -213,17 +273,29 @@ export class OpenAIProvider implements AIProvider {
     if (!response.ok || !response.body) throw await this.toProviderError(response, key, 'POST');
 
     try {
+      let completed = false;
       for await (const event of parseSSEStream(response.body, req.signal)) {
-        if (event.event !== 'response.output_text.delta') continue;
-        try {
-          const parsed = JSON.parse(event.data) as { delta?: string };
+        if (event.event === 'response.output_text.delta') {
+          const parsed = parseStreamEvent(event.data, openAITextDeltaSchema, 'OpenAI');
           if (parsed.delta) yield parsed.delta;
-        } catch {
-          // Malformed frame — skip rather than corrupt output.
+        } else if (event.event === 'response.completed') {
+          parseStreamEvent(event.data, openAICompletedSchema, 'OpenAI');
+          completed = true;
+        } else if (event.event === 'response.failed') {
+          parseStreamEvent(event.data, openAIFailedSchema, 'OpenAI');
+          throw badResponseError('OpenAI');
+        } else if (event.event === 'response.incomplete') {
+          parseStreamEvent(event.data, openAIIncompleteSchema, 'OpenAI');
+          throw badResponseError('OpenAI');
+        } else if (event.event === 'error') {
+          parseStreamEvent(event.data, openAIErrorSchema, 'OpenAI');
+          throw badResponseError('OpenAI');
         }
       }
+      if (!completed) throw badResponseError('OpenAI');
     } catch (error) {
       if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
+      if (error instanceof ProviderError) throw error;
       throw toRequestError(error, key);
     }
   }
@@ -243,4 +315,20 @@ function toRequestError(err: unknown, key: string): ProviderError {
     return new ProviderError('network-error', redactSecrets('Motion couldn’t reach OpenAI. Check your connection and try again.', [key]));
   }
   return new ProviderError('network-error', redactSecrets(String(err), [key]));
+}
+
+function parseStreamEvent<T>(data: string, schema: z.ZodType<T>, provider: 'OpenAI'): T {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(data);
+  } catch {
+    throw badResponseError(provider);
+  }
+  const parsed = schema.safeParse(raw);
+  if (!parsed.success) throw badResponseError(provider);
+  return parsed.data;
+}
+
+function badResponseError(provider: 'OpenAI'): ProviderError {
+  return new ProviderError('bad-response', `${provider} did not return a complete response. Try again.`);
 }

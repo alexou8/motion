@@ -141,6 +141,122 @@ describe('SOL-19 interim: recovery alarm on claim', () => {
 });
 
 describe('model turn single flight', () => {
+  it('does not commit a provider reply when Stop wins during post-stream plan preparation', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
+    db.close();
+    const tabs = new FakeTabs();
+    const originalSessionKey = tabs.sessionKey.bind(tabs);
+    let sessionKeyCalls = 0;
+    let signalPersistLookup!: () => void;
+    const persistLookup = new Promise<void>((resolve) => { signalPersistLookup = resolve; });
+    let streamFinished = false;
+    tabs.sessionKey = async () => {
+      sessionKeyCalls += 1;
+      if (sessionKeyCalls === 2) {
+        signalPersistLookup();
+        await stopGeneration('session-1');
+      }
+      return originalSessionKey();
+    };
+    const provider = {
+      id: 'openai' as const,
+      displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }),
+      generate: async () => '',
+      stream: async function* () {
+        yield '{"reply":"This reply arrived after Stop.","plan":[]}';
+        streamFinished = true;
+      },
+    };
+
+    const turn = runModelTurn('session-1', 'Start the turn.', {
+      tabs,
+      resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+    await persistLookup;
+    expect(streamFinished).toBe(true);
+    await turn;
+
+    const stored = await sessionRepository(await openDatabase()).get('session-1');
+    expect(stored?.conversation.map((entry) => entry.text)).toContain('Start the turn.');
+    expect(stored?.conversation.map((entry) => entry.text)).not.toContain('This reply arrived after Stop.');
+    expect(stored).toMatchObject({ status: 'waiting', pendingModelRequest: null, modelTurnGeneration: 3 });
+  });
+
+  it('publishes a stoppable empty preview while waiting for the first provider delta', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
+    db.close();
+
+    let releaseStream!: () => void;
+    let providerEntered!: () => void;
+    const streamGate = new Promise<void>((resolve) => { releaseStream = resolve; });
+    const entered = new Promise<void>((resolve) => { providerEntered = resolve; });
+    let signal: AbortSignal | undefined;
+    const provider = {
+      id: 'openai' as const,
+      displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }),
+      generate: async () => '',
+      stream: async function* (request: { signal?: AbortSignal }) {
+        signal = request.signal;
+        providerEntered();
+        await streamGate;
+        if (request.signal?.aborted) throw new ProviderError('cancelled', 'Synthetic cancellation.');
+        yield '{"reply":"Should not complete.","plan":[]}';
+      },
+    };
+    const turn = runModelTurn('session-1', 'Start this turn.', {
+      tabs: new FakeTabs(),
+      resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+
+    await entered;
+    expect(chrome.storage.session.set).toHaveBeenCalledWith({
+      'motion.streaming': expect.objectContaining({ sessionId: 'session-1', requestKey: expect.any(String), text: '' }),
+    });
+    await stopGeneration('session-1');
+    expect(signal?.aborted).toBe(true);
+    releaseStream();
+    await turn;
+  });
+
+  it('clears recovered model blockers after a successful current provider turn', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({
+      status: 'active',
+      pendingModelRequest: null,
+      blockers: [
+        { id: 'model-bad-response', kind: 'provider', message: 'The provider returned an unusable response.' },
+        { id: 'approval-submit-1', kind: 'approval', message: 'Submission needs approval.', approvalId: 'approval-1' },
+        { id: 'source-context-1', kind: 'user-input', message: 'Choose a source.' },
+      ],
+    }));
+    db.close();
+    const provider = {
+      id: 'openai' as const,
+      displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }),
+      generate: async () => '',
+      stream: async function* () { yield '{"reply":"Recovered.","plan":[]}'; },
+    };
+
+    await runModelTurn('session-1', 'Try again.', {
+      tabs: new FakeTabs(),
+      resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+
+    const stored = await sessionRepository(await openDatabase()).get('session-1');
+    expect(stored?.blockers).toEqual([
+      expect.objectContaining({ id: 'approval-submit-1', kind: 'approval' }),
+      expect.objectContaining({ id: 'source-context-1', kind: 'user-input' }),
+    ]);
+  });
+
   it('does not claim a session that was paused while the provider was resolving', async () => {
     const db = await openDatabase();
     await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
@@ -190,8 +306,12 @@ describe('model turn single flight', () => {
 
     let releaseFirst!: () => void;
     let releaseSecond!: () => void;
+    let enterFirst!: () => void;
+    let enterSecond!: () => void;
     const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
     const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+    const firstEntered = new Promise<void>((resolve) => { enterFirst = resolve; });
+    const secondEntered = new Promise<void>((resolve) => { enterSecond = resolve; });
     let streamNumber = 0;
     let secondSignal: AbortSignal | undefined;
     const provider = {
@@ -203,11 +323,13 @@ describe('model turn single flight', () => {
       stream: async function* (request: { signal?: AbortSignal }) {
         streamNumber += 1;
         if (streamNumber === 1) {
+          enterFirst();
           await firstGate;
           yield '{"reply":"First late reply.","plan":[]}';
           return;
         }
         secondSignal = request.signal;
+        enterSecond();
         await secondGate;
         if (request.signal?.aborted) throw new ProviderError('cancelled', 'Synthetic cancellation.');
         yield '{"reply":"Second reply.","plan":[]}';
@@ -218,16 +340,10 @@ describe('model turn single flight', () => {
       resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
     };
     const first = runModelTurn('session-1', 'First turn.', deps);
-    for (let attempts = 0; attempts < 20; attempts += 1) {
-      if ((await sessionRepository(await openDatabase()).get('session-1'))?.pendingModelRequest) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await firstEntered;
     await stopGeneration('session-1');
     const second = runModelTurn('session-1', 'Second turn.', deps);
-    for (let attempts = 0; attempts < 20; attempts += 1) {
-      if (streamNumber === 2) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await secondEntered;
 
     releaseFirst();
     await first;

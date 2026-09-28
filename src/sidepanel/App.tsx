@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { EMPTY_PANEL_STATE, type PanelState } from '../core/view/state';
 import { cn } from '../ui/components/cn';
+import { MotionMark } from '../ui/components/MotionMark';
 import { sendCommand, type MotionBridge, type MotionCommand } from './bridge';
 import { Home, SessionView } from './views';
 
@@ -12,20 +13,6 @@ export interface AppProps {
 
 function usePanelState(bridge: MotionBridge): PanelState {
   return useSyncExternalStore(bridge.subscribe, bridge.getState, bridge.getState);
-}
-
-/**
- * Motion's mark: a short track with one active marker — the product's single
- * visual device, reduced to a glyph. Motion's own; it imitates no other product.
- */
-function MotionMark() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" className="size-5 text-signal" fill="none">
-      <path d="M10 2.5v15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <circle cx="10" cy="6" r="2.25" fill="currentColor" />
-      <circle cx="10" cy="13.5" r="2.75" fill="var(--color-paper)" stroke="currentColor" strokeWidth="1.5" />
-    </svg>
-  );
 }
 
 function IconButton({ label, onClick, disabled, children }: { label: string; onClick: () => void; disabled?: boolean; children: React.ReactNode }) {
@@ -48,7 +35,7 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
     <header className="border-b border-rule bg-paper px-4 py-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <MotionMark />
+          <MotionMark className="size-5" />
           <p className="font-serif text-lg font-semibold">Motion</p>
           {state.connection === 'supported' ? (
             <span className="truncate text-xs text-ink-muted">Coursework workspace</span>

@@ -21,6 +21,8 @@ import { INFERENCE_PORT_NAME } from '@/platform/ai/inferenceFrames';
  */
 
 type Listener = () => void;
+const ACTIVE_SESSION_KEY = 'motion.activeSessionId';
+const STREAMING_KEY = 'motion.streaming';
 
 const workerResponseSchema = z.union([
   z.object({ ok: z.literal(true), result: z.unknown().optional() }),
@@ -196,6 +198,7 @@ export function startLocalInferenceHost(
 
 export function createRuntimeBridge(): MotionBridge {
   let state: PanelState = EMPTY_PANEL_STATE;
+  let refreshSequence = 0;
   const listeners = new Set<Listener>();
 
   const emit = () => {
@@ -203,6 +206,7 @@ export function createRuntimeBridge(): MotionBridge {
   };
 
   const refresh = async (): Promise<void> => {
+    const sequence = ++refreshSequence;
     const response = await ask({ type: 'get-state' });
     const envelope = workerResponseSchema.safeParse(response);
     if (!envelope.success || !envelope.data.ok) return;
@@ -212,6 +216,7 @@ export function createRuntimeBridge(): MotionBridge {
     if (!parsed.success) return;
 
     const next = await withActiveTabContext(parsed.data);
+    if (sequence !== refreshSequence) return;
     state = next;
     emit();
   };
@@ -273,7 +278,8 @@ export function createRuntimeBridge(): MotionBridge {
    * watching that is watching the fact itself rather than a proxy for it.
    */
   chrome.storage.session.onChanged.addListener((changes) => {
-    if (Object.keys(changes).some((key) => key.startsWith('observation:'))) void refresh();
+    if (changes[STREAMING_KEY] || changes[ACTIVE_SESSION_KEY]
+      || Object.keys(changes).some((key) => key.startsWith('observation:'))) void refresh();
   });
 
   /** Sends a command and returns the worker's answer for the panel to render. */
