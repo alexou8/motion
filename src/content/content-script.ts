@@ -5,7 +5,7 @@
  * (`actor.ts`, the only code here that ever changes a page) behind a single
  * validated message listener. See ARCH D7 / VISION §8.
  */
-import { act, buildSnapshot } from '@/content/actor';
+import { actWithPresence, buildSnapshot } from '@/content/actor';
 import { extract, initObserver, readContent } from '@/content/observer';
 import { contentRequestSchema } from '@/core/messaging';
 import { ACTOR_PORT_NAME, actorPortRequestSchema, actorPortResponseSchema, type ActRequest } from '@/core/actor/contracts';
@@ -107,23 +107,36 @@ if (typeof chrome.runtime.onConnect?.addListener === 'function') {
       port.disconnect();
       return;
     }
+    let connected = true;
+    const activeActions = new Set<AbortController>();
+    port.onDisconnect.addListener(() => {
+      connected = false;
+      for (const controller of activeActions) controller.abort();
+      activeActions.clear();
+    });
     port.onMessage.addListener((raw: unknown) => {
       const parsed = actorPortRequestSchema.safeParse(raw);
       if (!parsed.success || consumedActorNonces.has(parsed.data.request.authorization.nonce)) return;
       consumedActorNonces.add(parsed.data.request.authorization.nonce);
       const { requestId, request } = parsed.data;
-      const { authorization, ...action } = request;
-      Promise.resolve().then(() => act(action as ActRequest, {
-        consequentialCapability: authorization.consequentialCapability !== undefined,
-      })).catch(() => ({
-        ok: false as const,
-        error: 'internal-error' as const,
-        message: 'The page action could not be completed.',
-      })).then((value) => {
+      const { authorization, showOnPagePointer, ...action } = request;
+      const controller = new AbortController();
+      activeActions.add(controller);
+      void (async () => {
+        const value = await actWithPresence(action as ActRequest, {
+          consequentialCapability: authorization.consequentialCapability !== undefined,
+          signal: controller.signal,
+        }, showOnPagePointer).catch(() => ({
+          ok: false as const,
+          error: 'internal-error' as const,
+          message: 'The page action could not be completed.',
+        }));
+        activeActions.delete(controller);
+        if (controller.signal.aborted || !connected) return;
         const response = actorPortResponseSchema.parse({ type: 'motion:act-result', requestId, result: value });
         port.postMessage(response);
         try { port.disconnect(); } catch { /* already disconnected */ }
-      });
+      })();
     });
   });
 }

@@ -8,7 +8,7 @@
 import { readFile, mkdir } from 'node:fs/promises';
 import { chromium } from 'playwright';
 
-const source = await readFile(new URL('../src/assets/motion-mark.svg', import.meta.url));
+const source = await readFile(new URL('../src/assets/brand/motion-mark.svg', import.meta.url));
 const imageUrl = `data:image/svg+xml;base64,${source.toString('base64')}`;
 const output = new URL('../src/assets/icons/', import.meta.url);
 

@@ -18,6 +18,8 @@ describe('toolCallSchema', () => {
       { tool: 'summarize_sources' },
       { tool: 'list_deadlines', range: 'week' },
       { tool: 'snapshot_tab', tabRef: 'T1' },
+      { tool: 'scroll_to', tabRef: 'T1', handle: 'e1' },
+      { tool: 'focus_element', tabRef: 'T1', handle: 'e1' },
       { tool: 'fill_field', tabRef: 'T1', handle: 'e1', value: 'hi' },
       { tool: 'select_option', tabRef: 'T1', handle: 'e1', value: 'opt' },
       { tool: 'toggle_control', tabRef: 'T1', handle: 'e1', checked: true },
@@ -47,9 +49,11 @@ describe('toolCallSchema', () => {
       value: 'x',
       script: 'alert(1)',
     });
+    const scrollWithSelector = toolCallSchema.safeParse({ tool: 'scroll_to', tabRef: 'T1', handle: 'e1', selector: '#answer' });
     expect(withUrl.success).toBe(false);
     expect(withSelector.success).toBe(false);
     expect(withScript.success).toBe(false);
+    expect(scrollWithSelector.success).toBe(false);
   });
 
   it('rejects tab ids passed in place of a tabRef-shaped string', () => {

@@ -12,11 +12,12 @@ import {
   type PageType,
 } from '@/core/domain';
 import { agentSessionSchema } from '@/core/session';
+import { popupActionsFor } from '@/core/view';
 import { courseLinkSchema } from '@/core/graph';
 import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
-import { automaticDiscoveryDue, buildPanelState, forgetTab, handleMessage } from './router';
+import { automaticDiscoveryDue, buildPanelState, buildPopupLauncherState, forgetTab, handleMessage } from './router';
 
 /**
  * Exercises the worker's data handling through the same entry point the real
@@ -1165,5 +1166,32 @@ describe('a tab that navigates away', () => {
     const state = (await handleMessage({ type: 'get-state' })) as { connection: string; page: { url: string | null } };
     expect(state.connection).toBe('idle');
     expect(state.page.url).toBeNull();
+  });
+});
+
+describe('popup workspace relevance', () => {
+  it('does not offer Continue for a workspace retained from an earlier browser session', async () => {
+    const url = 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=202';
+    activeTabUrl = url;
+    Object.assign(chrome.tabs, { get: vi.fn(async () => ({ id: ACTIVE_TAB, url, windowId: 1, title: 'Synthetic Assignment 2' })) });
+    const db = await openDatabase();
+    await new Repository(db, STORE.courses, courseSchema).put(courseSchema.parse({
+      id: 'd2l:363', platformId: 'd2l', name: 'Synthetic Course', code: 'CP363', externalId: '363', lastVerifiedAt: NOW, archived: false,
+    }));
+    await new Repository(db, STORE.sessions, agentSessionSchema).put(agentSessionSchema.parse({
+      id: 'old-session', title: 'CP363 · Synthetic Assignment 2', goal: 'Work on Synthetic Assignment 2.', courseId: 'd2l:363',
+      status: 'waiting', createdAt: NOW, updatedAt: NOW,
+      workspace: { groupId: 7, groupTitle: 'Motion · CP363 · Synthetic Assignment 2', sessionKey: 'old-browser', ownedTabIds: [9], adoptedTabIds: [], releasedTabIds: [] },
+      context: { sources: [{ url, title: 'Synthetic Assignment 2', kind: 'instructions', excluded: false, provenance: url, excerpt: '' }] },
+    }));
+    db.close();
+    sessionStore['motion:browser-session'] = 'new-browser';
+    await handleMessage({ type: 'page-observed', url, pageType: 'assignment', title: 'Synthetic Assignment 2', detectionConfidence: 'high', warnings: [], restricted: false }, ACTIVE_TAB);
+
+    const state = await buildPopupLauncherState(ACTIVE_TAB);
+
+    expect(state.connection).toBe('supported');
+    expect(state.relevantSessionId).toBeNull();
+    expect(popupActionsFor(state)).toContain('start-workspace');
   });
 });

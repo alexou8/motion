@@ -38,7 +38,7 @@ export interface CapabilityServices {
   tabs: TabsCapability;
   askContent: (tabId: number) => Promise<PageContent | null>;
   snapshot: (tabId: number) => Promise<SnapshotResult | null>;
-  act: (tabId: number, request: ActRequest, consequentialCapability?: boolean) => Promise<{ ok: boolean; message?: string } | null>;
+  act: (tabId: number, request: ActRequest, consequentialCapability?: boolean, showOnPagePointer?: boolean) => Promise<{ ok: boolean; message?: string } | null>;
   resolveProvider: () => Promise<ProviderResolution>;
   now: () => Date;
 }
@@ -447,6 +447,8 @@ type ActorAction = Extract<
   | 'submit-assignment'
   | 'post-discussion'
   | 'prepare-discussion-response'
+  | 'scroll-to'
+  | 'focus-element'
 >;
 function actorCapability(action: ActorAction, services: CapabilityServices): StepCapability {
   return {
@@ -491,8 +493,20 @@ function actorCapability(action: ActorAction, services: CapabilityServices): Ste
                   handle,
                   checked: context.step.input['checked'] === true,
                 }
+              : action === 'scroll-to'
+                ? { type: 'scrollTo', snapshotId, handle }
+                : action === 'focus-element'
+                  ? { type: 'focus', snapshotId, handle }
               : { type: 'click', snapshotId, handle };
-      const result = await services.act(tabId, request, tierOf(action) === 'fresh-confirmation' && Boolean(context.step.consumedApprovalId));
+      // Resolve the visual preference only after all policy, ownership, and
+      // freshness checks have passed. It changes presentation, never authority.
+      const showOnPagePointer = (await new ChromePreferencesStore().get()).showOnPagePointer;
+      const result = await services.act(
+        tabId,
+        request,
+        tierOf(action) === 'fresh-confirmation' && Boolean(context.step.consumedApprovalId),
+        showOnPagePointer,
+      );
       if (!result?.ok)
         return {
           kind: 'blocked',
@@ -781,6 +795,8 @@ export function buildCapabilities(
     navigateOwnedTabCapability(services),
     gatherMaterialCapability(),
     snapshotCapability(services),
+    actorCapability('scroll-to', services),
+    actorCapability('focus-element', services),
     actorCapability('fill-form-field', services),
     actorCapability('select-option', services),
     actorCapability('toggle-control', services),

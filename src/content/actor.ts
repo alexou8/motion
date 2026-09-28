@@ -24,6 +24,7 @@ import {
   type ElementRole,
   type SnapshotResult,
 } from '@/core/actor/contracts';
+import { createMotionPresence, type MotionPresence } from '@/content/presence';
 
 /** Interactive elements the snapshot describes, in the order VISION §8/ARCH D7 lists. */
 const INTERACTIVE_SELECTOR = [
@@ -47,6 +48,13 @@ const SUBMIT_LABEL_PATTERN = /\b(submit|post|send|publish|upload|finalize|finish
 let currentSnapshotId: string | null = null;
 let currentHandles = new Map<string, WeakRef<Element>>();
 let handleCounter = 0;
+let presence: MotionPresence | null = null;
+
+type ActorOptions = {
+  consequentialCapability?: boolean;
+  /** Only the authenticated content-script port provides this local signal. */
+  signal?: AbortSignal;
+};
 
 function currentUrl(): string {
   return window.location.href;
@@ -270,7 +278,7 @@ function dispatchInputChange(element: Element): void {
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
-export function act(request: ActRequest, options: { consequentialCapability?: boolean } = {}): ActResult {
+export function act(request: ActRequest, options: ActorOptions = {}): ActResult {
   const resolved = resolveHandle(request.snapshotId, request.handle);
   if (!(resolved instanceof Element)) return resolved.error;
   const element = resolved;
@@ -286,7 +294,10 @@ export function act(request: ActRequest, options: { consequentialCapability?: bo
   const descriptor = describe(element, handle);
 
   const restriction = isRestricted();
-  if (restriction.restricted && request.type !== 'scrollTo' && request.type !== 'focus') {
+  // This check applies to every actor action, including focus and scrolling.
+  // A stale snapshot must never turn the presence layer into an assessment
+  // navigation aid after the page has changed.
+  if (restriction.restricted) {
     return { ok: false, error: 'refused-restricted-context', message: restriction.reason, evidence: { descriptor } };
   }
 
@@ -365,5 +376,59 @@ export function act(request: ActRequest, options: { consequentialCapability?: bo
       const exhaustive: never = request;
       return exhaustive;
     }
+  }
+}
+
+/**
+ * Runs the existing atomic actor operation with an optional visual cue. The
+ * visualizer is handed only the already-resolved element and descriptor; it
+ * has no selector, authority, or path back to the page actor.
+ */
+export async function actWithPresence(
+  request: ActRequest,
+  options: ActorOptions = {},
+  showOnPagePointer = true,
+): Promise<ActResult> {
+  if (options.signal?.aborted) {
+    return { ok: false, error: 'internal-error', message: 'The page action was canceled before it changed the page.' };
+  }
+  if (!showOnPagePointer) return act(request, options);
+
+  const resolved = resolveHandle(request.snapshotId, request.handle);
+  if (!(resolved instanceof Element)) return resolved.error;
+  if (!document.contains(resolved) || !isVisible(resolved)) return act(request, options);
+
+  // Presence is never shown on a restricted page, including for focus and
+  // scroll. act() repeats this immediately before its effect to close the
+  // navigation race between this visual preflight and the DOM operation.
+  if (isRestricted().restricted) return act(request, options);
+
+  const descriptor = describe(resolved, request.handle);
+  if (request.type !== 'scrollTo' && request.type !== 'focus' && isDisabled(resolved))
+    return act(request, options);
+  if (request.type === 'click' && isSubmitLike(descriptor) && !options.consequentialCapability)
+    return act(request, options);
+  if (
+    request.type === 'fill' &&
+    (descriptor.type === 'password' || descriptor.type === 'file' || descriptor.type === 'hidden')
+  )
+    return act(request, options);
+
+  presence ??= createMotionPresence();
+  try {
+    await presence.show(resolved, request, descriptor, options.signal);
+    if (options.signal?.aborted) {
+      return { ok: false, error: 'internal-error', message: 'The page action was canceled before it changed the page.' };
+    }
+    // act() repeats every handle, visibility, restriction, approval, and
+    // stale-snapshot check synchronously immediately before the page effect.
+    const result = act(request, options);
+    // scrollIntoView is synchronous. Re-measure once after it runs so the
+    // pointer is attached to the now-visible target, without a scroll loop.
+    if (result.ok && request.type === 'scrollTo')
+      await presence.show(resolved, request, descriptor, options.signal);
+    return result;
+  } finally {
+    presence.finish(options.signal?.aborted);
   }
 }

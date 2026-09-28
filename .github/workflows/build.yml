@@ -50,6 +50,7 @@ jobs:
         run: |
           npm run test:extension
           npm run test:agent
+          npm run test:popup-presence
 
       - name: Verify provider settings, streaming, cancellation and recovery
         run: |

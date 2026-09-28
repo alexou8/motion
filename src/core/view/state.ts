@@ -54,6 +54,16 @@ export const sessionSummarySchema = z.object({
 });
 export type SessionSummary = z.infer<typeof sessionSummarySchema>;
 
+/** Human-readable workspace rows. `tabId` is a command handle, never UI copy. */
+export const workspaceTabSummarySchema = z.object({
+  tabId: z.number().int().nonnegative(),
+  title: z.string().max(500),
+  host: z.string().max(255).nullable(),
+  ownership: z.enum(['motion', 'student']),
+  current: z.boolean(),
+});
+export type WorkspaceTabSummary = z.infer<typeof workspaceTabSummarySchema>;
+
 export const deadlineIdsSchema = z.object({
   today: z.array(z.string()),
   upcoming: z.array(z.string()),
@@ -89,6 +99,8 @@ export const panelStateSchema = z.object({
   sessions: z.array(sessionSummarySchema).default([]),
   /** The session the panel is showing, in full. Null shows the session list. */
   activeSession: agentSessionSchema.nullable().default(null),
+  /** Live metadata for the selected session's workspace tabs. */
+  workspaceTabs: z.array(workspaceTabSummarySchema).default([]),
   /** Deadline buckets across known courses (task ids reference `tasks`). */
   deadlines: deadlineIdsSchema.default({ today: [], upcoming: [], overdue: [], needsReview: [] }),
   /** The selected AI provider as the session header shows it ("AI · OpenAI"). */
@@ -118,6 +130,7 @@ export const EMPTY_PANEL_STATE: PanelState = {
   busy: false,
   sessions: [],
   activeSession: null,
+  workspaceTabs: [],
   deadlines: { today: [], upcoming: [], overdue: [], needsReview: [] },
   ai: { providerId: 'chrome-local', displayName: 'Chrome Local', cloud: false, status: 'unavailable', message: '' },
   streaming: null,

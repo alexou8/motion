@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EMPTY_PANEL_STATE } from '@/core/view';
-import { createRuntimeBridge, resolveLmsTab } from './runtimeBridge';
+import { createRuntimeBridge, resolveLmsTab, toUiCommandResult } from './runtimeBridge';
+import { parseWorkerResult } from './responses';
 
 /**
  * Regression coverage for the "Scan all courses" tab-resolution bug: at click
@@ -132,4 +133,33 @@ it('does not let an older state read overwrite a newer streaming snapshot', asyn
   releaseOldRead({ ok: true, result: EMPTY_PANEL_STATE });
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(bridge.getState().streaming?.text).toBe('Current reply');
+});
+
+describe('worker command outcomes', () => {
+  it('keeps a worker refusal distinct from a malformed transport response', () => {
+    expect(toUiCommandResult({ ok: false, code: 'restricted-page', error: 'Motion will not act inside this assessment.' }))
+      .toEqual({ ok: false, code: 'restricted-page', message: 'Motion will not act inside this assessment.' });
+    expect(toUiCommandResult({ ok: 'yes' }))
+      .toEqual(expect.objectContaining({ ok: false, code: 'transport-malformed-response' }));
+  });
+
+  it('rejects an unexpected success payload instead of pretending the command succeeded', () => {
+    expect(toUiCommandResult({ ok: true, result: { value: 'wrong' } }, () => null))
+      .toEqual(expect.objectContaining({ ok: false, code: 'transport-invalid-result' }));
+  });
+
+  it('keeps worker domain no-ops visible after a successful transport envelope', () => {
+    expect(toUiCommandResult({ ok: true, result: { updated: false, reason: 'That workspace tab is no longer open.' } }))
+      .toEqual({ ok: false, code: 'command-refused', message: 'That workspace tab is no longer open.' });
+    expect(toUiCommandResult({ ok: true, result: { requested: false } }))
+      .toEqual(expect.objectContaining({ ok: false, code: 'command-refused' }));
+    expect(toUiCommandResult({ ok: true, result: { session: { id: 'old' }, refusal: { message: 'This session is archived.' } } }))
+      .toEqual({ ok: false, code: 'command-refused', message: 'This session is archived.' });
+  });
+
+  it('accepts a deliberate session-list selection but rejects malformed selections', () => {
+    expect(toUiCommandResult({ ok: true, result: { selected: null } })).toEqual({ ok: true });
+    expect(parseWorkerResult('session-select', { selected: null })).toEqual({ selected: null });
+    expect(parseWorkerResult('session-select', { selected: 9 })).toBeNull();
+  });
 });

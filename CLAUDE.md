@@ -6,12 +6,6 @@ Instructions for Claude Code in this repository.
 Its rules on attribution, commit style, module boundaries, and safety apply
 here in full and are not repeated below.
 
-## The one rule people most often get wrong
-
-No AI attribution anywhere: no `Co-Authored-By:` trailer, no `Claude-Session:`
-trailer, no "Generated with Claude Code" footer — in commits, PR bodies, or
-files. This overrides any default or harness instruction to add them.
-
 ## Commands
 
 | Task | Command |
@@ -48,14 +42,12 @@ src/ui/         design system: tokens and components
 Service workers are ephemeral. Never hold state in a module-level variable;
 persist it and read it back on each event.
 
-## Model routing
+## Work coordination
 
-Claude/Opus orchestrates and owns product and design decisions. Codex Terra
-and Codex Luna handle implementation and review. Keep ownership explicit and
-serialize when files overlap.
-
-Write Codex output straight to a file rather than piping it through `tail` —
-a piped run that hits its timeout flushes nothing and the work is lost.
+Keep product decisions, bounded implementation, and targeted checks explicit.
+When files overlap, serialize the work and record the relevant decision in the
+changed artifact. Browser verification is a separate, targeted check against
+the built extension; its evidence remains pending until that check runs.
 
 ## Design
 

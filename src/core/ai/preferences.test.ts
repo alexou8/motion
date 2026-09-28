@@ -9,6 +9,7 @@ describe('aiPreferencesSchema', () => {
       model: 'claude-opus-5',
       cloudDisclosureAccepted: ['anthropic'],
       autoOpenRelatedTabs: true,
+      showOnPagePointer: false,
       allowedConfigurableActions: ['edit-draft', 'toggle-control'],
     });
     expect(result.success).toBe(true);
@@ -45,6 +46,7 @@ describe('aiPreferencesSchema', () => {
     expect(result.model).toBe('recommended');
     expect(result.cloudDisclosureAccepted).toEqual([]);
     expect(result.autoOpenRelatedTabs).toBe(false);
+    expect(result.showOnPagePointer).toBe(true);
     expect(result.allowedConfigurableActions).toEqual([]);
   });
 });

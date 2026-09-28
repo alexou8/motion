@@ -21,9 +21,11 @@ ChatGPT.**
   (Copernicus, Styrene) are proprietary and do not ship; Motion uses **Source
   Serif 4** and **IBM Plex Sans**, both under the SIL Open Font License. Motion
   keeps its own name and mark — Claude-*like*, never Claude-branded.
-- **Use.** The toolbar icon opens the side panel and starts Motion's tab group
-  on the current tab. The panel is the main surface: a header, Motion's task
-  actions, a chat about the current page, and a composer at the bottom.
+- **Use.** The toolbar icon opens a small launcher popup. Its explicit
+  Start/Continue action opens the side panel and starts or resumes the selected
+  workspace; the toolbar click alone does not create an automatic group. The
+  panel is the main surface: a header, Motion's task actions, a chat about the
+  current page, and a composer at the bottom.
   Settings live on a dedicated full-page screen.
 
 This reverses one line of the earlier direction, which listed
@@ -62,9 +64,9 @@ coursework from its first step to completion without borrowing an LMS symbol or
 an assistant's face. The path is deliberately broad, round-capped and simple
 enough to remain legible at Chrome's 16px toolbar size.
 
-`src/assets/motion-mark.svg` is the canonical artwork. Panel and options UI use
+`src/assets/brand/motion-mark.svg` is the canonical artwork. Panel, popup and options UI use
 it as a semantic-colour mask, so it follows the light and dark terracotta
-tokens. Both extension documents use it as their favicon, and
+tokens. All three extension documents use it as their favicon, and
 `scripts/make-icons.mjs` rasterizes the 16, 32, 48 and 128px manifest PNGs
 from that same source. Do not redraw the mark inside a component or create a
 surface-specific variant.
@@ -111,31 +113,37 @@ party that a student is using Motion, every time the panel opens.
 
 ## The panel
 
-- **Header:** the M mark and "Motion" in the serif, with a *Settings* icon button
-  carrying an accessible name.
-- **Home:** the connection state first — idle, unsupported, permission needed,
-  signed out and restricted each keep their own view. Supported pages offer a
-  goal composer, sessions, course scanning and deadlines.
-- **Session:** a persistent conversation, plan track, workspace, context,
-  artifacts and approvals. The provider and model are visible. The composer
-  supports Enter to send and Shift+Enter for a line break; Stop appears as soon
-  as a model request is pending, including before its first streamed answer.
+- **Header:** the mark and "Motion" in the serif, with an accessible Settings
+  control. The home view presents the current page, suggestions and a composer;
+  an explicit **Sessions** control returns to the durable session list.
+- **Body:** the connection state first, and honestly — idle, unsupported,
+  permission needed, signed out and restricted each keep their own view. On a
+  page that carries coursework, the home view offers contextual suggestions;
+  an active session presents Now, Needs you, the conversation, plan, activity,
+  workspace, sources and artifacts.
+- **Composer:** pinned to the bottom. Enter sends, Shift+Enter adds a line.
+  Where the chat cannot work, the composer is disabled and says why in a line
+  above it — beside a graded attempt, on a page Motion cannot read, or when
+  Chrome has no on-device model.
 
 ## The chat
 
-The session conversation uses the student's selected model: Chrome's on-device
-provider or an explicitly configured OpenAI/Anthropic API connection. Cloud
-processing requires disclosure acceptance, provider permission and a
-key stored for the session by default, or in the OS credential vault after
-explicit opt-in and companion installation. Settings provides named models, economical choices and
-an explicit refresh of the account's available text models.
+The chat answers questions about the page in front of the student using the
+selected provider. Chrome's on-device model stays local when available; BYOK
+cloud mode sends only the disclosed, bounded turn context directly to the
+selected provider after permission. Provider selection is defined by ADR 0005;
+session keys remain the default, with optional OS-vault storage in ADR 0009.
 
-- Sessions and their conversation persist in this browser so coursework can
-  continue after closing the panel. Generated text should be checked against
-  its sources; the session's context keeps those sources inspectable.
-- While an answer streams, the conversation shows its reply text rather than
-  the model's structured plan. Incomplete or failed responses never become
-  completed replies or executable plans.
+- It is scoped to the active AgentSession and persists locally with that session
+  in IndexedDB, so returning to a session can show its conversation. It is not
+  a cloud transcript or a cross-session history; provider requests follow the
+  selected provider's disclosed path.
+- Every answer carries a label saying it was generated and should be checked
+  against the page, and names the page it was about, so an old answer is not
+  read as describing a new page.
+- While an answer streams, the conversation shows reply text rather than the
+  model's structured plan. Incomplete or failed responses never become completed
+  replies or executable plans. Stop is available during provider setup too.
 - **Beside a graded attempt the chat reads nothing and answers nothing.** The
   worker refuses before it asks the page or the model; the panel only says so.
 - Page text reaches the model fenced as quoted data, through the same

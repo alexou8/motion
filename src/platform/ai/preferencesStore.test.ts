@@ -46,8 +46,9 @@ describe('ChromePreferencesStore', () => {
   it('update() merges a partial patch over the current value', async () => {
     const store = new ChromePreferencesStore(fakeArea());
     await store.update({ autoOpenRelatedTabs: true });
-    const next = await store.update({ providerId: 'openai' });
+    const next = await store.update({ providerId: 'openai', showOnPagePointer: false });
     expect(next.autoOpenRelatedTabs).toBe(true);
     expect(next.providerId).toBe('openai');
+    expect(next.showOnPagePointer).toBe(false);
   });
 });

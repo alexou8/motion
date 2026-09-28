@@ -118,9 +118,9 @@ set on 2026-09-11 (to be folded into `DESIGN.md` as it is built):
   product's branding.
 - **Use:** ChatGPT-like — the side panel is the main surface, with a chat
   about the current page plus Motion's own task actions (prepare workspace,
-  checklist, draft review); the toolbar icon opens the panel and starts
-  Motion's tab group on the current tab; settings live on a dedicated
-  full-page options screen.
+  checklist, draft review); the toolbar icon opens a small launcher popup,
+  whose explicit action opens the side panel and can then prepare Motion's
+  workspace; settings live on a dedicated full-page options screen.
 - Fonts are bundled; Motion makes no network request for them.
 - Colour pairs pass `src/ui/tokens.contrast.test.ts`; keyboard operable;
   status never by colour alone; usable at the narrowest panel width.

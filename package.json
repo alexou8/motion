@@ -18,6 +18,7 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src --ext .ts,.tsx",
     "test:extension": "node test/e2e/extension-smoke.mjs",
+    "test:popup-presence": "node test/e2e/popup-presence.mjs",
     "test:agent": "node test/e2e/agent-session.mjs",
     "test:chrome": "node test/e2e/chrome-branded.mjs",
     "build:e2e-provider-hosts": "MOTION_E2E_PROVIDER_HOSTS=1 MOTION_BUILD_OUTDIR=dist-e2e-provider vite build",
