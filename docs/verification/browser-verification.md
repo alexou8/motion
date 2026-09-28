@@ -1,5 +1,85 @@
 # Browser verification
 
+## 2026-09-28: model settings, streaming controls and branding
+
+The provider browser suite now drives the shipped Settings and panel controls,
+using synthetic D2L pages and a real local HTTP server for provider responses.
+It checks refreshed account model choices, exact OpenAI and Claude selections
+across settings reloads, the selected model in the outgoing OpenAI request,
+Start/Send/Stop, cancellation on the network side, failed/incomplete/truncated
+streams, and recovery with a subsequent completed reply.
+
+This iteration fixes these user-visible defects: the initial goal appeared twice
+in the conversation; streaming storage changes did not refresh the panel, so
+Stop never appeared during a request; provider errors or EOF could commit
+partial output as a successful answer; and a recovered provider left its old
+blocker visible. Partial JSON plans stay out of the rendered conversation.
+A live OpenAI request also exposed an HTTP 400: JSON mode requires a JSON
+instruction in an input message, not just the separate `instructions` field.
+The adapter now supplies a fixed developer input instruction for JSON requests,
+and the synthetic browser server enforces that same requirement. Review also
+covers late cancellation during response persistence and stale preview rows.
+
+Settings now offers GPT-6 Luna/Sol/Astra, GPT-5.4 Mini/Nano, Claude Haiku 4.5,
+Sonnet 5 and Opus 5.5, with task guidance and current provider pricing links.
+Refresh models reads the account's supported text models only after disclosure,
+host access and session-key checks. Unavailable explicit choices are blocked;
+they are never silently replaced. Claude model listing follows bounded cursor
+pagination. Model-list requests run for model turns and explicit refreshes,
+rather than on every streamed panel-state refresh.
+
+Motion's canonical M path now supplies the panel/settings mark, favicons and
+all four manifest PNG sizes, including toolbar, extension manager and reminder
+icons. The merged launcher popup uses the same mark and favicon. Packaged
+light/dark panel, Settings and popup views and the 16px icon were visually
+inspected. `test:popup-presence` passed 6/6, including rendered mark styling.
+
+Final run evidence: `npm test` passed 1,061 tests across 82 files; typecheck, lint,
+production build and packaging passed. `test:extension` passed 68/68,
+`test:agent` passed 42/42 with its route-backed cloud-permission check skipped,
+`test:chrome` passed 5/5 in branded Chrome 153.0.8010.54, and
+`test:provider-stream` passed 16/16 after the final model resolver change. The
+separate provider suite covers the skipped stream/cancel path with real local
+HTTP responses; production provider hosts and native messaging remain optional.
+The Chrome LanguageModel probe was present but its availability check timed
+out within the test bound; downloaded on-device inference remains unverified.
+
+A live production-extension check with a student-configured OpenAI session key
+passed after the JSON-mode fix: models and Responses returned HTTP 200, the
+selected model was `gpt-6-luna`, and the panel rendered a completed synthetic
+coursework greeting with no provider blockers. The key was entered only through
+Settings, never read into a test script or logged, and the isolated test browser
+was closed after verification. No real coursework was sent.
+
+## Optional remembered-key verification: 2026-09-28
+
+The native host/installer/package suite passed 12/12. Direct macOS Keychain
+set/update/get/delete checks used a synthetic, temporary account and cleaned it
+up. The Chrome native-messaging suite passed 6/6: the real Settings save stored
+an isolated synthetic canary in macOS Keychain, browser restart removed the
+session cache, Test connection restored the key from the vault for a local
+HTTP provider, and Forget removed the vault entry and session copy. No canary
+appeared in local browser storage, diagnostics, UI text or captured logs.
+
+The native test build uses required native messaging and localhost provider
+permissions solely for automation. Production regression tests assert that
+native messaging and cloud hosts remain optional. Settings unit tests cover
+permission denial and the request being initiated in the save gesture. Failure
+regressions cover malformed native replies, disconnect/timeout, failed deletion,
+interrupted saves and deletion ordering; pending intent disables retrieval and
+allows a subsequent Forget to retry cleanup.
+
+Windows Credential Manager and Linux Secret Service backends are implemented
+but have not run on those operating systems. macOS Keychain with Chrome is
+verified. Live Claude inference and downloaded Chrome-local inference remain
+unverified; the live cloud inference evidence above is OpenAI only.
+
+Synthetic browser checks establish integration behavior, not live account
+access or live institutional markup. Real provider inference and a downloaded
+on-device model are separate checks. No real coursework belongs in fixtures.
+
+## Historical run: 2026-09-17
+
 Latest verification run: 2026-09-17. `npm run test:extension` passed 67/67,
 `npm run test:agent` passed 32/32 (one check still SKIPs: the route-backed
 provider stream/cancel, because headless Chromium does not grant the optional

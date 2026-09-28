@@ -23,6 +23,15 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 }
 
+function sseResponse(frames: readonly string[]): Response {
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode(frames.join('')));
+      controller.close();
+    },
+  }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
 describe('OpenAIProvider', () => {
   it('reports not-configured when no key is set', async () => {
     const provider = new OpenAIProvider({ secrets: fakeSecrets(null) });
@@ -32,11 +41,35 @@ describe('OpenAIProvider', () => {
   it('only calls the allowlisted Responses endpoint', async () => {
     const fetchImpl = vi.fn(async (url: unknown) => {
       expect(url).toBe('https://api.openai.com/v1/responses');
-      return jsonResponse({ output_text: 'hi' });
+      return jsonResponse({ status: 'completed', output_text: 'hi' });
     }) as unknown as FetchLike;
     const provider = new OpenAIProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
     await provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'gpt-5' });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('puts a JSON instruction in Responses input without changing conversation turns', async () => {
+    const fetchImpl = vi.fn(async () => jsonResponse({ status: 'completed', output_text: '{"reply":"hi","plan":[]}' })) as unknown as FetchLike;
+    const provider = new OpenAIProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
+
+    await provider.generate({
+      system: 'Motion policy that also asks for JSON.',
+      messages: [
+        { role: 'assistant', content: 'Earlier reply.' },
+        { role: 'user', content: 'Continue.' },
+      ],
+      model: 'gpt-6-luna',
+      json: true,
+    });
+
+    const init = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0]?.[1] as RequestInit;
+    const body = JSON.parse(String(init.body)) as { input: Array<{ role: string; content: string }>; instructions: string };
+    expect(body.instructions).toBe('Motion policy that also asks for JSON.');
+    expect(body.input).toEqual([
+      { role: 'developer', content: 'Return one valid JSON object and no text outside that JSON object.' },
+      { role: 'assistant', content: 'Earlier reply.' },
+      { role: 'user', content: 'Continue.' },
+    ]);
   });
 
   it('never includes the API key in a thrown error message', async () => {
@@ -77,9 +110,10 @@ describe('OpenAIProvider', () => {
   it('parses SSE output_text deltas while streaming, handling a split chunk', async () => {
     const encoder = new TextEncoder();
     const chunks = [
-      'event: response.output_text.delta\ndata: {"delta":"Hel',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"Hel',
       'lo"}\n\n',
-      'event: response.output_text.delta\ndata: {"delta":" world"}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":" world"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n',
     ];
     let i = 0;
     const body = new ReadableStream<Uint8Array>({
@@ -105,7 +139,7 @@ describe('OpenAIProvider', () => {
     let cancelled = false;
     const body = new ReadableStream<Uint8Array>({
       start(streamController) {
-        streamController.enqueue(encoder.encode('event: response.output_text.delta\ndata: {"delta":"a"}\n\n'));
+        streamController.enqueue(encoder.encode('event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"a"}\n\n'));
       },
       cancel() {
         cancelled = true;
@@ -127,5 +161,50 @@ describe('OpenAIProvider', () => {
     }
     expect(out).toEqual(['a']);
     void cancelled;
+  });
+
+  it.each(['response.failed', 'response.incomplete'] as const)(
+    'does not treat a partial stream followed by %s as success',
+    async (terminalEvent) => {
+      const provider = new OpenAIProvider({
+        secrets: fakeSecrets(CANARY),
+        fetchImpl: vi.fn(async () => sseResponse([
+          'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+          `event: ${terminalEvent}\ndata: {"type":"${terminalEvent}","response":{"status":"${terminalEvent === 'response.failed' ? 'failed' : 'incomplete'}","error":{"message":"${CANARY}"}}}\n\n`,
+        ])) as unknown as FetchLike,
+      });
+      const output: string[] = [];
+
+      await expect((async () => {
+        for await (const delta of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'gpt-5' })) output.push(delta);
+      })()).rejects.toMatchObject({ kind: 'bad-response', message: expect.not.stringContaining(CANARY) });
+      expect(output.join('')).toBe('partial');
+    },
+  );
+
+  it('rejects a stream that ends without response.completed', async () => {
+    const provider = new OpenAIProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => sseResponse([
+        'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"partial"}\n\n',
+      ])) as unknown as FetchLike,
+    });
+
+    await expect((async () => {
+      for await (const _ of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'gpt-5' })) {
+        void _;
+      }
+    })()).rejects.toMatchObject({ kind: 'bad-response' });
+  });
+
+  it('rejects a completed HTTP response without output text', async () => {
+    const provider = new OpenAIProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => jsonResponse({ status: 'completed' })) as unknown as FetchLike,
+    });
+
+    await expect(
+      provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'gpt-5' }),
+    ).rejects.toMatchObject({ kind: 'bad-response' });
   });
 });

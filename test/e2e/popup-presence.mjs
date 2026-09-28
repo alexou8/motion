@@ -5,7 +5,7 @@
  * verifies the shipped popup user gesture and the content boundary separately.
  */
 import { existsSync, readFileSync } from 'node:fs';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { chromium } from 'playwright';
@@ -34,6 +34,19 @@ try {
   const extensionPage = await context.newPage();
   await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   const popupBefore = await popup.innerText('body');
+  const mark = await popup.locator('.motion-brand-mark').evaluate((node) => {
+    const css = getComputedStyle(node);
+    const bounds = node.getBoundingClientRect();
+    return { mask: css.maskImage || css.webkitMaskImage, color: css.backgroundColor, width: bounds.width, height: bounds.height };
+  });
+  check('popup renders the shared Motion mark with visible dimensions and accent',
+    mark.mask !== 'none' && mark.mask.includes('motion-mark') && mark.width > 0 && mark.height > 0 && mark.color !== 'rgba(0, 0, 0, 0)');
+  await mkdir(resolve('.motion-local/logo-review'), { recursive: true });
+  await popup.emulateMedia({ colorScheme: 'light' });
+  await popup.locator('main').screenshot({ path: resolve('.motion-local/logo-review/popup-light.png') });
+  await popup.emulateMedia({ colorScheme: 'dark' });
+  await popup.locator('main').screenshot({ path: resolve('.motion-local/logo-review/popup-dark.png') });
+  await popup.emulateMedia({ colorScheme: 'light' });
   await popup.getByRole('button', { name: 'Open Motion' }).click();
   check('popup Open Motion accepts a real user gesture', true);
   check('popup handoff leaves no loading loop', !/Loading page context/i.test(popupBefore));

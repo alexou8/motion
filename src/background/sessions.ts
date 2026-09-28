@@ -112,7 +112,9 @@ async function createSession(message: Extract<SessionMessage, { type: 'session-c
       now,
     ))) ?? session;
   }
-  return (await runModelTurn(session.id, message.goal)) ?? session;
+  // The initial goal is already stored in the conversation above. Reuse that
+  // turn here; later identical messages still go through the ordinary path.
+  return (await runModelTurn(session.id, message.goal, {}, true)) ?? session;
 }
 
 export interface WorkspaceSessionInput {

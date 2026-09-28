@@ -37,6 +37,7 @@ const aiStatus = {
       message: 'Ready.',
       backgroundExecution: false,
       disclosureAccepted: true,
+      keyStorage: 'session',
     },
   ],
   autoOpenRelatedTabs: false,

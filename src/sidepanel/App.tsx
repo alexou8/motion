@@ -3,7 +3,7 @@ import { EMPTY_PANEL_STATE, type PanelState } from '../core/view/state';
 import { cn } from '../ui/components/cn';
 import { MotionMark } from '../ui/components';
 import { motionCommandSchema, type MotionBridge, type MotionCommand } from './bridge';
-import { useState, type CSSProperties } from 'react';
+import { useState } from 'react';
 import { Home, SessionView } from './views';
 
 export interface AppProps {
@@ -16,10 +16,6 @@ function usePanelState(bridge: MotionBridge): PanelState {
   return useSyncExternalStore(bridge.subscribe, bridge.getState, bridge.getState);
 }
 
-/**
- * Motion's mark: a short track with one active marker — the product's single
- * visual device, reduced to a glyph. Motion's own; it imitates no other product.
- */
 function IconButton({
   label,
   onClick,
@@ -52,7 +48,6 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
         <div className="flex min-w-0 items-center gap-2">
           <MotionMark
             className="size-5 text-signal"
-            style={{ '--motion-mark-paper': 'var(--color-paper)' } as CSSProperties}
           />
           <p className="font-serif text-lg font-semibold">Motion</p>
           {state.connection === 'supported' ? (

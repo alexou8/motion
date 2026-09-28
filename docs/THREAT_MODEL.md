@@ -15,7 +15,9 @@ settled, not yet built) · **Accepted** (understood, not addressed, with reason)
 
 Coursework metadata (deadlines, weights, grades), student notes and drafts,
 course URLs and enrolment, and the student's browsing session with their
-institution. Motion never holds credentials.
+institution. Motion never holds LMS login credentials. Provider API keys are
+held in trusted session storage or, after explicit opt-in, in the OS credential
+vault through the optional companion (ADR 0009).
 
 ## Trust boundaries
 
@@ -348,16 +350,21 @@ workspace lock; neither race reads page content or closes a student tab. —
 ## T15 — BYOK key exposure
 
 A provider key is readable by code running in a trusted extension context. Motion
-stores it only in `chrome.storage.session` under `TRUSTED_CONTEXTS`, never logs
-or fake-encrypts it, and loses it on browser restart. A compromised extension
-page or browser profile can still expose it. — *Accepted*
+defaults to `chrome.storage.session` under `TRUSTED_CONTEXTS` and loses that
+copy on browser restart. Explicit opt-in uses the OS credential vault (T24).
+Motion never logs or fake-encrypts keys. A compromised trusted extension page
+or OS account can still expose them. — *Accepted*
 
 ## T16 — Provider endpoint or SSRF-style destination control
 
 Provider requests use a fixed endpoint selected by the provider registry; user
 input and model output cannot supply an arbitrary URL. Optional provider hosts
-are requested just-in-time after disclosure. — *Mitigated in provider clients;
-permission flow remains in progress*
+are requested just-in-time after disclosure. Account model refresh uses the
+same worker-owned provider client, checks disclosure/host grant/session key,
+validates the model list, and exposes only supported text model IDs. Anthropic
+cursor pagination permits only bounded `limit` and `after_id` parameters on
+the fixed models endpoint. — *Mitigated in provider clients and model-list
+handler tests; live permission UI remains a separate browser check*
 
 ## T17 — Prompt injection leading to tool calls
 
@@ -427,3 +434,23 @@ Session workspace ownership is recorded by tab id and session key, with owned,
 adopted, and released sets. Group membership alone never grants ownership;
 close operations affect only owned tabs still in the expected group. — *Partially
 mitigated; real-browser race coverage is in progress*
+
+## T24 — Persistent provider keys and native host access
+
+**Status: Mitigated** — strict native protocol, failure/restart tests and macOS
+Chrome verification pass. Windows/Linux live vault checks remain unverified.
+
+An extension page, forged native caller or local log could expose a remembered
+provider key. The optional companion uses the OS credential vault rather than
+browser persistence. Chrome `nativeMessaging` is requested from a Settings
+user gesture; installation binds the host to an exact extension origin and the
+host checks that caller itself. Only bounded, validated operations for the two
+fixed providers are accepted. Provider mode metadata is persistent; keys are
+not. Worker/native responses never expose keys to Settings or content scripts.
+
+Save/delete intent metadata lets an interrupted native write be retried or
+forgotten. Deleting a remembered key blocks retrieval before vault removal and
+must remove the vault entry and session cache, and
+must not report success if the vault operation fails. A missing/locked companion
+cannot trigger plaintext storage or a silent provider change. OS-account or
+trusted-extension compromise remains an accepted limitation of any local vault.

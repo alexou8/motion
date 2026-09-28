@@ -52,7 +52,7 @@ export class EndpointNotAllowedError extends Error {
 }
 
 export function assertAllowlisted(url: string): void {
-  if (!ALLOWED_ENDPOINTS.includes(url)) {
+  if (!ALLOWED_ENDPOINTS.includes(url) && !isAllowedAnthropicModelsPage(url)) {
     throw new EndpointNotAllowedError(url);
   }
   // The E2E provider-hosts build points OpenAI at a local, build-time-fixed
@@ -63,6 +63,28 @@ export function assertAllowlisted(url: string): void {
   if (!isPinnedE2EOverride && !url.startsWith('https://')) {
     throw new EndpointNotAllowedError(url);
   }
+}
+
+/**
+ * Anthropic's documented Models endpoint is cursor-paginated. The cursor is
+ * opaque, but it cannot select another endpoint: only one bounded `limit`
+ * and one non-empty `after_id` are accepted on the fixed endpoint.
+ */
+function isAllowedAnthropicModelsPage(url: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return false;
+  }
+  if (parsed.origin !== 'https://api.anthropic.com' || parsed.pathname !== '/v1/models' || parsed.hash) return false;
+  const keys = [...parsed.searchParams.keys()];
+  if (!keys.includes('limit') || keys.some((key) => key !== 'limit' && key !== 'after_id')) return false;
+  if (parsed.searchParams.getAll('limit').length !== 1 || parsed.searchParams.getAll('after_id').length > 1) return false;
+  const limit = parsed.searchParams.get('limit');
+  if (!limit || !/^(?:[1-9]\d{0,2}|1000)$/.test(limit)) return false;
+  const afterId = parsed.searchParams.get('after_id');
+  return afterId === null || afterId.length > 0;
 }
 
 const DEFAULT_GENERATE_TIMEOUT_MS = 60_000;

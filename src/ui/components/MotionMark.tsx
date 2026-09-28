@@ -1,12 +1,7 @@
-import type { SVGProps } from 'react';
+import type { HTMLAttributes } from 'react';
+import { cn } from './cn';
 
-const canonicalMark = new URL('../../assets/brand/motion-mark.svg', import.meta.url).href;
-
-/** Motion's canonical track mark. Keep geometry in sync with assets/brand/motion-mark.svg. */
-export function MotionMark(props: SVGProps<SVGSVGElement>) {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 20 20" fill="none" {...props}>
-      <use href={`${canonicalMark}#motion-mark`} />
-    </svg>
-  );
+/** The canonical continuous M follows the semantic accent in every surface. */
+export function MotionMark({ className, ...props }: HTMLAttributes<HTMLSpanElement>) {
+  return <span {...props} aria-hidden="true" className={cn('motion-brand-mark', className)} />;
 }

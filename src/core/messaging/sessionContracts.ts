@@ -62,12 +62,32 @@ export const sessionTabSchema = z.object({
 
 /** Provider diagnostics for settings and the session header. */
 export const aiStatusSchema = z.object({ type: z.literal('ai-status') });
+export const keychainStatusSchema = z.object({ type: z.literal('keychain-status'), providerId: z.enum(CLOUD_PROVIDER_IDS) });
+
+export const keychainBackendSchema = z.enum([
+  'macos-keychain',
+  'windows-credential-manager',
+  'linux-secret-service',
+]);
+export const keychainStatusResultSchema = z.object({
+  available: z.boolean(),
+  backend: keychainBackendSchema.optional(),
+  message: z.string().max(160),
+});
+export type KeychainStatusResult = z.infer<typeof keychainStatusResultSchema>;
+
+/** Explicit settings action; this never runs as part of a model turn or status refresh. */
+export const listProviderModelsSchema = z.object({
+  type: z.literal('list-provider-models'),
+  providerId: z.enum(CLOUD_PROVIDER_IDS),
+});
 
 export const setProviderKeySchema = z.object({
   type: z.literal('set-provider-key'),
   providerId: z.enum(CLOUD_PROVIDER_IDS),
   /** Bounded and whitespace-free; the worker never echoes it. */
   key: z.string().trim().min(8).max(400).regex(/^\S+$/),
+  storage: z.enum(['session', 'keychain']).default('session'),
 });
 
 export const forgetProviderKeySchema = z.object({
@@ -110,6 +130,8 @@ export const SESSION_MESSAGE_SCHEMAS = [
   sessionSourceSchema,
   sessionTabSchema,
   aiStatusSchema,
+  keychainStatusSchema,
+  listProviderModelsSchema,
   setProviderKeySchema,
   forgetProviderKeySchema,
   testProviderSchema,
@@ -126,6 +148,8 @@ export const SESSION_MESSAGE_TYPES = [
   'session-source',
   'session-tab',
   'ai-status',
+  'keychain-status',
+  'list-provider-models',
   'set-provider-key',
   'forget-provider-key',
   'test-provider',
@@ -147,8 +171,39 @@ export const providerDiagnosticSchema = z.object({
   retryAfterMs: z.number().int().nonnegative().optional(),
   backgroundExecution: z.boolean(),
   disclosureAccepted: z.boolean(),
+  keyStorage: z.enum(['session', 'keychain']).default('session'),
 });
 export type ProviderDiagnostic = z.infer<typeof providerDiagnosticSchema>;
+
+export const providerModelListResultSchema = z.object({
+  providerId: z.enum(CLOUD_PROVIDER_IDS),
+  /** Text-capable account models only, bounded before crossing into the UI. */
+  models: z.array(z.string().min(1).max(100)).max(100),
+  source: z.enum(['account', 'fallback']),
+});
+export type ProviderModelListResult = z.infer<typeof providerModelListResultSchema>;
+
+export const providerAvailabilityResultSchema = z.object({
+  availability: z.object({
+    status: z.enum([
+      'available',
+      'downloadable',
+      'downloading',
+      'unavailable',
+      'not-configured',
+      'needs-document-context',
+      'needs-permission',
+      'invalid-key',
+      'rate-limited',
+      'insufficient-quota',
+      'network-error',
+      'model-unavailable',
+    ]),
+    message: z.string().max(1_000),
+    retryAfterMs: z.number().int().nonnegative().optional(),
+  }),
+});
+export type ProviderAvailabilityResult = z.infer<typeof providerAvailabilityResultSchema>;
 
 export const aiStatusResultSchema = z.object({
   selected: z.enum(PROVIDER_IDS),

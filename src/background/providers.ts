@@ -12,12 +12,12 @@
 import type { AIProvider, ProviderAvailability, ProviderId, ProviderStatus } from '@/core/ai/types';
 import { ProviderError } from '@/core/ai/types';
 import { explainProviderError, explainProviderStatus } from '@/core/ai/explain';
-import { resolveModel } from '@/core/ai/models';
+import { isSupportedTextModel, resolveModel } from '@/core/ai/models';
 import type { AIPreferences } from '@/core/ai/preferences';
 import { createProvider, type RegistryDeps } from '@/platform/ai/registry';
 import { E2E_PROVIDER_BASE_URL } from '@/platform/ai/http';
 import { ChromePreferencesStore, type PreferencesStore } from '@/platform/ai/preferencesStore';
-import { SessionSecretStore, type SecretStore } from '@/platform/ai/secrets';
+import { HybridSecretStore, type SecretStore } from '@/platform/ai/secrets';
 import { getInferencePort } from './inferencePort';
 
 const DISPLAY_NAMES: Record<ProviderId, string> = {
@@ -73,6 +73,8 @@ export interface ResolveSessionProviderDeps {
   /** Overridable for tests; defaults to `getInferencePort` from this module. */
   getPort?: () => ReturnType<typeof getInferencePort>;
   now?: () => number;
+  /** Panel diagnostics check readiness without fetching the account model catalogue. */
+  resolveModelListing?: boolean;
 }
 
 function defaultPermissions(): PermissionsCheck {
@@ -142,7 +144,7 @@ function cloudOriginFor(providerId: ProviderId): string | undefined {
  */
 export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = {}): Promise<ProviderResolution> {
   const preferencesStore = deps.preferencesStore ?? new ChromePreferencesStore();
-  const secrets = deps.secrets ?? new SessionSecretStore();
+  const secrets = deps.secrets ?? new HybridSecretStore();
   const now = deps.now ?? (() => Date.now());
   const preferences: AIPreferences = await preferencesStore.get();
   const providerId = preferences.providerId;
@@ -197,10 +199,28 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
     return { kind: 'blocked', blocker };
   }
 
-  const listedIds = providerId === 'openai' && 'listModels' in provider
-    ? await (provider as unknown as { listModels(): Promise<string[]> }).listModels().catch(() => undefined)
+  if (deps.resolveModelListing === false) {
+    return {
+      kind: 'ready',
+      provider,
+      providerId,
+      // This result is used only for panel diagnostics. An account-specific
+      // saved ID cannot be judged unavailable until a model-turn/listing
+      // request explicitly checks the account catalogue.
+      model: preferences.model,
+      displayName,
+      cloud,
+    };
+  }
+
+  const listedIds = cloud && provider.listModels
+    ? await provider.listModels().catch(() => undefined)
     : undefined;
-  const resolved = resolveModel(providerId, preferences.model, listedIds);
+  const resolved = resolveModel(
+    providerId,
+    preferences.model,
+    listedIds?.filter((id) => isSupportedTextModel(providerId, id)),
+  );
   if (resolved.unavailable) {
     return {
       kind: 'blocked',

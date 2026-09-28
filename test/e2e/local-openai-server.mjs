@@ -28,40 +28,77 @@ export async function startLocalOpenAIServer({ port }) {
   let responseCount = 0;
   let secondRequestAborted = false;
   let secondRequestSeen = false;
+  const requestedModels = [];
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/v1/models') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ data: [{ id: 'gpt-5' }] }));
+      res.end(JSON.stringify({ data: ['gpt-6-luna', 'gpt-6-sol', 'gpt-5.4-nano', 'gpt-5', 'whisper-1', 'text-embedding-3-small'].map((id) => ({ id })) }));
       return;
     }
 
     if (req.method === 'POST' && req.url === '/v1/responses') {
-      responseCount += 1;
-      const event = (delta) => `event: response.output_text.delta\ndata: ${JSON.stringify({ delta })}\n\n`;
+      let requestBody = '';
+      req.on('data', (chunk) => { requestBody += chunk; });
+      req.on('end', () => {
+        const body = JSON.parse(requestBody);
+        requestedModels.push(body.model);
+        // Mirror the real Responses JSON-mode input requirement. Policy in
+        // `instructions` alone does not satisfy this API validation.
+        if (body.text?.format?.type === 'json_object' &&
+            !body.input.some((message) => /json/i.test(message.content))) {
+          res.writeHead(400, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: { type: 'invalid_request_error', param: 'input' } }));
+          return;
+        }
+        responseCount += 1;
+        const event = (delta) => `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta })}\n\n`;
 
-      if (responseCount === 1) {
-        res.writeHead(200, { 'content-type': 'text/event-stream' });
-        // Two separate writes (with a tick between them) so the SSE parser
-        // genuinely has to accumulate across two distinct network events
-        // rather than getting the whole payload in one chunk.
-        res.write(event('{"reply":"Stream'));
-        setImmediate(() => {
-          res.write(event('ed from OpenAI","plan":[]}'));
+        if (responseCount === 1) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          // Two separate writes (with a tick between them) so the SSE parser
+          // genuinely has to accumulate across two distinct network events
+          // rather than getting the whole payload in one chunk.
+          res.write(event('{"reply":"Stream'));
+          setImmediate(() => {
+            res.write(event('ed from OpenAI","plan":[]}'));
+            res.write('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n');
+            res.end();
+          });
+          return;
+        }
+
+        if (responseCount >= 3) {
+          res.writeHead(200, { 'content-type': 'text/event-stream' });
+          if (responseCount === 6) {
+            res.write(event('{"reply":"Recovered after provider failure","plan":[]}'));
+            res.end('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}\n\n');
+            return;
+          }
+          // Even valid agent JSON must not be committed before the provider
+          // confirms completion. The error contains synthetic private text
+          // that must never reach the student's history or a diagnostic.
+          res.write(event('{"reply":"UNCONFIRMED_PROVIDER_REPLY","plan":[]}'));
+          if (responseCount === 3) {
+            res.write('event: response.failed\ndata: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"SYNTHETIC_PRIVATE_PROVIDER_ERROR"}}}\n\n');
+          } else if (responseCount === 4) {
+            res.write('event: response.incomplete\ndata: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}\n\n');
+          }
           res.end();
-        });
-        return;
-      }
+          return;
+        }
 
-      // Second (and any later) request: hold it open indefinitely — the test
-      // sends Stop and expects the client to abort this in-flight request.
-      secondRequestSeen = true;
-      res.writeHead(200, { 'content-type': 'text/event-stream' });
-      req.on('aborted', () => {
-        secondRequestAborted = true;
-      });
-      res.on('close', () => {
-        if (!res.writableEnded) secondRequestAborted = true;
+        // Second request: hold it open indefinitely — the test
+        // sends Stop and expects the client to abort this in-flight request.
+        secondRequestSeen = true;
+        res.writeHead(200, { 'content-type': 'text/event-stream' });
+        res.write(event('{"reply":"'));
+        req.on('aborted', () => {
+          secondRequestAborted = true;
+        });
+        res.on('close', () => {
+          if (!res.writableEnded) secondRequestAborted = true;
+        });
       });
       return;
     }
@@ -85,6 +122,9 @@ export async function startLocalOpenAIServer({ port }) {
     },
     get secondRequestAborted() {
       return secondRequestAborted;
+    },
+    get requestedModels() {
+      return [...requestedModels];
     },
     close: () => new Promise((resolve) => server.close(() => resolve(undefined))),
   };

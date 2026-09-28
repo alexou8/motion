@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { curatedModelsFor } from '@/core/ai/models';
+import { curatedModelsFor, isSupportedTextModel } from '@/core/ai/models';
 import { PROVIDER_IDS, aiPreferencesSchema, type AIPreferences } from '@/core/ai/preferences';
 import type { ProviderAvailability, ProviderCapabilities, ProviderId, ProviderStatus } from '@/core/ai/types';
 import {
@@ -7,6 +7,10 @@ import {
   aiStatusResultSchema,
   deleteLocalDataSchema,
   forgetProviderKeySchema,
+  keychainStatusResultSchema,
+  keychainStatusSchema,
+  listProviderModelsSchema,
+  providerModelListResultSchema,
   setAiPreferencesSchema,
   setProviderKeySchema,
   testProviderSchema,
@@ -16,16 +20,20 @@ import { supportedHosts } from '@/core/adapters';
 import { createProvider, type RegistryDeps } from '@/platform/ai/registry';
 import type { FetchLike } from '@/platform/ai/http';
 import { ChromePreferencesStore, type PreferencesStore } from '@/platform/ai/preferencesStore';
-import { SessionSecretStore, type SecretStore, type StorageArea } from '@/platform/ai/secrets';
+import { HybridSecretStore, SessionSecretStore, type SecretStore, type StorageArea } from '@/platform/ai/secrets';
+import { NativeKeychainAdapter, type KeychainVault } from '@/platform/ai/keychain';
 import { getInferencePort } from './inferencePort';
 import {
   providerBlockerFromError,
   providerDisplayNames,
+  providerOrigins,
   type PermissionsCheck,
 } from './providers';
 
 const aiMessageSchema = z.discriminatedUnion('type', [
   aiStatusResultInputSchema(),
+  keychainStatusSchema,
+  listProviderModelsSchema,
   setProviderKeySchema,
   forgetProviderKeySchema,
   testProviderSchema,
@@ -54,6 +62,7 @@ export interface AiHandlerDeps {
   secrets?: SecretStore;
   localStorage?: StorageArea;
   sessionStorage?: ClearableStorageArea;
+  keychain?: KeychainVault;
   permissions?: PermissionsCheck;
   fetchImpl?: FetchLike;
   deleteDatabase?: () => Promise<void>;
@@ -67,16 +76,20 @@ interface HandlerContext {
   permissions: PermissionsCheck;
   fetchImpl?: FetchLike;
   deleteDatabase: () => Promise<void>;
+  keychain: KeychainVault;
 }
 
 function contextFor(deps: AiHandlerDeps): HandlerContext {
   const session = deps.sessionStorage ?? (chrome.storage.session as unknown as ClearableStorageArea);
+  const local = deps.localStorage ?? (chrome.storage.local as unknown as StorageArea);
+  const keychain = deps.keychain ?? new NativeKeychainAdapter();
   return {
-    preferences: deps.preferencesStore ?? new ChromePreferencesStore(deps.localStorage ?? (chrome.storage.local as unknown as StorageArea)),
-    secrets: deps.secrets ?? new SessionSecretStore(session),
-    local: deps.localStorage ?? (chrome.storage.local as unknown as StorageArea),
+    preferences: deps.preferencesStore ?? new ChromePreferencesStore(local),
+    secrets: deps.secrets ?? new HybridSecretStore({ session: new SessionSecretStore(session), localStorage: local, vault: keychain }),
+    local,
     session,
     permissions: deps.permissions ?? defaultPermissions(),
+    keychain,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     deleteDatabase: deps.deleteDatabase ?? (() => deleteMotionDatabase()),
   };
@@ -170,10 +183,11 @@ async function providerCapabilities(providerId: ProviderId, ctx: HandlerContext)
 
 async function diagnosticFor(providerId: ProviderId, preferences: AIPreferences, ctx: HandlerContext) {
   const cloud = providerId !== 'chrome-local';
-  const [availability, capabilities, configured] = await Promise.all([
+  const [availability, capabilities, configured, keyStorage] = await Promise.all([
     providerAvailability(providerId, ctx),
     providerCapabilities(providerId, ctx),
     cloud ? ctx.secrets.has(providerId) : Promise.resolve(true),
+    cloud && ctx.secrets.storageFor ? ctx.secrets.storageFor(providerId) : Promise.resolve('session' as const),
   ]);
   return {
     providerId,
@@ -185,6 +199,7 @@ async function diagnosticFor(providerId: ProviderId, preferences: AIPreferences,
     ...(availability.retryAfterMs !== undefined ? { retryAfterMs: availability.retryAfterMs } : {}),
     backgroundExecution: capabilities.backgroundExecution,
     disclosureAccepted: !cloud || preferences.cloudDisclosureAccepted.includes(providerId),
+    keyStorage,
   };
 }
 
@@ -213,8 +228,40 @@ async function handleAiStatus(ctx: HandlerContext) {
   return aiStatusResultSchema.parse(result);
 }
 
+async function handleListProviderModels(
+  message: Extract<AiMessage, { type: 'list-provider-models' }>,
+  ctx: HandlerContext,
+) {
+  const preferences = await ctx.preferences.get();
+  const providerId = message.providerId;
+  const displayName = providerDisplayNames[providerId];
+  if (!preferences.cloudDisclosureAccepted.includes(providerId)) {
+    throw new Error(`Accept the ${displayName} cloud-processing disclosure before refreshing models.`);
+  }
+  const origin = providerOrigins[providerId];
+  if (!origin || !await ctx.permissions.contains({ origins: [origin] })) {
+    throw new Error(`Grant Motion permission to reach ${displayName} before refreshing models.`);
+  }
+  if (!await ctx.secrets.has(providerId)) {
+    throw new Error(`Add a ${displayName} API key for this browser session before refreshing models.`);
+  }
+
+  try {
+    const provider = providerFor(providerId, ctx);
+    const listed = provider.listModels ? await bounded(() => provider.listModels!()) : [];
+    const models = [...new Set(listed.filter((id) => isSupportedTextModel(providerId, id)))];
+    return providerModelListResultSchema.parse({ providerId, models, source: 'account' });
+  } catch {
+    return providerModelListResultSchema.parse({
+      providerId,
+      models: curatedModelsFor(providerId).map((model) => model.id),
+      source: 'fallback',
+    });
+  }
+}
+
 async function handleSetProviderKey(message: Extract<AiMessage, { type: 'set-provider-key' }>, ctx: HandlerContext) {
-  await ctx.secrets.set(message.providerId, message.key);
+  await ctx.secrets.set(message.providerId, message.key, message.storage);
   const availability = await providerAvailability(message.providerId, ctx);
   return { configured: true, availability };
 }
@@ -222,6 +269,10 @@ async function handleSetProviderKey(message: Extract<AiMessage, { type: 'set-pro
 async function handleForgetProviderKey(message: Extract<AiMessage, { type: 'forget-provider-key' }>, ctx: HandlerContext) {
   await ctx.secrets.forget(message.providerId);
   return { configured: false };
+}
+
+async function handleKeychainStatus(message: Extract<AiMessage, { type: 'keychain-status' }>, ctx: HandlerContext) {
+  return keychainStatusResultSchema.parse(await ctx.keychain.status(message.providerId));
 }
 
 async function handleTestProvider(message: Extract<AiMessage, { type: 'test-provider' }>, ctx: HandlerContext) {
@@ -260,6 +311,10 @@ async function clearStorageArea(area: ClearableStorageArea): Promise<void> {
 }
 
 async function handleDeleteLocalData(ctx: HandlerContext) {
+  // Remove remembered OS-vault entries before clearing the metadata that says
+  // which providers opted in. A failure leaves the local data intact so the
+  // student can retry rather than receiving a false deletion confirmation.
+  for (const providerId of ['openai', 'anthropic'] as const) await ctx.secrets.forget(providerId);
   const localValues = await ctx.local.get(null);
   const motionKeys = Object.keys(localValues).filter((key) => key.startsWith('motion.'));
   const results = await Promise.allSettled([
@@ -273,13 +328,15 @@ async function handleDeleteLocalData(ctx: HandlerContext) {
   return { deleted: true };
 }
 
-/** Handles the seven AI/settings messages; callers still authorize the sender separately. */
+/** Handles AI/settings messages; callers still authorize the sender separately. */
 export async function handleAiMessage(raw: unknown, deps: AiHandlerDeps = {}): Promise<unknown> {
   const parsed = aiMessageSchema.safeParse(raw);
   if (!parsed.success) throw new Error('Malformed AI/settings message.');
   const ctx = contextFor(deps);
   switch (parsed.data.type) {
     case 'ai-status': return handleAiStatus(ctx);
+    case 'keychain-status': return handleKeychainStatus(parsed.data, ctx);
+    case 'list-provider-models': return handleListProviderModels(parsed.data, ctx);
     case 'set-provider-key': return handleSetProviderKey(parsed.data, ctx);
     case 'forget-provider-key': return handleForgetProviderKey(parsed.data, ctx);
     case 'test-provider': return handleTestProvider(parsed.data, ctx);

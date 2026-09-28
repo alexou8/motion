@@ -17,7 +17,7 @@ skill has not been exercised yet.
 | `ui-ux-pro-max` | `nextlevelbuilder/ui-ux-pro-max-skill` | Product-specific UX and design-system generation | Ran `--design-system`; output was landing-page shaped and rejected per the skill's own query contract. Checklist retained |
 | `design-system` | `nextlevelbuilder/ui-ux-pro-max-skill` | Token architecture | Three-layer primitive → semantic → component tokens in `src/ui/tokens.css` |
 | `ui-styling` | `nextlevelbuilder/ui-ux-pro-max-skill` | Keep implementation consistent with the tokens | Panel and popup surfaces use the existing tokens |
-| `brand` | `nextlevelbuilder/ui-ux-pro-max-skill` | A restrained identity, not a generic AI-product look | Voice rules for UI copy and docs; single-accent discipline |
+| `brand` | `nextlevelbuilder/ui-ux-pro-max-skill` | A restrained identity, not a generic AI-product look | Voice rules for UI copy and docs; single-accent discipline; canonical continuous M across panel, popup, Settings and extension icons |
 | `web-design-guidelines` | `vercel-labs/agent-skills` | Interface quality audit | Pending — browser verification remains separate |
 | `vercel-react-best-practices` | `vercel-labs/agent-skills` | React structure, rendering, bundle size | Applied to the panel and popup component structure |
 | `vercel-composition-patterns` | `vercel-labs/agent-skills` | Composable component APIs, no boolean-prop sprawl | Applied to panel and popup action boundaries |

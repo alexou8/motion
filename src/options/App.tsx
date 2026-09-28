@@ -1,9 +1,18 @@
+import { z } from 'zod';
 import { useCallback, useEffect, useState } from 'react';
 import { supportedHosts } from '@/core/adapters';
-import { aiStatusResultSchema, type AiStatusResult, type ProviderDiagnostic } from '@/core/messaging/sessionContracts';
+import {
+  aiStatusResultSchema,
+  keychainStatusResultSchema,
+  providerAvailabilityResultSchema,
+  providerModelListResultSchema,
+  type AiStatusResult,
+  type ProviderDiagnostic,
+} from '@/core/messaging/sessionContracts';
 import { CONFIGURABLE_ACTION_IDS, type ConfigurableActionId } from '@/core/ai/preferences';
 import { curatedModelsFor } from '@/core/ai/models';
 import type { ProviderId } from '@/core/ai/types';
+import { MotionMark } from '@/ui/components/MotionMark';
 import {
   DEFAULT_REMINDER_PREFERENCES,
   loadReminderPreferences,
@@ -69,10 +78,14 @@ const ACTION_LABELS: Record<ConfigurableActionId, string> = {
   'click-element': 'Click a non-consequential control',
 };
 
+const workerEnvelopeSchema = z.object({ ok: z.boolean(), result: z.unknown().optional(), error: z.string().max(1_000).optional() });
+const deletionResultSchema = z.object({ deleted: z.literal(true) });
+
 async function ask(message: unknown): Promise<{ ok: boolean; result?: unknown; error?: string }> {
   try {
     const response = await chrome.runtime.sendMessage(message);
-    return response ?? { ok: false, error: 'The background worker did not respond.' };
+    const parsed = workerEnvelopeSchema.safeParse(response);
+    return parsed.success ? parsed.data : { ok: false, error: 'The background worker did not return a valid response.' };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : 'Message failed' };
   }
@@ -135,36 +148,25 @@ export function App(): JSX.Element {
     [loadGrants],
   );
   const deleteEverything = useCallback(async () => {
-    let outcome: 'success' | 'error' | 'blocked' = 'success';
-    await new Promise<void>((resolve) => {
-      const request = indexedDB.deleteDatabase('motion');
-      request.onsuccess = () => resolve();
-      request.onerror = () => {
-        outcome = 'error';
-        resolve();
-      };
-      request.onblocked = () => {
-        outcome = 'blocked';
-        resolve();
-      };
-    });
-    await chrome.storage.session.clear();
-    await chrome.storage.local.clear();
     setConfirmingDelete(false);
-    await ask({ type: 'delete-local-data', confirm: 'DELETE' });
-    setStatus(
-      outcome === 'success'
-        ? 'Deleted every course, task, note and workflow Motion had stored.'
-        : outcome === 'blocked'
-          ? 'Motion could not delete its database because another Motion page is open. Close the side panel and try again. Session and local storage were deleted.'
-          : 'Motion could not delete its database. Session and local storage were deleted, but stored database data may remain.',
-    );
+    const response = await ask({ type: 'delete-local-data', confirm: 'DELETE' });
+    if (!response.ok || !deletionResultSchema.safeParse(response.result).success) {
+      setStatus(response.error ?? 'Motion could not delete its stored data. Try again.');
+      return;
+    }
+    setStatus('Deleted every course, task, note and workflow Motion had stored.');
   }, []);
   const version = chrome.runtime.getManifest().version;
   return (
     <main className="mx-auto max-w-5xl px-6 py-10 text-ink">
-      <header className="flex items-center justify-between">
-        <h1 className="font-serif text-2xl font-medium">Settings</h1>
+      <header className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <MotionMark className="size-7" />
+          <div>
+            <p className="font-serif text-lg font-semibold leading-tight">Motion</p>
+            <h1 className="font-serif text-2xl font-medium leading-tight">Settings</h1>
+          </div>
+        </div>
         <span className="text-sm text-ink-muted">Motion {version}</span>
       </header>
       <div className="mt-8 grid gap-8 md:grid-cols-[12rem_1fr]">
@@ -389,7 +391,19 @@ function ProviderCard({
   const [key, setKey] = useState('');
   const [disclosure, setDisclosure] = useState(diagnostic.disclosureAccepted);
   const [testing, setTesting] = useState(false);
-  const models = curatedModelsFor(providerId);
+  const [savingKey, setSavingKey] = useState(false);
+  const [rememberKey, setRememberKey] = useState(diagnostic.keyStorage === 'keychain');
+  const [companionStatus, setCompanionStatus] = useState<string | null>(null);
+  const [accountModels, setAccountModels] = useState<string[] | null>(null);
+  const [refreshingModels, setRefreshingModels] = useState(false);
+  const curated = curatedModelsFor(providerId);
+  const models = accountModels ?? curated.map((model) => model.id);
+  const modelLabel = (id: string) => curated.find((model) => model.id === id)?.label ?? id;
+  const visibleModels = ai.model !== 'recommended' && !models.includes(ai.model) ? [ai.model, ...models] : models;
+
+  useEffect(() => {
+    setRememberKey(diagnostic.keyStorage === 'keychain');
+  }, [diagnostic.keyStorage]);
 
   const selectProvider = async () => {
     if (isCloud) {
@@ -403,7 +417,9 @@ function ProviderCard({
       const origin = PROVIDER_ORIGINS[providerId];
       if (origin) await chrome.permissions.request({ origins: [origin] });
     }
-    await ask({ type: 'set-ai-preferences', providerId });
+    // A model ID belongs to its provider. Reset the global preference on a
+    // provider change so an OpenAI ID can never be sent to Claude or vice versa.
+    await ask({ type: 'set-ai-preferences', providerId, model: 'recommended' });
     await refresh();
   };
 
@@ -423,29 +439,83 @@ function ProviderCard({
       setStatus('That key looks too short to be valid.');
       return;
     }
-    await ask({ type: 'set-provider-key', providerId, key: value });
-    await refresh();
-    setStatus(`${PROVIDER_LABELS[providerId]} key saved for this browser session.`);
+    setSavingKey(true);
+    try {
+      if (rememberKey) {
+        // This permission prompt must stay in the form submit gesture. It is
+        // intentionally before the first await so Chrome does not drop it.
+        const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] });
+        if (!granted) {
+          setStatus('Motion needs permission to use the secure storage companion. Your key was not saved.');
+          return;
+        }
+      }
+      const response = await ask({ type: 'set-provider-key', providerId, key: value, storage: rememberKey ? 'keychain' : 'session' });
+      if (!response.ok) {
+        setStatus(response.error ?? `Could not save the ${PROVIDER_LABELS[providerId]} key.`);
+        return;
+      }
+      await refresh();
+      setStatus(rememberKey ? `${PROVIDER_LABELS[providerId]} key saved in your OS keychain.` : `${PROVIDER_LABELS[providerId]} key saved for this browser session.`);
+    } finally {
+      setSavingKey(false);
+    }
   };
 
   const forgetKey = async () => {
-    await ask({ type: 'forget-provider-key', providerId });
+    const response = await ask({ type: 'forget-provider-key', providerId });
+    if (!response.ok) {
+      setStatus(response.error ?? `Could not forget the ${PROVIDER_LABELS[providerId]} key.`);
+      return;
+    }
     await refresh();
     setStatus(`${PROVIDER_LABELS[providerId]} key forgotten.`);
+  };
+
+  const checkCompanion = async () => {
+    const granted = await chrome.permissions.request({ permissions: ['nativeMessaging'] });
+    if (!granted) {
+      setCompanionStatus('Allow secure storage access to check whether the companion is installed.');
+      return;
+    }
+    const response = await ask({ type: 'keychain-status', providerId });
+    const parsed = keychainStatusResultSchema.safeParse(response.result);
+    setCompanionStatus(response.ok && parsed.success ? parsed.data.message : response.error ?? 'Could not check secure storage.');
   };
 
   const testConnection = async () => {
     setTesting(true);
     const response = await ask({ type: 'test-provider', providerId });
     setTesting(false);
+    const availability = providerAvailabilityResultSchema.safeParse(response.result);
+    const ready = response.ok && availability.success && availability.data.availability.status === 'available';
     setStatus(
-      response.ok ? `${PROVIDER_LABELS[providerId]} connection test succeeded.` : `${PROVIDER_LABELS[providerId]} connection test failed.`,
+      ready ? `${PROVIDER_LABELS[providerId]} connection test succeeded.` : `${PROVIDER_LABELS[providerId]} connection test failed.`,
     );
   };
 
   const selectModel = async (model: string) => {
     await ask({ type: 'set-ai-preferences', providerId, model });
     await refresh();
+  };
+
+  const refreshModels = async () => {
+    setRefreshingModels(true);
+    const response = await ask({ type: 'list-provider-models', providerId });
+    setRefreshingModels(false);
+    const parsed = providerModelListResultSchema.safeParse(response.result);
+    if (!response.ok || !parsed.success || parsed.data.providerId !== providerId) {
+      setStatus(response.error ?? `Could not refresh ${PROVIDER_LABELS[providerId]} models.`);
+      return;
+    }
+    setAccountModels(parsed.data.source === 'account' ? parsed.data.models : null);
+    setStatus(
+      parsed.data.source === 'account'
+        ? parsed.data.models.length > 0
+          ? `Loaded ${parsed.data.models.length} models available to this account.`
+          : 'This account has no supported text models available.'
+        : `Could not refresh models. Showing Motion’s built-in choices.`,
+    );
   };
 
   return (
@@ -486,10 +556,32 @@ function ProviderCard({
               onChange={(event) => setKey(event.target.value)}
               className={`min-h-6 rounded-sm border border-edge bg-surface px-2 py-2 text-sm ${focus}`}
             />
-            <p className="text-xs text-ink-muted">Key storage: Session only — you&apos;ll re-enter it after restarting the browser.</p>
+            <label className="flex items-start gap-2 text-sm text-ink-muted">
+              <input type="checkbox" checked={rememberKey} onChange={(event) => setRememberKey(event.target.checked)} />
+              <span>Remember key securely on this device</span>
+            </label>
+            <p className="text-xs text-ink-muted">
+              {rememberKey
+                ? 'Key storage: OS keychain. Motion uses an optional local companion and your operating system’s secure vault.'
+                : 'Key storage: Session only — you’ll re-enter it after restarting the browser.'}
+            </p>
+            <p className="text-xs text-ink-muted">
+              Install the companion once, then re-enter your key. Turning this off does not remove a saved key; save again to change its storage.{' '}
+              <a className="underline" href="https://github.com/alexou8/motion/blob/main/docs/keychain-companion.md">Install the secure storage companion</a>
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void checkCompanion()}
+                className={`min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}
+              >
+                Check secure storage companion
+              </button>
+              {companionStatus ? <span className="text-xs text-ink-muted">{companionStatus}</span> : null}
+            </div>
             <div className="flex flex-wrap gap-2">
-              <button type="submit" className={`min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}>
-                Save for this browser session
+              <button type="submit" disabled={savingKey} className={`min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken disabled:cursor-not-allowed disabled:opacity-40 ${focus}`}>
+                {savingKey ? 'Saving…' : rememberKey ? 'Save in OS keychain' : 'Save for this browser session'}
               </button>
               <button
                 type="button"
@@ -512,21 +604,37 @@ function ProviderCard({
       ) : null}
 
       {isSelected ? (
-        <label className="grid gap-1 text-sm">
-          <span className="font-medium">Model</span>
-          <select
-            defaultValue={ai.model}
-            onChange={(event) => void selectModel(event.target.value)}
-            className={`min-h-6 rounded-sm border border-edge bg-surface px-2 py-1 ${focus}`}
-          >
-            <option value="recommended">Recommended</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.label}
-              </option>
-            ))}
-          </select>
-        </label>
+        <div className="grid gap-2">
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">Model</span>
+            <select
+              value={ai.model}
+              onChange={(event) => void selectModel(event.target.value)}
+              className={`min-h-6 rounded-sm border border-edge bg-surface px-2 py-1 ${focus}`}
+            >
+              <option value="recommended">Recommended for this account</option>
+              {visibleModels.map((id) => (
+                <option key={id} value={id} disabled={accountModels !== null && !accountModels.includes(id)}>
+                  {modelLabel(id)} ({id}){accountModels !== null && !accountModels.includes(id) ? ' — unavailable' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {isCloud ? (
+            <button
+              type="button"
+              onClick={() => void refreshModels()}
+              disabled={refreshingModels}
+              className={`w-fit min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}
+            >
+              {refreshingModels ? 'Refreshing models…' : 'Refresh models'}
+            </button>
+          ) : null}
+          <p className="text-xs text-ink-muted">
+            Use lower-cost models for routine coursework help. Use stronger models for complex requests.{' '}
+            {providerId === 'openai' ? <a className="underline" href="https://developers.openai.com/api/docs/pricing">OpenAI pricing</a> : providerId === 'anthropic' ? <a className="underline" href="https://platform.claude.com/docs/en/about-claude/pricing">Claude pricing</a> : null}
+          </p>
+        </div>
       ) : null}
     </div>
   );

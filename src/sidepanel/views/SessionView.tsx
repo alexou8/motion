@@ -56,18 +56,88 @@ function statusLabel(status: AgentSession['status']): string {
   }
 }
 
-function SessionHeader({
-  state,
-  session,
-  onBack,
-}: {
-  state: PanelState;
-  session: AgentSession;
-  onBack: () => void;
-}) {
-  const due = session.taskId
-    ? (state.tasks.find((task) => task.id === session.taskId)?.due.iso ?? null)
-    : null;
+function partialJsonString(text: string, start: number): { value: string; end: number; complete: boolean } | null {
+  if (text[start] !== '"') return null;
+  let value = '';
+  for (let index = start + 1; index < text.length;) {
+    const char = text[index];
+    if (char === '"') return { value, end: index + 1, complete: true };
+    if (char === '\\') {
+      const escape = text[index + 1];
+      if (escape === undefined) return { value, end: text.length, complete: false };
+      const simple: Record<string, string> = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' };
+      if (Object.hasOwn(simple, escape)) {
+        value += simple[escape];
+        index += 2;
+      } else if (escape === 'u') {
+        const digits = text.slice(index + 2, index + 6);
+        if (digits.length < 4 && /^[\da-f]*$/i.test(digits)) return { value, end: text.length, complete: false };
+        if (!/^[\da-f]{4}$/i.test(digits)) return { value, end: index, complete: false };
+        value += String.fromCharCode(Number.parseInt(digits, 16));
+        index += 6;
+      } else {
+        return { value, end: index, complete: false };
+      }
+      continue;
+    }
+    if (char === undefined || char.charCodeAt(0) < 0x20) return { value, end: index, complete: false };
+    value += char;
+    index += 1;
+  }
+  return { value, end: text.length, complete: false };
+}
+
+function skipJsonValue(text: string, start: number): number | null {
+  if (text[start] === '"') {
+    const parsed = partialJsonString(text, start);
+    return parsed?.complete ? parsed.end : null;
+  }
+  const stack: string[] = [];
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '"') {
+      const parsed = partialJsonString(text, index);
+      if (!parsed?.complete) return null;
+      index = parsed.end - 1;
+    } else if (char === '{' || char === '[') {
+      stack.push(char === '{' ? '}' : ']');
+    } else if (char === '}' || char === ']') {
+      if (stack.length === 0) return index;
+      if (stack.pop() !== char) return null;
+    } else if (stack.length === 0 && (char === ',' || /\s/.test(char ?? ''))) {
+      return index;
+    }
+  }
+  return stack.length === 0 ? text.length : null;
+}
+
+function partialReply(text: string): string | null {
+  let index = text.search(/\S/);
+  if (index < 0 || text[index] !== '{') return null;
+  index += 1;
+  while (index < text.length) {
+    while (/\s/.test(text[index] ?? '')) index += 1;
+    if (text[index] === '}') return null;
+    const key = partialJsonString(text, index);
+    if (!key?.complete) return null;
+    index = key.end;
+    while (/\s/.test(text[index] ?? '')) index += 1;
+    if (text[index] !== ':') return null;
+    index += 1;
+    while (/\s/.test(text[index] ?? '')) index += 1;
+    if (key.value === 'reply') return partialJsonString(text, index)?.value ?? null;
+    const end = skipJsonValue(text, index);
+    if (end === null) return null;
+    index = end;
+    while (/\s/.test(text[index] ?? '')) index += 1;
+    if (text[index] !== ',') return null;
+    index += 1;
+  }
+  return null;
+}
+
+function SessionHeader({ state, session, onBack }: { state: PanelState; session: AgentSession; onBack: () => void }) {
+  const due = session.taskId ? state.tasks.find((task) => task.id === session.taskId)?.due.iso ?? null : null;
   return (
     <header className="grid gap-2">
       <Button variant="quiet" onClick={onBack} className="justify-self-start">
@@ -89,6 +159,7 @@ function SessionHeader({
       <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-ink-muted">
         <span>{statusLabel(session.status)}</span>
         {due ? <time dateTime={due}>{dateLabel(due)}</time> : null}
+        {session.agent.model ? <span>Model · {session.agent.model}</span> : null}
       </div>
     </header>
   );
@@ -102,6 +173,7 @@ function ConversationLog({
   streaming: PanelState['streaming'];
 }) {
   const isStreaming = streaming?.sessionId === session.id;
+  const liveReply = isStreaming ? partialReply(streaming.text) : null;
   return (
     <section aria-label="Conversation" className="grid gap-3">
       <ol role="log" aria-live="polite" className="grid gap-3">
@@ -127,7 +199,7 @@ function ConversationLog({
             aria-label="Motion is responding"
           >
             <span className="sr-only">Motion: </span>
-            {streaming.text}
+            {liveReply || 'Motion is responding…'}
           </li>
         ) : null}
       </ol>
@@ -571,6 +643,7 @@ function SessionComposer({
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
   const isStreaming = state.streaming?.sessionId === session.id;
+  const hasPendingModelRequest = session.pendingModelRequest !== null;
   const isPaused = session.status === 'paused';
   const isWorking = session.status === 'working';
   const canPause = !sending && ['active', 'working', 'waiting'].includes(session.status);
@@ -640,13 +713,8 @@ function SessionComposer({
           </Button>
         </div>
         <div className="flex flex-wrap gap-2">
-          {isStreaming ? (
-            <Button
-              variant="danger"
-              onClick={() =>
-                send({ type: 'session-command', sessionId: session.id, command: 'stop-generation' })
-              }
-            >
+          {isStreaming || hasPendingModelRequest ? (
+            <Button variant="danger" onClick={() => send({ type: 'session-command', sessionId: session.id, command: 'stop-generation' })}>
               Stop
             </Button>
           ) : null}

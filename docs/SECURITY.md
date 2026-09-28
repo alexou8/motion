@@ -2,7 +2,7 @@
 
 ## Trust boundaries
 
-Motion spans four contexts with different privileges. Data crossing any arrow is
+Motion’s browser portion spans four contexts with different privileges. Data crossing any arrow is
 untrusted until validated.
 
 ```
@@ -95,10 +95,12 @@ never acts inside a graded, timed or proctored attempt.
   Motion read for the session: at most 8,000 characters per source and 24,000
   characters per request, excluding sources the student excluded. There is no
   Motion proxy or telemetry.
-- Never stored: passwords, session tokens or cookies copied from pages, model
-  API keys, browsing history unrelated to a supported course page. BYOK keys
-  live only in `chrome.storage.session` under `TRUSTED_CONTEXTS`, are never
-  logged or fake-encrypted, and disappear on browser restart.
+- Never stored: LMS passwords, session tokens or cookies copied from pages,
+  browsing history unrelated to a supported course page. BYOK keys default to
+  `chrome.storage.session` under `TRUSTED_CONTEXTS` and disappear on browser
+  restart. Explicit opt-in may store them only in the OS credential vault via
+  the optional native companion; no browser local/sync or IndexedDB copy exists.
+  Keys are never logged or fake-encrypted.
 - Local storage is *not* claimed to be encrypted. It is browser-profile storage
   with browser-profile protections. Claiming otherwise would give students a
   false sense of what a shared or compromised machine exposes.
@@ -113,3 +115,19 @@ reports. Developer detail in structured errors excludes the payload.
 
 This is a student project, not a funded product with a security team. If you
 find something, open an issue — but do not include real course data in it.
+
+### Optional native credential companion
+
+When a student chooses remembered API keys, the authenticated extension UI
+asks the worker to use the separately installed credential companion. Only
+provider-specific status/get/set/delete messages reach that host. Chrome grants
+`nativeMessaging` only after an explicit Settings gesture, and the host’s
+manifest and its own caller check bind it to the installed extension origin.
+No content script can address it through Motion’s worker message contract.
+
+The companion stores provider keys in the OS credential vault, not files or
+browser persistence. Only provider mode metadata survives in local browser
+storage; retrieved keys remain in trusted session storage. Missing/locked
+vaults and failed deletion are reported as failures. The native transport and
+worker replies validate their envelopes before use, without logging raw keys
+or native errors. See [ADR 0009](adr/0009-optional-os-keychain-companion.md).

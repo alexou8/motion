@@ -20,6 +20,7 @@ import type { ManifestV3Export } from '@crxjs/vite-plugin';
 const E2E_PROVIDER_BASE_URL = process.env.MOTION_E2E_PROVIDER_BASE_URL ?? 'http://127.0.0.1:8934';
 const E2E_PROVIDER_HOST_PERMISSIONS =
   process.env.MOTION_E2E_PROVIDER_HOSTS === '1' ? ([`${E2E_PROVIDER_BASE_URL}/*`] as const) : ([] as const);
+const E2E_KEYCHAIN = process.env.MOTION_E2E_KEYCHAIN === '1';
 
 const manifest: ManifestV3Export = {
   manifest_version: 3,
@@ -55,7 +56,13 @@ const manifest: ManifestV3Export = {
    * direct user gesture and does not work from a side panel, so depending on it
    * would be a defect wearing a permission's clothes.
    */
-  permissions: ['storage', 'sidePanel', 'tabs', 'tabGroups', 'scripting', 'alarms', 'notifications'],
+  permissions: [
+    'storage', 'sidePanel', 'tabs', 'tabGroups', 'scripting', 'alarms', 'notifications',
+    ...(E2E_KEYCHAIN ? ['nativeMessaging' as const] : []),
+  ],
+
+  /** Native keychain access is requested only from the explicit settings action. */
+  optional_permissions: E2E_KEYCHAIN ? [] : ['nativeMessaging'],
 
   /** Built-in access is limited to D2L Brightspace hosts and nothing else. */
   host_permissions: [

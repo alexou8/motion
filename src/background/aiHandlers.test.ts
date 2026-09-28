@@ -135,6 +135,21 @@ describe('AI/settings handlers', () => {
     expect(session.values).toEqual({});
   });
 
+  it('preserves storage and the database when an opted-in vault credential cannot be deleted', async () => {
+    local.values['motion.keychain.providers'] = { openai: 'keychain' };
+    local.values['motion.preferences'] = DEFAULT_AI_PREFERENCES;
+    session.values['motion.secret.openai'] = CANARY;
+    vi.spyOn(secrets, 'forget').mockRejectedValue(new Error('safe generic vault failure'));
+    const deleteDb = vi.fn(async () => undefined);
+    await expect(handleAiMessage(
+      { type: 'delete-local-data', confirm: 'DELETE' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, deleteDatabase: deleteDb },
+    )).rejects.toThrow('safe generic vault failure');
+    expect(deleteDb).not.toHaveBeenCalled();
+    expect(local.values['motion.keychain.providers']).toEqual({ openai: 'keychain' });
+    expect(session.values['motion.secret.openai']).toBe(CANARY);
+  });
+
   it('runs provider health checks and returns an honest result without echoing the key', async () => {
     await secrets.set('openai', CANARY);
     const result = await handleAiMessage(
@@ -150,5 +165,89 @@ describe('AI/settings handlers', () => {
     );
     expect(JSON.stringify(result)).not.toContain(CANARY);
     expect(result).toEqual({ availability: { status: 'available', message: 'OpenAI is ready.' } });
+  });
+
+  it('lists only bounded text-capable account models after every cloud gate passes', async () => {
+    await preferences.update({ providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    const data = [
+      { id: 'gpt-6-luna' },
+      { id: 'gpt-6-sol' },
+      { id: 'gpt-4o-audio-preview' },
+      { id: 'text-embedding-3-small' },
+      ...Array.from({ length: 98 }, (_, index) => ({ id: `gpt-6-${index}` })),
+    ];
+    const result = await handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      {
+        preferencesStore: preferences,
+        secrets,
+        localStorage: local,
+        sessionStorage: session,
+        permissions: { contains: vi.fn(async () => true) },
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({ data }), { status: 200 })),
+      },
+    );
+    expect(result).toMatchObject({ providerId: 'openai', source: 'account' });
+    const models = (result as { models: string[] }).models;
+    expect(models).toHaveLength(100);
+    expect(models).toContain('gpt-6-luna');
+    expect(models).not.toContain('gpt-4o-audio-preview');
+    expect(models).not.toContain('text-embedding-3-small');
+  });
+
+  it('does not query account models before disclosure, host permission, and session-key gates pass', async () => {
+    const fetchImpl = vi.fn();
+    await expect(handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl },
+    )).rejects.toThrow(/disclosure/i);
+
+    await preferences.update({ cloudDisclosureAccepted: ['openai'] });
+    await expect(handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl, permissions: { contains: vi.fn(async () => false) } },
+    )).rejects.toThrow(/permission/i);
+
+    await expect(handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl, permissions: { contains: vi.fn(async () => true) } },
+    )).rejects.toThrow(/API key/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns the named curated choices when a provider sends a malformed model list', async () => {
+    await preferences.update({ providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    const result = await handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      {
+        preferencesStore: preferences,
+        secrets,
+        localStorage: local,
+        sessionStorage: session,
+        permissions: { contains: vi.fn(async () => true) },
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({ data: [{ name: 'not-an-id' }] }), { status: 200 })),
+      },
+    );
+    expect(result).toMatchObject({ providerId: 'openai', source: 'fallback' });
+    expect((result as { models: string[] }).models).toContain('gpt-6-luna');
+  });
+
+  it('falls back instead of silently truncating more than 100 eligible model IDs', async () => {
+    await preferences.update({ providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    const result = await handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      {
+        preferencesStore: preferences,
+        secrets,
+        localStorage: local,
+        sessionStorage: session,
+        permissions: { contains: vi.fn(async () => true) },
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({ data: Array.from({ length: 101 }, (_, index) => ({ id: `gpt-6-${index}` })) }), { status: 200 })),
+      },
+    );
+    expect(result).toMatchObject({ providerId: 'openai', source: 'fallback' });
   });
 });

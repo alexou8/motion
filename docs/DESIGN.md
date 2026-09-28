@@ -56,9 +56,20 @@ Shape-first is an accessibility requirement (status must not be carried by
 colour alone), and it is what keeps the redesign honest: the new palette changed
 every colour and no state became ambiguous.
 
-The track is also now Motion's **mark**: a short rule with one filled and one
-ringed marker, drawn in the accent, in the panel header. It is Motion's own
-glyph and imitates no other product's.
+## The mark
+
+Motion's mark is a continuous **M** drawn as one path: it rises, guides through
+the two inner turns, and finishes at the same baseline. It represents moving
+coursework from its first step to completion without borrowing an LMS symbol or
+an assistant's face. The path is deliberately broad, round-capped and simple
+enough to remain legible at Chrome's 16px toolbar size.
+
+`src/assets/brand/motion-mark.svg` is the canonical artwork. Panel, popup and options UI use
+it as a semantic-colour mask, so it follows the light and dark terracotta
+tokens. All three extension documents use it as their favicon, and
+`scripts/make-icons.mjs` rasterizes the 16, 32, 48 and 128px manifest PNGs
+from that same source. Do not redraw the mark inside a component or create a
+surface-specific variant.
 
 ## Colour
 
@@ -120,8 +131,8 @@ party that a student is using Motion, every time the panel opens.
 The chat answers questions about the page in front of the student using the
 selected provider. Chrome's on-device model stays local when available; BYOK
 cloud mode sends only the disclosed, bounded turn context directly to the
-selected provider after permission. Provider selection and session-only key
-handling are defined by ADR 0005.
+selected provider after permission. Provider selection is defined by ADR 0005;
+session keys remain the default, with optional OS-vault storage in ADR 0009.
 
 - It is scoped to the active AgentSession and persists locally with that session
   in IndexedDB, so returning to a session can show its conversation. It is not
@@ -130,6 +141,9 @@ handling are defined by ADR 0005.
 - Every answer carries a label saying it was generated and should be checked
   against the page, and names the page it was about, so an old answer is not
   read as describing a new page.
+- While an answer streams, the conversation shows reply text rather than the
+  model's structured plan. Incomplete or failed responses never become completed
+  replies or executable plans. Stop is available during provider setup too.
 - **Beside a graded attempt the chat reads nothing and answers nothing.** The
   worker refuses before it asks the page or the model; the panel only says so.
 - Page text reaches the model fenced as quoted data, through the same
@@ -137,13 +151,14 @@ handling are defined by ADR 0005.
 
 ## Settings
 
-A full page: the serif title, a left navigation of **Permissions**, **Privacy &
-data**, **Capabilities** and **About**, and content in bordered cards. Its job
+A full page: the M mark and serif title, with navigation for **AI**, **Browser
+access**, **Agent behaviour**, **Reminders**, **Privacy & data** and **About**,
+and content in bordered cards. Its job
 is unchanged — to make three promises inspectable: which sites Motion can read,
 that access can be revoked, and that deleting data really deletes it (and says
-so honestly when the browser blocks it). **Capabilities** explains the opt-in
-consent model and shows an honest empty state until an optional capability
-exists; it has no switch with nothing behind it.
+so honestly when the browser blocks it). **Agent behaviour** exposes the
+implemented opt-in configurable actions; consequential actions always require
+their own fresh approval.
 
 ## Motion (the behaviour, not the product)
 
