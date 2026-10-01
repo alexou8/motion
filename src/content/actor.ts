@@ -54,6 +54,8 @@ type ActorOptions = {
   consequentialCapability?: boolean;
   /** Only the authenticated content-script port provides this local signal. */
   signal?: AbortSignal;
+  /** Test seam; production navigation always uses `window.location.assign`. */
+  navigate?: (href: string) => void;
 };
 
 function currentUrl(): string {
@@ -177,11 +179,16 @@ function hrefOf(element: Element): string | undefined {
   if (!raw) return undefined;
   try {
     const absolute = new URL(raw, currentUrl());
-    if (absolute.protocol !== 'http:' && absolute.protocol !== 'https:') return undefined;
+    const page = new URL(currentUrl());
+    if (absolute.protocol !== 'https:' || absolute.origin !== page.origin) return undefined;
     return absolute.toString();
   } catch {
     return undefined;
   }
+}
+
+function isRefusedNavigation(element: Element, descriptor: ElementDescriptor): boolean {
+  return element.tagName.toLowerCase() === 'a' && descriptor.href === undefined;
 }
 
 function describe(element: Element, handle: string): ElementDescriptor {
@@ -346,6 +353,28 @@ export function act(request: ActRequest, options: ActorOptions = {}): ActResult 
       return { ok: true, evidence: { descriptor, before, after, urlAfter: currentUrl() } };
     }
     case 'click': {
+      if (element.tagName.toLowerCase() === 'a') {
+        const href = descriptor.href;
+        if (isRefusedNavigation(element, descriptor) || href === undefined) {
+          return {
+            ok: false,
+            error: 'refused-navigation',
+            message: 'Motion only follows secure links on the current LMS origin.',
+            evidence: { descriptor },
+          };
+        }
+        try {
+          (options.navigate ?? ((target) => window.location.assign(target)))(href);
+          return { ok: true, evidence: { descriptor, urlAfter: href } };
+        } catch {
+          return {
+            ok: false,
+            error: 'internal-error',
+            message: 'Motion could not open that link.',
+            evidence: { descriptor },
+          };
+        }
+      }
       if (isSubmitLike(descriptor) && !options.consequentialCapability) {
         return {
           ok: false,
@@ -407,6 +436,8 @@ export async function actWithPresence(
   if (request.type !== 'scrollTo' && request.type !== 'focus' && isDisabled(resolved))
     return act(request, options);
   if (request.type === 'click' && isSubmitLike(descriptor) && !options.consequentialCapability)
+    return act(request, options);
+  if (request.type === 'click' && isRefusedNavigation(resolved, descriptor))
     return act(request, options);
   if (
     request.type === 'fill' &&

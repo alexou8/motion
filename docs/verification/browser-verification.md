@@ -1,5 +1,23 @@
 # Browser verification
 
+## 2026-10-01: actor link-navigation hardening
+
+The production build was loaded as an unpacked extension in Chrome for Testing
+153.0.8010.12 after tightening actor anchor navigation to same-origin HTTPS
+destinations. `npm run test:extension` passed 68/68 checks against synthetic D2L
+fixtures, including service-worker registration, content-script messaging,
+restricted-assessment behavior, workspace ownership, restart recovery, and the
+absence of uncaught panel or worker errors. No request left the machine except
+to the synthetic LMS route.
+
+The browser smoke suite does not select an actor anchor, so the new destination
+filter itself remains covered by the focused content-actor unit test. That test
+passes for a same-origin relative link and refuses external HTTPS, downgraded
+HTTP, and `javascript:` destinations; it also proves a page click handler is
+not invoked and therefore cannot retarget the validated URL. The full unit
+suite passed 1,062 tests across 82 files, and typecheck, lint, and the production
+build passed on the same commit.
+
 ## 2026-09-28: model settings, streaming controls and branding
 
 The provider browser suite now drives the shipped Settings and panel controls,
