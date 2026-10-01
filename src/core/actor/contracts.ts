@@ -180,6 +180,7 @@ export const actErrorCodeSchema = z.enum([
   'refused-input-type',
   'refused-restricted-context',
   'refused-consequential',
+  'refused-navigation',
   'invalid-option',
   'internal-error',
 ]);

@@ -379,9 +379,11 @@ end-to-end actor path is in progress*
 
 The actor accepts only validated handles and closed typed actions; the worker
 classifies consequences and requires a fresh target-bound single-use approval
-for consequential work. Forbidden actions are refused and there is no
-always-allow setting. — *Mitigated in policy; browser end-to-end coverage is
-in progress*
+for consequential work. Anchor handles expose and activate only HTTPS targets
+on the current LMS origin, so a hostile page cannot disguise an external,
+downgraded, or script URL behind a plausible label. Forbidden actions are
+refused and there is no always-allow setting. — *Mitigated in policy and actor
+unit tests; browser end-to-end coverage is in progress*
 
 ## T19 — Stale approval replay after resume
 

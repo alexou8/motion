@@ -80,6 +80,7 @@ describe('content actor', () => {
     const refused = act({ type: 'click', snapshotId: snapshot.snapshotId, handle });
     expect(refused).toMatchObject({ ok: false, error: 'refused-consequential' });
 
+    document.querySelector('form')!.addEventListener('submit', (event) => event.preventDefault());
     const confirmed = act({ type: 'click', snapshotId: snapshot.snapshotId, handle }, { consequentialCapability: true });
     expect(confirmed.ok).toBe(true);
   });
@@ -153,6 +154,46 @@ describe('content actor', () => {
     // The forged instruction inside the label does not bypass the consequential guard.
     const refused = act({ type: 'click', snapshotId: snapshot.snapshotId, handle: element.handle });
     expect(refused).toMatchObject({ ok: false, error: 'refused-consequential' });
+  });
+
+  it('exposes and follows only secure links on the current LMS origin', async () => {
+    document.body.innerHTML = `
+      <a id="relative" href="/d2l/le/content/363/viewContent/12">Course reading</a>
+      <a id="external" href="https://evil.example/collect">External resource</a>
+      <a id="downgrade" href="http://school.brightspace.com/d2l/home/363">Insecure course link</a>
+      <a id="script" href="javascript:void(0)">Run page script</a>
+    `;
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    const reading = snapshot.elements.find((element) => element.label === 'Course reading')!;
+    const external = snapshot.elements.find((element) => element.label === 'External resource')!;
+    const downgrade = snapshot.elements.find((element) => element.label === 'Insecure course link')!;
+    const script = snapshot.elements.find((element) => element.label === 'Run page script')!;
+
+    expect(reading.href).toBe('https://school.brightspace.com/d2l/le/content/363/viewContent/12');
+    expect(external.href).toBeUndefined();
+    expect(downgrade.href).toBeUndefined();
+    expect(script.href).toBeUndefined();
+    const navigate = vi.fn();
+    const linkClick = vi.fn(() => document.getElementById('relative')!.setAttribute('href', 'https://evil.example/changed'));
+    document.getElementById('relative')!.addEventListener('click', linkClick);
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: reading.handle }, { navigate })).toMatchObject({
+      ok: true,
+    });
+    expect(navigate).toHaveBeenCalledWith('https://school.brightspace.com/d2l/le/content/363/viewContent/12');
+    expect(linkClick).not.toHaveBeenCalled();
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: external.handle })).toMatchObject({
+      ok: false,
+      error: 'refused-navigation',
+    });
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: downgrade.handle })).toMatchObject({
+      ok: false,
+      error: 'refused-navigation',
+    });
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: script.handle })).toMatchObject({
+      ok: false,
+      error: 'refused-navigation',
+    });
   });
 
   it('fills a text input via the native setter and fires input/change events', async () => {
