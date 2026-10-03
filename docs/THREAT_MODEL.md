@@ -117,6 +117,22 @@ before capturing, and refuses to trust or store a captured snapshot whose
 the tab navigates between the worker's check and the content script's reply
 (SOL-5). — *Mitigated*
 
+Brightspace controls may live inside nested open shadow roots. Snapshot discovery
+visits at most 50,000 elements and retains the existing descriptor limit; it
+does not traverse closed roots or iframe documents. Labels resolve in the
+control's own root and through rendered slots. Visibility follows the composed
+ancestor chain, including slot wrappers and hosts, so hidden or inert controls
+are excluded. Before acting, a handle must still belong to the same document
+through an open-root chain, remain connected and visible, and retain its captured
+fingerprint. An anchor classified as an assessment attempt is refused even if a
+generic click was approved. Bounded visible shadow text participates in the
+assessment check before observer extraction or actor capture. Worker
+authorization, approval consumption and assessment refusal remain required.
+Synthetic unit and built-extension browser evidence is recorded in
+[coursework verification](verification/coursework-overview.md); authenticated
+installed-extension verification remains pending. — *Implemented with bounded
+open-root coverage*
+
 `externally_connectable` is not declared, so no web page may message the
 extension directly. — *Mitigated (manifest omits it)*
 

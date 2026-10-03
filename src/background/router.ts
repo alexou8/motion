@@ -401,6 +401,12 @@ export async function upsertExtractedRecords(incomingCourses: Course[], incoming
     written += 1;
   }
 
+  // Observations arrive before these database writes. A content-free revision
+  // wakes an open panel only after the saved coursework is ready to read.
+  if (incomingCourses.length > 0 || written > 0) {
+    await chrome.storage.session.set({ 'motion.courseworkRevision': crypto.randomUUID() });
+  }
+
   return { courses: incomingCourses.length, tasks: written };
 }
 

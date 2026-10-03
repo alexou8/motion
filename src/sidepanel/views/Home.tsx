@@ -4,6 +4,7 @@ import type { CourseTask } from '../../core/domain';
 import type { PanelState, SessionSummary } from '../../core/view/state';
 import { isStale } from '../../core/view/state';
 import { groupByWeek, type DeadlineWeekGroup } from '../../core/view';
+import { isActiveTask, isUndatedMaterial } from '../../core/view/coursework';
 import {
   Button,
   EmptyState,
@@ -314,15 +315,7 @@ function relativeUpdatedAt(value: string, now: Date): string {
   return `${Math.floor(hours / 24)}d ago`;
 }
 
-function DeadlineSections({
-  state,
-  now,
-  send,
-}: {
-  state: PanelState;
-  now: Date;
-  send: (command: MotionCommand) => void;
-}) {
+function DeadlineSections({ state, now }: { state: PanelState; now: Date }) {
   const [view, setView] = useDeadlineView();
   const byId = new Map(state.tasks.map((task) => [task.id, task]));
   const buckets = (['today', 'overdue', 'needsReview', 'upcoming'] as const)
@@ -332,9 +325,7 @@ function DeadlineSections({
     }))
     .filter((section) => section.tasks.length > 0);
 
-  const activeTasks = state.tasks.filter(
-    (task) => !['submitted', 'graded', 'archived'].includes(task.status) && !task.archived,
-  );
+  const activeTasks = state.tasks.filter((task) => isActiveTask(task) && !isUndatedMaterial(task));
   if (buckets.length === 0 && activeTasks.length === 0) return null;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   const weeks = groupByWeek(activeTasks, now, timeZone);
@@ -369,7 +360,6 @@ function DeadlineSections({
         </div>
       </div>
       <DeadlineSummary state={state} tasks={activeTasks} now={now} />
-      <DiscoveryControls state={state} send={send} now={now} />
       {view === 'list'
         ? buckets.map(({ bucket, tasks }) => (
             <div key={bucket} className="grid gap-2">
@@ -495,13 +485,13 @@ function suggestions(state: PanelState): string[] {
   return list.slice(0, 3);
 }
 
-function PageContextLine({ state }: { state: PanelState }) {
+function PageContextLine({ state, now }: { state: PanelState; now: Date }) {
   if (state.connection !== 'supported') return null;
   return (
     <p className="text-sm text-ink-muted text-pretty">
       {state.course?.name ? `${state.course.name} · ` : ''}
       {state.page.title || 'Current page'}
-      {isStale(state.page.observedAt, new Date()) ? ' (stale read)' : ''}
+      {isStale(state.page.observedAt, now) ? ' (stale read)' : ''}
     </p>
   );
 }
@@ -547,6 +537,8 @@ function HomeComposer({
           rows={2}
           value={draft}
           disabled={disabled}
+          maxLength={500}
+          aria-describedby="home-composer-hint"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder="Work on Assignment 2, what's due this week…"
@@ -556,6 +548,9 @@ function HomeComposer({
           {sending ? 'Starting…' : 'Start'}
         </Button>
       </div>
+      <p id="home-composer-hint" className="text-xs text-ink-muted">
+        Enter to start · Shift+Enter for a new line
+      </p>
     </form>
   );
 }
@@ -574,7 +569,10 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
 
   return (
     <div className="grid gap-6">
-      <PageContextLine state={state} />
+      <div className="grid gap-1">
+        <h1 className="font-serif text-xl font-semibold">Your workspace</h1>
+        <PageContextLine state={state} now={now} />
+      </div>
       <HomeComposer onStart={start} disabled={false} />
       <DiscoveryControls state={state} send={send} now={now} />
       {hints.length > 0 ? (
@@ -602,7 +600,7 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
       ) : (
         <>
           <SessionList sessions={state.sessions} onOpen={onOpenSession} />
-          <DeadlineSections state={state} now={now} send={send} />
+          <DeadlineSections state={state} now={now} />
         </>
       )}
     </div>

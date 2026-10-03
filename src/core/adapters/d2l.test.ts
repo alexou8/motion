@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { evaluateAssessmentContext } from '@/core/policy';
+import { courseTaskSchema } from '@/core/domain';
 import { d2lAdapter } from './d2l';
 import type { AdapterInput } from './types';
 
@@ -141,8 +142,6 @@ describe('D2L route-based extraction', () => {
     const assignment = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101`, fixture('assignment')));
     const quiz = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=363`, fixture('quiz-list')));
     const discussion = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/le/363/discussions/List?ou=363`, fixture('discussion-list')));
-    // A dated content topic: reading material only becomes a task when the page
-    // states a date for it. See the undated case in the regression tests below.
     const content = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home?ou=999999`, fixture('course-home-navbar')));
     expect(assignment[0]).toMatchObject({ kind: 'assignment', title: 'Relational Algebra Worksheet', weight: 15 });
     expect(quiz.map((task) => task.kind)).toEqual(['quiz', 'quiz']);
@@ -495,17 +494,167 @@ describe('MyLearningSpace list markup', () => {
   });
 });
 
-describe('reading material is not a deadline', () => {
-  it('leaves undated content topics out, and keeps the one that states a date', () => {
+describe('course materials', () => {
+  it.each(['Graded Reading Response', 'Submitted essay checklist'])('does not infer completion from the title %s', (title) => {
+    const page = new DOMParser().parseFromString(
+      `<!-- Synthetic course material. --><main><ul><li><a href="/d2l/le/content/999999/viewContent/701/View">${title}</a><span>Due October 14, 2025</span></li></ul></main>`,
+      'text/html',
+    );
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page))[0]).toMatchObject({ title, status: 'todo' });
+  });
+
+  it.each([['Completed', 'graded'], ['Submitted', 'submitted']])('preserves status evidence in a separate %s table cell', (status, expected) => {
+    const page = new DOMParser().parseFromString(
+      `<!-- Synthetic course material. --><main><table><tr><td><a href="/d2l/le/content/999999/viewContent/701/View">Example Reading</a></td><td>${status}</td></tr></table></main>`,
+      'text/html',
+    );
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page))[0]?.status).toBe(expected);
+  });
+
+  it('reads course cards and navigation through six nested open roots without selecting a dashboard course', () => {
+    const page = new DOMParser().parseFromString('<!-- Synthetic dashboard. --><main><d2l-my-courses-v2></d2l-my-courses-v2></main>', 'text/html');
+    let host = page.querySelector('d2l-my-courses-v2')!;
+    for (const name of ['d2l-my-courses-container-v2', 'd2l-my-courses-content-v2', 'd2l-my-courses-card-grid-v2', 'd2l-my-courses-enrollment-card', 'd2l-card']) {
+      const next = page.createElement(name);
+      host.attachShadow({ mode: 'open' }).append(next);
+      host = next;
+    }
+    host.textContent = 'Synthetic Example Course';
+    host.attachShadow({ mode: 'open' }).innerHTML = '<a href="/d2l/home/999999"><slot></slot></a><a href="javascript:void(0)">Script action</a>';
+    const content = d2lAdapter.extractPageContent(input(`${WLU_ORIGIN}/d2l/home`, page));
+    expect(content.links).toEqual([{ href: `${WLU_ORIGIN}/d2l/home/999999`, label: 'Synthetic Example Course' }]);
+    expect(d2lAdapter.extractCourse(input(`${WLU_ORIGIN}/d2l/home`, page))).toBeNull();
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/home`, page))).toEqual([]);
+  });
+
+  it('reads a navbar content link inside an open root, excluding closed-root links', () => {
+    const page = new DOMParser().parseFromString('<!-- Synthetic course navbar. --><main><d2l-navigation></d2l-navigation><div id="closed"></div></main>', 'text/html');
+    const nav = page.querySelector('d2l-navigation')!;
+    nav.attachShadow({ mode: 'open' }).innerHTML = '<d2l-link href="/d2l/le/content/999999/Home">Content</d2l-link>';
+    page.querySelector('#closed')!.attachShadow({ mode: 'closed' }).innerHTML = '<a href="/d2l/home/888888">Hidden course</a>';
+    expect(d2lAdapter.extractPageContent(input(`${WLU_ORIGIN}/d2l/home/999999`, page)).links).toEqual([
+      { href: `${WLU_ORIGIN}/d2l/le/content/999999/Home`, label: 'Content' },
+    ]);
+  });
+
+  it('tracks slide decks and handouts with honest empty deadline evidence, while preserving dated reading work', () => {
     const tasks = d2lAdapter.extractTasks(
       input(`${WLU_ORIGIN}/d2l/le/content/999999/home?ou=999999`, fixture('mylearningspace-content-module')),
     );
+    expect(tasks.map((task) => task.title)).toEqual([
+      'Example Slides One', 'Example Slides Two', 'Example Handout', 'Example Graded Reading Response',
+    ]);
+    expect(tasks.map((task) => task.id)).toEqual([
+      'd2l:999999:content:701', 'd2l:999999:content:702', 'd2l:999999:content:703', 'd2l:999999:content:704',
+    ]);
+    for (const task of tasks.slice(0, 3)) {
+      expect(courseTaskSchema.safeParse(task).success).toBe(true);
+      expect(task).toMatchObject({
+        kind: 'content', courseId: 'd2l:999999', status: 'todo', weight: null, dueConflict: null,
+        due: { iso: null, raw: '', zoneEvidence: 'none', confidence: 'low', timeAssumed: false },
+        provenance: {
+          sourceUrl: `${WLU_ORIGIN}/d2l/le/content/999999/home`,
+          pageType: 'content-module', strategy: 'route:content', capturedAt: '2025-01-10T12:00:00.000Z',
+        },
+      });
+    }
+    expect(tasks[3]?.due.iso).toBe('2026-11-04T04:59:00.000Z');
+  });
 
-    // A module lists its slide decks and handouts as content routes with no date
-    // anywhere. Counting the route alone as evidence put every lecture file in
-    // "upcoming deadlines" as undated work needing review.
-    expect(tasks.map((task) => task.title)).toEqual(['Example Graded Reading Response']);
-    expect(tasks[0]?.due.iso).toBe('2026-11-04T04:59:00.000Z');
+  it('tracks an opened topic by its visible heading without taking a deadline from lecture text', () => {
+    const page = new DOMParser().parseFromString(
+      '<!-- Synthetic course material. --><main><h1>Example Lecture Slides</h1><p>The example worksheet is due October 14, 2025.</p></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/viewContent/701/View`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: 'd2l:999999:content:701', title: 'Example Lecture Slides', kind: 'content',
+      due: { iso: null, raw: '', zoneEvidence: 'none' },
+      provenance: { strategy: 'route:content-topic', pageType: 'content-topic' },
+    });
+  });
+
+  it('prefers a dated listed topic over the undated visible-heading fallback and deduplicates URL variants', () => {
+    const page = new DOMParser().parseFromString(
+      '<!-- Synthetic course material. --><main><h1>Example Reading</h1><ul><li><a href="/d2l/le/content/999999/viewContent/701/View?ou=999999">Example Reading</a><span>Due October 14, 2025</span></li><li><a href="/d2l/le/content/999999/viewContent/701/View?ou=999999&amp;module=2#top">Example Reading</a></li></ul></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/viewContent/701/View`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({ id: 'd2l:999999:content:701', due: { iso: '2025-10-14T04:00:00.000Z' } });
+  });
+
+  it.each([
+    ['Due October 14, 2025 11:59 PM', '2025-10-15T03:59:00.000Z', true],
+    ['Due October 14, 2025 11:59 PM', '2025-10-15T03:59:00.000Z', false],
+    ['Due February 30, 2026', null, true],
+    ['Due February 30, 2026', null, false],
+  ] as const)('preserves date evidence %s (parsed=%s) when the undated duplicate comes first=%s', (raw, iso, undatedFirst) => {
+    const shortcut = '<li><a href="/d2l/le/content/999999/viewContent/701/View?ou=999999">Example Reading Shortcut</a></li>';
+    const fullRow = `<li><a href="/d2l/le/content/999999/viewContent/701/View?ou=999999&amp;module=2#top">Example Reading</a><span class="d2l-dates-text">${raw}</span></li>`;
+    const rows = undatedFirst ? `${shortcut}${fullRow}` : `${fullRow}${shortcut}`;
+    const page = new DOMParser().parseFromString(`<!-- Synthetic course material. --><main><ul>${rows}</ul></main>`, 'text/html');
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: 'd2l:999999:content:701',
+      title: undatedFirst ? 'Example Reading Shortcut' : 'Example Reading',
+      due: { iso, raw },
+    });
+  });
+
+  it('keeps the first title and observation when duplicate rows have equally strong dates', () => {
+    const page = new DOMParser().parseFromString(
+      '<!-- Synthetic course material. --><main><ul><li><a href="/d2l/le/content/999999/viewContent/701/View">Example Reading</a><span>Due October 14, 2025 11:59 PM</span></li><li><a href="/d2l/le/content/999999/viewContent/701/View?module=2">Alternate Reading Label</a><span>Due October 15, 2025 11:59 PM</span></li></ul></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page));
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      id: 'd2l:999999:content:701', title: 'Example Reading',
+      due: { iso: '2025-10-15T03:59:00.000Z', raw: 'Due October 14, 2025 11:59 PM' },
+    });
+  });
+
+  it('uses the content route course identity rather than misfiling a linked topic into the current course', () => {
+    const page = new DOMParser().parseFromString(
+      '<!-- Synthetic course material. --><main><ul><li><a href="/d2l/le/content/888888/viewContent/701/View">Example Shared Reading</a></li></ul></main>',
+      'text/html',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page));
+    expect(tasks[0]).toMatchObject({ id: 'd2l:888888:content:701', courseId: 'd2l:888888' });
+  });
+
+  it.each([
+    'https://example.com/d2l/le/content/999999/viewContent/701/View',
+    'http://mylearningspace.wlu.ca/d2l/le/content/999999/viewContent/701/View',
+    '/redirect?target=/d2l/le/content/999999/viewContent/701/View',
+    'javascript:openLecture(701)',
+    '/d2l/le/content/999999/viewContent/missing/View',
+  ])('does not track an untrusted or unidentifiable topic link: %s', (href) => {
+    const page = new DOMParser().parseFromString(
+      `<!-- Synthetic course material. --><main><ul><li><a href="${href}">Example Slides</a></li></ul></main>`,
+      'text/html',
+    );
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/home`, page))).toEqual([]);
+  });
+
+  it('does not invent a current topic from an empty page or navigateContent transport route', () => {
+    const empty = new DOMParser().parseFromString('<!-- Synthetic empty page. --><main></main>', 'text/html');
+    const named = new DOMParser().parseFromString('<!-- Synthetic page. --><main><h1>Example Slides</h1></main>', 'text/html');
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/viewContent/701/View`, empty))).toEqual([]);
+    expect(d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/le/content/999999/navigateContent/701/Next`, named))).toEqual([]);
+  });
+
+  it('does not start tracking materials from inside a graded attempt', () => {
+    const page = fixture('quiz-attempt');
+    const contentLink = page.createElement('a');
+    contentLink.href = '/d2l/le/content/363/viewContent/701/View';
+    contentLink.textContent = 'Example Assessment Attachment';
+    page.querySelector('main')?.append(contentLink);
+    const tasks = d2lAdapter.extractTasks(input(`${STOCK_ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=363`, page));
+    expect(tasks.every((task) => task.kind !== 'content')).toBe(true);
   });
 });
 

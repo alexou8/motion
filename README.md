@@ -38,6 +38,11 @@ Motion knows what an assignment page is.
 
 - **Reads the LMS you are on.** D2L Brightspace first, including
   institution deployments such as Laurier's MyLearningSpace.
+- **Keeps coursework in one view.** Browse saved assignments, quizzes,
+  discussions and lecture materials by course, type, status or title. Slides
+  and handouts without deadlines remain visible without invented due dates.
+  Read a content module or a supported topic to add its items; this does not
+  yet index the contents of slide decks or PDFs.
 - **Turns an assignment into a checklist.** Every item traces back to the
   sentence in the instructions it came from. When nothing on the page is
   actually stated as a requirement, Motion says so rather than inventing one.
@@ -100,15 +105,19 @@ see [`docs/development/vscode.md`](docs/development/vscode.md).
 
 ### Install it in Chrome
 
-**Download the latest merged build:** [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/latest/download/motion-extension-latest.zip)
+**Download the latest main build:** [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/download/main-build/motion-extension-latest.zip)
 
-This download is refreshed after every pull request merged into `main`, but only
-after the extension passes its type checks, tests, build, and package validation.
+This development prerelease refreshes after a passing `main` build, including
+merged pull requests. All release paths use the same type, unit, lint, browser
+and package checks. Tagged versions remain separate permanent releases and
+include SHA-256 checksums. See [release instructions](docs/releases.md) for
+versioned downloads, integrity verification and recovery.
 
 1. Download and unzip `motion-extension-latest.zip`.
 2. Open `chrome://extensions` and turn on **Developer mode**.
 3. Choose **Load unpacked** and select the unzipped folder.
-4. Open a D2L or MyLearningSpace course page and click the Motion toolbar icon.
+4. Open [MyLearningSpace](https://mylearningspace.wlu.ca/d2l/home) or another
+   supported D2L course page and click the Motion toolbar icon.
    Use the popup's explicit Start/Continue action to open the side panel and
    begin or resume the workspace; the toolbar click alone does not create an
    automatic group.

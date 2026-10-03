@@ -30,7 +30,9 @@
     "test:keychain": "python3 -m unittest discover -s native/tests -p \"test_*.py\"",
     "package:keychain": "python3 native/package.py",
     "build:e2e-keychain": "MOTION_E2E_KEYCHAIN=1 MOTION_E2E_PROVIDER_HOSTS=1 MOTION_BUILD_OUTDIR=dist-e2e-keychain vite build",
-    "test:keychain-browser": "node test/e2e/keychain-companion.mjs"
+    "test:keychain-browser": "node test/e2e/keychain-companion.mjs",
+    "test:release": "node --test scripts/package.test.mjs scripts/release.test.mjs",
+    "test:coursework": "node test/e2e/coursework.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

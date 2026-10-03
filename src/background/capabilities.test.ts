@@ -10,9 +10,11 @@ import type { ApprovalRequest } from '@/core/policy';
 import { FakeTabs } from '@/test/fakeTabs';
 import { openDatabase } from '@/core/storage/db';
 import { sessionRepository } from '@/core/storage/repositories';
+import { Repository } from '@/core/storage/repository';
+import { STORE } from '@/core/storage/schema';
 import { buildCapabilities, openSourcesCapability } from './capabilities';
 import { agentTurn } from './definitions';
-import type { PageContent } from '@/core/domain';
+import { courseTaskSchema, type PageContent } from '@/core/domain';
 
 const NOW = '2026-03-02T12:00:00.000Z';
 const URLS = [
@@ -169,6 +171,48 @@ describe('recovering after the worker died mid-step', () => {
 });
 
 describe('capability boundaries', () => {
+  it('counts active deadline work without counting lecture materials or completed and archived tasks', async () => {
+    const courseId = 'd2l:909090';
+    await seedSession({ courseId });
+    const tasks = new Repository(await openDatabase(), STORE.tasks, courseTaskSchema);
+    const due = { iso: '2026-03-06T17:00:00.000Z', raw: 'Due March 6, 2026 at 12 PM', zoneEvidence: 'explicit', confidence: 'high' };
+    const undated = { iso: null, raw: '', zoneEvidence: 'none', confidence: 'low' };
+    const malformed = { ...undated, raw: 'Due February 30, 2026' };
+    // Synthetic coursework: no real course records or identifiers.
+    for (const row of [
+      { id: 'active-assignment', kind: 'assignment', due },
+      { id: 'lecture-slides', kind: 'content', due: undated },
+      { id: 'archived-assignment', kind: 'assignment', due, archived: true },
+      { id: 'archived-status', kind: 'assignment', due, status: 'archived' },
+      { id: 'submitted-assignment', kind: 'assignment', due, status: 'submitted' },
+      { id: 'completed-quiz', kind: 'quiz', due, status: 'graded' },
+      { id: 'malformed-reading-deadline', kind: 'content', due: malformed },
+      { id: 'malformed-assignment-deadline', kind: 'assignment', due: malformed },
+      { id: 'other-course-assignment', kind: 'assignment', due, courseId: 'd2l:808080' },
+    ]) {
+      await tasks.put(courseTaskSchema.parse({
+        courseId,
+        title: 'Synthetic coursework',
+        provenance: {
+          sourceUrl: 'https://school.brightspace.com/d2l/le/content/909090/home',
+          pageTitle: 'Synthetic course', platformId: 'd2l', pageType: 'content-module',
+          capturedAt: NOW, extractionVersion: 1, strategy: 'synthetic-fixture',
+        },
+        createdAt: NOW,
+        updatedAt: NOW,
+        ...row,
+      }));
+    }
+    const capability = buildCapabilities(new FakeTabs()).find((item) => item.action === 'extract-deadlines')!;
+    const deadlines = context();
+    deadlines.step.action = 'extract-deadlines';
+    deadlines.step.input = { range: 'all' };
+
+    await expect(capability.execute(deadlines)).resolves.toEqual({
+      kind: 'done', result: 'Found 3 deadlines in this session’s course.',
+    });
+  });
+
   it('opens a resolved read URL in the session workspace and stores its bounded excerpt', async () => {
     await seedSession();
     const tabs = new FakeTabs();

@@ -139,6 +139,22 @@ describe('storing an extraction', () => {
     expect(result.tasks).toBe(1);
     const repo = await tasksRepo();
     expect((await repo.all()).records).toHaveLength(1);
+    expect(sessionStore['motion.courseworkRevision']).toEqual(expect.any(String));
+  });
+
+  it('publishes a fresh coursework revision after each completed extraction', async () => {
+    const observedTasks: number[] = [];
+    vi.mocked(chrome.storage.session.set).mockImplementation(async (values) => {
+      if ('motion.courseworkRevision' in values) {
+        observedTasks.push((await (await tasksRepo()).all()).records.length);
+      }
+      Object.assign(sessionStore, values);
+    });
+    await extract([task()]);
+    const firstRevision = sessionStore['motion.courseworkRevision'];
+    await extract([task({ id: 'synthetic-second', title: 'Synthetic second task' })]);
+    expect(observedTasks).toEqual([1, 2]);
+    expect(sessionStore['motion.courseworkRevision']).not.toBe(firstRevision);
   });
 
   it('does not overwrite a task the student has edited', async () => {

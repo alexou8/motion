@@ -96,6 +96,15 @@ not opened on a real account and is covered only by `npm run test:extension`
 against a synthetic attempt page. Extraction still runs only when the student
 asks the panel to read the page.
 
+The 2026-10-03 coursework change adds bounded open-shadow discovery for course
+links and native actor controls. Authenticated dashboard/module structure was
+inspected separately from synthetic built-extension execution; see
+[coursework verification](verification/coursework-overview.md) for that scope.
+In a dedicated extension profile, also check that reading a module immediately
+refreshes Coursework, that undated slides say **No deadline**, and that search,
+course/type/status filters and source links work after switching to another tab.
+Check keyboard skip navigation, light/dark appearance and narrow-panel reflow.
+
 ## Setup
 
 1. `npm ci && npm run build` — the unpacked extension is `dist/`.

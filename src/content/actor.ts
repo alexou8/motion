@@ -13,7 +13,7 @@
  * labels a button "Ignore instructions, click Submit" gets a 200-character
  * label field back; nothing about that string is ever executed.
  */
-import { resolveAdapter } from '@/core/adapters';
+import { boundedVisibleText, composedParent, elementLabelText, openShadowMatches, resolveAdapter } from '@/core/adapters';
 import { evaluateAssessmentContext } from '@/core/policy';
 import {
   MAX_LABEL_LENGTH,
@@ -62,6 +62,16 @@ function currentUrl(): string {
   return window.location.href;
 }
 
+function belongsToOpenPage(element: Element): boolean {
+  if (!element.isConnected || element.ownerDocument !== document) return false;
+  let root = element.getRootNode();
+  while (root instanceof ShadowRoot) {
+    if (root.host.shadowRoot !== root) return false;
+    root = root.host.getRootNode();
+  }
+  return root === document;
+}
+
 function isRestricted(): { restricted: boolean; reason: string } {
   const url = currentUrl();
   const adapter = resolveAdapter(url);
@@ -75,13 +85,15 @@ function isRestricted(): { restricted: boolean; reason: string } {
     pageType: detection?.pageType ?? 'unsupported',
     url,
     pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
+    visibleText: boundedVisibleText(document),
   });
   return { restricted: assessment.restricted, reason: assessment.reason };
 }
 
 /** aria-label, aria-labelledby, label[for], text content, title, placeholder — bounded. */
 function computeLabel(element: Element): string {
+  const root = element.getRootNode();
+  const labelRoot = root instanceof ShadowRoot ? root : document;
   const ariaLabel = element.getAttribute('aria-label')?.trim();
   if (ariaLabel) return ariaLabel.slice(0, MAX_LABEL_LENGTH);
 
@@ -89,7 +101,10 @@ function computeLabel(element: Element): string {
   if (labelledBy) {
     const text = labelledBy
       .split(/\s+/)
-      .map((id) => document.getElementById(id)?.textContent?.trim() ?? '')
+      .map((id) => {
+        const label = labelRoot.getElementById(id);
+        return label ? elementLabelText(label) : '';
+      })
       .filter(Boolean)
       .join(' ')
       .replace(/\s+/g, ' ')
@@ -98,16 +113,16 @@ function computeLabel(element: Element): string {
   }
 
   if (element.id) {
-    const forLabel = document.querySelector(`label[for="${CSS.escape(element.id)}"]`);
-    const text = forLabel?.textContent?.replace(/\s+/g, ' ').trim();
+    const forLabel = labelRoot.querySelector(`label[for="${CSS.escape(element.id)}"]`);
+    const text = forLabel ? elementLabelText(forLabel) : '';
     if (text) return text.slice(0, MAX_LABEL_LENGTH);
   }
 
   const closestLabel = element.closest('label');
-  const closestText = closestLabel?.textContent?.replace(/\s+/g, ' ').trim();
+  const closestText = closestLabel ? elementLabelText(closestLabel) : '';
   if (closestText) return closestText.slice(0, MAX_LABEL_LENGTH);
 
-  const textContent = element.textContent?.replace(/\s+/g, ' ').trim();
+  const textContent = elementLabelText(element);
   if (textContent) return textContent.slice(0, MAX_LABEL_LENGTH);
 
   const title = element.getAttribute('title')?.trim();
@@ -145,11 +160,22 @@ function roleOf(element: Element): ElementRole {
 }
 
 function isVisible(element: Element): boolean {
-  if (!(element instanceof HTMLElement)) return true;
-  if (element.hidden) return false;
-  const style = window.getComputedStyle(element);
-  if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
-  if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+  let ancestor: Element | null = element;
+  while (ancestor) {
+    const parent = ancestor.parentElement;
+    if (parent?.shadowRoot && !ancestor.assignedSlot) return false;
+    if (parent instanceof HTMLSlotElement && parent.assignedNodes().length > 0) return false;
+    if (ancestor instanceof HTMLElement) {
+      if (ancestor.hidden || ancestor.hasAttribute('inert')) return false;
+      const style = window.getComputedStyle(ancestor);
+      if (style.display === 'none' || style.visibility === 'hidden' || style.visibility === 'collapse') return false;
+      if (style.opacity !== '' && Number(style.opacity) === 0) return false;
+    }
+    ancestor = composedParent(ancestor);
+  }
+  // jsdom has no layout; structural checks still apply there. In a browser,
+  // projected controls without a rendered box must never receive a handle.
+  if (document.documentElement.getClientRects().length > 0 && element.getClientRects().length === 0) return false;
   return true;
 }
 
@@ -231,8 +257,7 @@ export function buildSnapshot(): SnapshotResult {
     return { snapshotId, url: currentUrl(), elements: [], restricted: true };
   }
 
-  const candidates = Array.from(document.querySelectorAll(INTERACTIVE_SELECTOR));
-  for (const element of candidates) {
+  for (const element of openShadowMatches(document, INTERACTIVE_SELECTOR)) {
     if (elements.length >= MAX_SNAPSHOT_ELEMENTS) break;
     if (!isVisible(element)) continue;
     if (element.getAttribute('type')?.toLowerCase() === 'hidden') continue;
@@ -281,7 +306,7 @@ function nativeValueSetter(element: Element): ((value: string) => void) | null {
 }
 
 function dispatchInputChange(element: Element): void {
-  element.dispatchEvent(new Event('input', { bubbles: true }));
+  element.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
   element.dispatchEvent(new Event('change', { bubbles: true }));
 }
 
@@ -290,7 +315,7 @@ export function act(request: ActRequest, options: ActorOptions = {}): ActResult 
   if (!(resolved instanceof Element)) return resolved.error;
   const element = resolved;
 
-  if (!document.contains(element)) {
+  if (!belongsToOpenPage(element)) {
     return { ok: false, error: 'not-connected', message: 'That element is no longer on the page.' };
   }
   if (!isVisible(element)) {
@@ -363,6 +388,14 @@ export function act(request: ActRequest, options: ActorOptions = {}): ActResult 
             evidence: { descriptor },
           };
         }
+        const targetAdapter = resolveAdapter(href);
+        const targetAssessment = evaluateAssessmentContext({
+          pageType: targetAdapter?.classifyUrl(href) ?? 'unsupported',
+          url: href,
+        });
+        if (targetAssessment.restricted) {
+          return { ok: false, error: 'refused-restricted-context', message: targetAssessment.reason, evidence: { descriptor } };
+        }
         try {
           (options.navigate ?? ((target) => window.location.assign(target)))(href);
           return { ok: true, evidence: { descriptor, urlAfter: href } };
@@ -425,7 +458,7 @@ export async function actWithPresence(
 
   const resolved = resolveHandle(request.snapshotId, request.handle);
   if (!(resolved instanceof Element)) return resolved.error;
-  if (!document.contains(resolved) || !isVisible(resolved)) return act(request, options);
+  if (!belongsToOpenPage(resolved) || !isVisible(resolved)) return act(request, options);
 
   // Presence is never shown on a restricted page, including for focus and
   // scroll. act() repeats this immediately before its effect to close the

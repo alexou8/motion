@@ -83,6 +83,25 @@ describe('content-script request authentication', () => {
     }));
   });
 
+  it('refuses course discovery before fetching when direct shadow text identifies an assessment', async () => {
+    document.body.innerHTML = '';
+    vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/viewContent/12/View'));
+    const host = document.createElement('example-topic');
+    host.attachShadow({ mode: 'open' }).append(document.createTextNode('Time remaining: 10 minutes. Proctor connected.'));
+    document.body.append(host);
+    const fetch = vi.fn();
+    vi.stubGlobal('fetch', fetch);
+    await loadListener();
+    const sendResponse = vi.fn();
+
+    listener({ type: 'motion:discover-deadlines' }, { id: 'motion-extension-id' }, sendResponse);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(sendResponse).toHaveBeenCalledWith(expect.objectContaining({ kind: 'refused' }));
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('rejects an extension-page actor request because actions only arrive over the worker port', async () => {
     document.body.innerHTML = '<button id="go">Go</button>';
     await loadListener();

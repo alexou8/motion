@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import zipfile
 from pathlib import Path
 
-VERSION = "0.1.1"
-ARCHIVE_NAME = f"motion-keychain-companion-{VERSION}.zip"
 ROOT = Path(__file__).resolve().parent.parent
+VERSION = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))["version"]
+ARCHIVE_NAME = f"motion-keychain-companion-{VERSION}.zip"
 FILES = (
     Path("native/keychain_host.py"),
     Path("native/install.py"),

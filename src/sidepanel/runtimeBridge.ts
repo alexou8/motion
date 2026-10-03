@@ -313,7 +313,7 @@ export function createRuntimeBridge(): MotionBridge {
    * watching that is watching the fact itself rather than a proxy for it.
    */
   chrome.storage.session.onChanged.addListener((changes) => {
-    if (changes[STREAMING_KEY] || changes[ACTIVE_SESSION_KEY]
+    if (changes[STREAMING_KEY] || changes[ACTIVE_SESSION_KEY] || changes['motion.courseworkRevision']
       || Object.keys(changes).some((key) => key.startsWith('observation:'))) void refresh();
   });
 
