@@ -116,6 +116,17 @@ party that a student is using Motion, every time the panel opens.
 - **Header:** the mark and "Motion" in the serif, with an accessible Settings
   control. The home view presents the current page, suggestions and a composer;
   an explicit **Sessions** control returns to the durable session list.
+- **Home navigation:** Workspace contains the composer, sessions and deadlines;
+  Coursework browses the saved assignment, quiz, discussion and material index.
+  Native buttons expose the current page, navigation focuses the main content,
+  and a skip link bypasses the header. Coursework remains available away from
+  a supported LMS page. Restricted assessment mode hides both navigation and
+  active-session controls.
+- **Coursework:** a compact summary and labelled search/course/status filters,
+  with type filters and source-linked rows on the track. Undated lecture
+  materials say "No deadline"; uncertain dates retain their review warning.
+  Submitted and graded work can be browsed explicitly. Results render in batches
+  of 40 with a Show more control, keeping a large course usable in the panel.
 - **Body:** the connection state first, and honestly — idle, unsupported,
   permission needed, signed out and restricted each keep their own view. On a
   page that carries coursework, the home view offers contextual suggestions;

@@ -1,4 +1,5 @@
 import type { CourseTask } from '../domain';
+import { isUndatedMaterial } from './coursework';
 
 /** Statuses that no longer belong in any deadline bucket. */
 const INACTIVE_STATUSES = new Set(['submitted', 'graded', 'archived']);
@@ -45,6 +46,8 @@ function startOfDayInZone(date: Date, timeZone: string): Date {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 export function taskNeedsReview(task: CourseTask): boolean {
+  if (isUndatedMaterial(task)) return false;
+  if (task.dueConflict) return true;
   const { due } = task;
   if (due.iso === null) return true;
   if (due.confidence === 'medium' || due.confidence === 'low') return true;
@@ -59,11 +62,7 @@ export function taskNeedsReview(task: CourseTask): boolean {
  * the effective value after any student correction was applied upstream).
  * `now` and `timeZone` are injectable so bucketing is deterministic in tests.
  */
-export function deadlineBuckets(
-  tasks: CourseTask[],
-  now: Date,
-  timeZone: string,
-): DeadlineBuckets {
+export function deadlineBuckets(tasks: CourseTask[], now: Date, timeZone: string): DeadlineBuckets {
   const buckets: DeadlineBuckets = { today: [], upcoming: [], overdue: [], needsReview: [] };
 
   const startOfToday = startOfDayInZone(now, timeZone);
@@ -71,7 +70,7 @@ export function deadlineBuckets(
   const endOfUpcoming = new Date(startOfToday.getTime() + 8 * DAY_MS);
 
   for (const task of tasks) {
-    if (INACTIVE_STATUSES.has(task.status)) continue;
+    if (INACTIVE_STATUSES.has(task.status) || task.archived || isUndatedMaterial(task)) continue;
 
     if (taskNeedsReview(task)) {
       buckets.needsReview.push(task);

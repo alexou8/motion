@@ -178,6 +178,8 @@ class InstallerTests(unittest.TestCase):
             self.assertFalse((companion / "keychain_host.py").exists())
 
     def test_packager_contains_source_and_docs_without_registration_or_keys(self) -> None:
+        version = json.loads((NATIVE.parent / "package.json").read_text(encoding="utf-8"))["version"]
+        self.assertEqual(package_companion.ARCHIVE_NAME, f"motion-keychain-companion-{version}.zip")
         with tempfile.TemporaryDirectory() as temporary:
             archive_path = package_companion.package(Path(temporary) / package_companion.ARCHIVE_NAME)
             with zipfile.ZipFile(archive_path) as archive:

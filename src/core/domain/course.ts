@@ -136,6 +136,12 @@ export const pageContentSchema = z.object({
   text: z.string(),
   headings: z.array(z.string()).default([]),
   links: z.array(z.object({ href: z.string().url(), label: z.string() })).default([]),
+  /** Observed document URLs, extracted only by the LMS adapter. */
+  resources: z.array(z.object({
+    sourceUrl: z.string().url().max(2_000),
+    title: z.string().min(1).max(500),
+    format: z.enum(['pdf', 'pptx']),
+  }).strict()).max(50).default([]),
   capturedAt: z.string().datetime(),
   /**
    * Instruction text broken into structural units, with the kind of element it

@@ -11,6 +11,7 @@ function pageContent(overrides: Partial<PageContent> = {}): PageContent {
     text: 'Submit your relational algebra solutions by the due date.',
     headings: ['Assignment 2'],
     links: [],
+    resources: [],
     capturedAt: '2025-01-10T12:00:00.000Z',
     instructionBlocks: [],
     warnings: [],
@@ -60,6 +61,35 @@ describe('resolveAssignmentResources (synthetic fixtures)', () => {
 });
 
 describe('resolveCourseNav (synthetic fixtures)', () => {
+  it.each(['ou', 'OU', 'orgUnitId'])('uses the source URL %s query before unrelated links', (key) => {
+    const url = `https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folders_list.d2l?${key}=999999`;
+    expect(resolveCourseNav(url, pageContent({ links: [{ href: 'https://mylearningspace.wlu.ca/d2l/home/888888', label: 'Other course' }] }))?.contentUrl)
+      .toBe('https://mylearningspace.wlu.ca/d2l/le/content/999999/home');
+  });
+
+  it('never selects a dashboard course from the first course-card link', () => {
+    const content = pageContent({ links: [{ href: 'https://mylearningspace.wlu.ca/d2l/home/999999', label: 'Example course' }] });
+    expect(resolveCourseNav('https://mylearningspace.wlu.ca/d2l/home', content)).toBeNull();
+  });
+
+  it('refuses a source without a course when its observed links name multiple courses', () => {
+    const content = pageContent({ links: [
+      { href: 'https://mylearningspace.wlu.ca/d2l/home/999999', label: 'Example course one' },
+      { href: 'https://mylearningspace.wlu.ca/d2l/home/888888', label: 'Example course two' },
+    ] });
+    expect(resolveCourseNav('https://mylearningspace.wlu.ca/d2l/unknown', content)).toBeNull();
+  });
+
+  it.each([
+    '/d2l/home/888888?ou=999999',
+    '/d2l/lms/dropbox/user/folders_list.d2l?ou=888888&orgUnitId=999999',
+    '/d2l/lms/dropbox/user/folders_list.d2l?ou=888888&ou=999999',
+  ])('refuses conflicting source identifiers even with one valid linked course: %s', (path) => {
+    expect(resolveCourseNav(`https://mylearningspace.wlu.ca${path}`, pageContent({ links: [
+      { href: 'https://mylearningspace.wlu.ca/d2l/home/999999', label: 'Example course' },
+    ] }))).toBeNull();
+  });
+
   it('builds course-section URLs from the org unit id in the page URL', () => {
     const nav = resolveCourseNav('https://school.brightspace.com/d2l/home/363', pageContent());
     expect(nav).toEqual({

@@ -50,6 +50,7 @@ function page(overrides: Partial<PageContent> = {}): PageContent {
     text: '',
     headings: [],
     links: [],
+    resources: [],
     capturedAt: NOW,
     instructionBlocks: [],
     warnings: [],

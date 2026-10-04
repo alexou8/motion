@@ -1,4 +1,5 @@
 import type { CourseTask } from '../domain';
+import { isUndatedMaterial } from './coursework';
 
 const INACTIVE_STATUSES = new Set(['submitted', 'graded', 'archived']);
 
@@ -64,11 +65,14 @@ export function groupByWeek(
   const offset = weekStart === 'monday' ? (sundayBasedDay + 6) % 7 : sundayBasedDay;
   const thisWeekStart = today - offset;
   const groups: Record<DeadlineWeekKey, CourseTask[]> = {
-    overdue: [], thisWeek: [], nextWeek: [], later: [],
+    overdue: [],
+    thisWeek: [],
+    nextWeek: [],
+    later: [],
   };
 
   for (const task of tasks) {
-    if (INACTIVE_STATUSES.has(task.status) || task.archived) continue;
+    if (INACTIVE_STATUSES.has(task.status) || task.archived || isUndatedMaterial(task)) continue;
     if (!task.due.iso) {
       groups.later.push(task);
       continue;
@@ -90,7 +94,10 @@ export function groupByWeek(
     .map((key) => ({
       key,
       label: groupLabel(key, starts[key], timeZone),
-      tasks: groups[key].sort((a, b) => (a.due.iso ?? '').localeCompare(b.due.iso ?? '') || a.title.localeCompare(b.title)),
+      tasks: groups[key].sort(
+        (a, b) =>
+          (a.due.iso ?? '').localeCompare(b.due.iso ?? '') || a.title.localeCompare(b.title),
+      ),
       count: groups[key].length,
     }))
     .filter((group) => group.count > 0);

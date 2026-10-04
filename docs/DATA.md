@@ -30,6 +30,7 @@ normal merge path; no response, cookie, token, or deadline data is uploaded.
 | `checklists` | Requirements extracted from instructions | `id` | `byTask` |
 | `workflows` | Workflow state and step history | `id` | `byStatus`, `byUpdatedAt` |
 | `sessions` | AgentSession goals, plans, blockers, context references, artifacts and activity | `id` | `byStatus`, `byUpdatedAt` |
+| `documents` | Local PDF/PPTX text with page/slide numbers, course, file/topic source and capture time | `id` | `byCourse`, `bySource`, `byCapturedAt` |
 | `approvals` | Approval requests and their decisions | `id` | `byWorkflow`, `byStatus` |
 | `auditEvents` | Browser actions and consequential decisions | `seq` (auto) | `byAt`, `byWorkflow` |
 | `meta` | Schema and housekeeping values | `key` | — |
@@ -113,7 +114,20 @@ does not proxy the request, silently fall back, or send telemetry.
 
 ## Retention and deletion
 
-Nothing expires on its own; a student's own course history is theirs to keep.
+The material library retains extracted text, not the original file bytes. It
+holds at most 100 documents, each capped at 200 units, 200,000 characters total
+and 12,000 characters per page/slide. Individual local indexes can be removed;
+Privacy & data deletion also removes the documents store. Indexed text is not
+automatically added to AI context or uploaded to a provider.
+
+Document source choices and import tickets in trusted session storage are valid
+for five minutes. Expired metadata is pruned on later issuance; page-bound
+metadata is also removed on tab navigation or closure. Local tickets are pruned
+on later imports. A content-free random lifecycle epoch remains in session storage
+after deleting local data, so imports started before deletion cannot recreate
+their data afterward. It contains no file, course, key or student information.
+
+Saved course history and document indexes do not expire automatically.
 Deletion removes the IndexedDB database outright, which is covered by a test so
 "delete my data" is verified rather than asserted. Export is planned alongside
 the options UI.

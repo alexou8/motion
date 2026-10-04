@@ -103,15 +103,18 @@ export function resolveAssignmentResources(content: PageContent): AssignmentReso
 /**
  * A course-section navigation, built entirely from D2L's known route shapes
  * (`d2l.ts`'s `ROUTES`) plus an org-unit id — resolved from the URL, or,
- * failing that, from any `ou=`-carrying link on the page. Returns `null` when
+ * failing that, from unambiguous course links on the page. Returns `null` when
  * no org-unit id can be established: guessing at a course id would put a
  * student's assignments link into someone else's course.
  */
 export function resolveCourseNav(url: string, content: Pick<PageContent, 'links'>): CourseNav | null {
   const source = safeHttpsUrl(url);
   if (!source) return null;
+  if (/^\/d2l\/home\/?$/i.test(source.pathname)) return null;
 
-  const orgUnitId = courseIdFromUrl(url) ?? orgUnitIdFromLinks(content, source);
+  const sourceEvidence = orgUnitIdFromUrl(source);
+  if (sourceEvidence.ambiguous) return null;
+  const orgUnitId = sourceEvidence.id ?? orgUnitIdFromLinks(content, source);
   if (!orgUnitId) return null;
 
   const origin = source.origin;
@@ -135,14 +138,23 @@ function safeHttpsUrl(url: string): URL | null {
 }
 
 function orgUnitIdFromLinks(content: Pick<PageContent, 'links'>, source: URL): string | null {
+  const ids = new Set<string>();
   for (const link of content.links) {
     const target = sameOriginHttpsLink(link.href, source.toString());
     if (!target) continue;
-    const resolved = target.toString();
-    const ou = target.searchParams.get('ou');
-    if (ou && /^\d+$/.test(ou)) return ou;
-    const pathId = courseIdFromUrl(resolved);
-    if (pathId) return pathId;
+    const { id } = orgUnitIdFromUrl(target);
+    if (id) ids.add(id);
   }
-  return null;
+  return ids.size === 1 ? [...ids][0]! : null;
+}
+
+function orgUnitIdFromUrl(url: URL): { id: string | null; ambiguous: boolean } {
+  const pathId = courseIdFromUrl(url.toString());
+  const ids = new Set(pathId ? [pathId] : []);
+  for (const [key, value] of url.searchParams) {
+    if (!/^(?:ou|orgUnitId)$/i.test(key)) continue;
+    if (!/^\d+$/.test(value)) return { id: null, ambiguous: true };
+    ids.add(value);
+  }
+  return { id: ids.size === 1 ? [...ids][0]! : null, ambiguous: ids.size > 1 };
 }

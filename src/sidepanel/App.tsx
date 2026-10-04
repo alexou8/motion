@@ -1,10 +1,12 @@
-import { useSyncExternalStore } from 'react';
+import { useEffect, useRef, useSyncExternalStore } from 'react';
 import { EMPTY_PANEL_STATE, type PanelState } from '../core/view/state';
 import { cn } from '../ui/components/cn';
 import { MotionMark } from '../ui/components';
 import { motionCommandSchema, type MotionBridge, type MotionCommand } from './bridge';
 import { useState } from 'react';
 import { Home, SessionView } from './views';
+import { CourseworkView } from './views/CourseworkView';
+import { LibraryView } from './views/LibraryView';
 
 export interface AppProps {
   bridge: MotionBridge;
@@ -46,9 +48,7 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
     <header className="border-b border-rule bg-paper px-4 py-2">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <MotionMark
-            className="size-5 text-signal"
-          />
+          <MotionMark className="size-6 text-signal" />
           <p className="font-serif text-lg font-semibold">Motion</p>
           {state.connection === 'supported' ? (
             <span className="truncate text-xs text-ink-muted">Coursework workspace</span>
@@ -78,6 +78,18 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
 
 export function App({ bridge, now = new Date(), className }: AppProps) {
   const state = usePanelState(bridge);
+  const [view, setView] = useState<'workspace' | 'coursework' | 'library'>('workspace');
+  const main = useRef<HTMLElement>(null);
+  const restricted = state.connection === 'restricted';
+  const screen = restricted ? 'restricted' : (state.activeSession?.id ?? view);
+  const previousScreen = useRef(screen);
+  useEffect(() => {
+    if (previousScreen.current !== screen) {
+      main.current?.focus();
+      if (main.current) main.current.scrollTop = 0;
+      previousScreen.current = screen;
+    }
+  }, [screen]);
   const [feedback, setFeedback] = useState<{ kind: 'pending' | 'error'; text: string } | null>(
     null,
   );
@@ -107,8 +119,39 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
     <div
       className={cn('flex h-dvh flex-col overflow-hidden bg-paper font-sans text-ink', className)}
     >
+      <a href="#main-content" className="motion-skip-link">
+        Skip to content
+      </a>
       <PanelHeader state={state} onSettings={() => void send({ type: 'open-settings' })} />
-      <main className="min-h-0 flex-1 overflow-y-auto" id="main-content">
+      {!restricted && !state.activeSession ? (
+        <nav className="motion-panel-nav" aria-label="Workspace">
+          <button
+            type="button"
+            aria-current={view === 'workspace' ? 'page' : undefined}
+            onClick={() => setView('workspace')}
+          >
+            Workspace
+          </button>
+          <button
+            type="button"
+            aria-current={view === 'library' ? 'page' : undefined}
+            onClick={() => setView('library')}
+          >
+            Library
+          </button>
+          <button
+            type="button"
+            aria-current={view === 'coursework' ? 'page' : undefined}
+            onClick={() => setView('coursework')}
+          >
+            Coursework{' '}
+            <span className="font-mono text-xs">
+              {state.tasks.filter((task) => !task.archived && task.status !== 'archived').length}
+            </span>
+          </button>
+        </nav>
+      ) : null}
+      <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto" id="main-content">
         <div className="mx-auto grid w-full max-w-lg content-start gap-6 px-4 py-5">
           {feedback ? (
             <p
@@ -124,7 +167,24 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
               {feedback.text}
             </p>
           ) : null}
-          {state.activeSession ? (
+          {!restricted && state.page.warnings.length > 0 ? (
+            <aside
+              className="border-l-2 border-attention pl-3 text-xs text-attention"
+              aria-label="Page read notices"
+            >
+              {state.page.warnings.map((warning, index) => (
+                <p key={index}>{warning}</p>
+              ))}
+            </aside>
+          ) : null}
+          {restricted ? (
+            <Home
+              state={state}
+              send={send}
+              onOpenSession={(sessionId) => openSession(sessionId)}
+              now={now}
+            />
+          ) : state.activeSession ? (
             <SessionView
               state={state}
               session={state.activeSession}
@@ -132,6 +192,10 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
               onBack={() => openSession(null)}
               now={now}
             />
+          ) : view === 'coursework' ? (
+            <CourseworkView state={state} send={send} />
+          ) : view === 'library' ? (
+            <LibraryView state={state} bridge={bridge} />
           ) : (
             <Home
               state={state}

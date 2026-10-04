@@ -17,6 +17,136 @@ describe('content actor', () => {
     return import('./actor');
   }
 
+  it('discovers a six-root course card and follows its native anchor through the existing secure route guard', async () => {
+    let host = document.createElement('example-dashboard');
+    document.body.append(host);
+    for (let depth = 0; depth < 5; depth += 1) {
+      const next = document.createElement('example-card');
+      host.attachShadow({ mode: 'open' }).append(next);
+      host = next;
+    }
+    host.textContent = 'Synthetic Example Course';
+    host.attachShadow({ mode: 'open' }).innerHTML = '<a href="/d2l/home/999999"><slot>Unused fallback label</slot></a>';
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    expect(snapshot.elements).toHaveLength(1);
+    expect(snapshot.elements[0]).toMatchObject({ label: 'Synthetic Example Course', href: 'https://school.brightspace.com/d2l/home/999999' });
+    const navigate = vi.fn();
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle }, { navigate }).ok).toBe(true);
+    expect(navigate).toHaveBeenCalledWith('https://school.brightspace.com/d2l/home/999999');
+  });
+
+  it('labels shadow fields in their own root and dispatches native input/change composition', async () => {
+    const host = document.createElement('example-form');
+    document.body.append(host);
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<label for="field">Synthetic draft</label><input id="field" type="text"><span id="button-label">Expand module</span><button aria-labelledby="button-label">Fallback</button>';
+    const inputEvents = vi.fn();
+    const hostChanges = vi.fn();
+    const rootChanges = vi.fn();
+    host.addEventListener('input', inputEvents);
+    host.addEventListener('change', hostChanges);
+    root.addEventListener('change', rootChanges);
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    expect(snapshot.elements.map((entry) => entry.label)).toEqual(['Synthetic draft', 'Expand module']);
+    expect(act({ type: 'fill', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle, value: 'Synthetic value' }).ok).toBe(true);
+    expect(root.querySelector('input')?.value).toBe('Synthetic value');
+    expect(inputEvents).toHaveBeenCalledTimes(1);
+    expect(rootChanges).toHaveBeenCalledTimes(1);
+    expect(hostChanges).not.toHaveBeenCalled();
+  });
+
+  it.each(['hidden', 'inert'])('excludes controls projected through a %s slot wrapper', async (attribute) => {
+    const host = document.createElement('example-hidden');
+    host.innerHTML = '<button>Projected button</button><button slot="missing">Unassigned button</button>';
+    host.attachShadow({ mode: 'open' }).innerHTML = `<div ${attribute}><slot></slot></div>`;
+    document.body.append(host);
+    const { buildSnapshot } = await loadActor();
+    expect(buildSnapshot().elements).toEqual([]);
+  });
+
+  it('excludes assigned slot fallback controls and refuses a handle moved into a closed root', async () => {
+    const host = document.createElement('example-open');
+    host.textContent = 'Assigned label';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<button id="target">Module button</button><slot><button>Unused fallback</button></slot>';
+    document.body.append(host);
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    expect(snapshot.elements.map((entry) => entry.label)).toEqual(['Module button']);
+    const closed = document.createElement('example-closed');
+    document.body.append(closed);
+    closed.attachShadow({ mode: 'closed' }).append(root.querySelector('#target')!);
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle })).toMatchObject({ ok: false, error: 'not-connected' });
+    expect(buildSnapshot().elements).toEqual([]);
+  });
+
+  it('refuses direct shadow-root assessment text before snapshot capture or an older handle action', async () => {
+    vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/viewContent/12/View'));
+    const host = document.createElement('example-topic');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<input type="text">';
+    document.body.append(host);
+    const { buildSnapshot, act } = await loadActor();
+    const safe = buildSnapshot();
+    root.prepend(document.createTextNode('Time remaining: 10 minutes. Proctor connected.'));
+    expect(act({ type: 'fill', snapshotId: safe.snapshotId, handle: safe.elements[0]!.handle, value: 'Answer' })).toMatchObject({ ok: false, error: 'refused-restricted-context' });
+    expect(buildSnapshot()).toMatchObject({ restricted: true, elements: [] });
+    expect(root.querySelector('input')?.value).toBe('');
+  });
+
+  it('still restricts visually rendered assessment hints marked aria-hidden', async () => {
+    vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/viewContent/12/View'));
+    const host = document.createElement('example-topic');
+    host.attachShadow({ mode: 'open' }).innerHTML = '<div aria-hidden="true">Time remaining: 10 minutes</div><input type="text">';
+    document.body.append(host);
+    const { buildSnapshot } = await loadActor();
+    expect(buildSnapshot()).toMatchObject({ restricted: true, elements: [] });
+  });
+
+  it('restricts a visible assessment hint inside a visibility-hidden ancestor', async () => {
+    vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/viewContent/12/View'));
+    document.body.innerHTML = '<input type="text">';
+    const { buildSnapshot, act } = await loadActor();
+    const safe = buildSnapshot();
+    const hint = document.createElement('div');
+    hint.style.visibility = 'hidden';
+    hint.innerHTML = '<span style="visibility: visible">Time remaining in this graded quiz</span>';
+    document.body.append(hint);
+    expect(act({ type: 'fill', snapshotId: safe.snapshotId, handle: safe.elements[0]!.handle, value: 'Answer' })).toMatchObject({ ok: false, error: 'refused-restricted-context' });
+    expect(buildSnapshot()).toMatchObject({ restricted: true, elements: [] });
+    expect(document.querySelector('input')?.value).toBe('');
+  });
+
+  it('ignores assessment copy in unrendered light children and replaced slot fallback', async () => {
+    vi.stubGlobal('location', new URL('https://school.brightspace.com/d2l/le/content/363/viewContent/12/View'));
+    const host = document.createElement('example-topic');
+    host.innerHTML = '<span slot="unused">Submit quiz</span><span>Ordinary course material</span>';
+    host.attachShadow({ mode: 'open' }).innerHTML = '<input type="text"><slot>Time remaining: 10 minutes</slot>';
+    document.body.append(host);
+    const { buildSnapshot } = await loadActor();
+    const snapshot = buildSnapshot();
+    expect(snapshot.restricted).toBeUndefined();
+    expect(snapshot.elements).toHaveLength(1);
+  });
+
+  it('does not let an approved generic click start a graded attempt through a shadow link', async () => {
+    const host = document.createElement('example-card');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<a href="/d2l/lms/quizzing/user/attempt/123?ou=363">Start assessment</a>';
+    document.body.append(host);
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    const navigate = vi.fn();
+    const clicked = vi.fn();
+    root.querySelector('a')!.addEventListener('click', clicked);
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: snapshot.elements[0]!.handle }, { navigate, consequentialCapability: true }))
+      .toMatchObject({ ok: false, error: 'refused-restricted-context' });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(clicked).not.toHaveBeenCalled();
+  });
+
   it('caps the snapshot at 150 elements and bounds labels to 200 chars', async () => {
     const longLabel = 'x'.repeat(500);
     for (let i = 0; i < 200; i += 1) {

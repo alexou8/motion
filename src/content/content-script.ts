@@ -11,6 +11,7 @@ import { contentRequestSchema } from '@/core/messaging';
 import { ACTOR_PORT_NAME, actorPortRequestSchema, actorPortResponseSchema, type ActRequest } from '@/core/actor/contracts';
 import { discoverAllCourses } from './d2lDiscovery';
 import { resolveAdapter } from '@/core/adapters';
+import { boundedVisibleText } from '@/core/adapters/dom';
 
 const consumedActorNonces = new Set<string>();
 
@@ -49,7 +50,7 @@ export function handleContentRequest(
         const url = window.location.href;
         const adapter = resolveAdapter(url);
         const pageType = adapter?.detectPage({ url, document, now: new Date(), timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone })?.pageType ?? 'unsupported';
-        void discoverAllCourses({ origin: window.location.origin, page: { url, pageType, title: document.title, text: document.body?.innerText ?? '' }, now: () => new Date(), timeZone: () => Intl.DateTimeFormat().resolvedOptions().timeZone, fetch: window.fetch.bind(window) }).then(sendResponse);
+        void discoverAllCourses({ origin: window.location.origin, page: { url, pageType, title: document.title, text: boundedVisibleText(document) }, now: () => new Date(), timeZone: () => Intl.DateTimeFormat().resolvedOptions().timeZone, fetch: window.fetch.bind(window) }).then(sendResponse);
       }
       return true;
     default:

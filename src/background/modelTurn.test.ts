@@ -359,6 +359,8 @@ describe('model turn single flight', () => {
     await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
     let release!: () => void;
     const streamGate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const streamEntered = new Promise<void>((resolve) => { entered = resolve; });
     let streams = 0;
     const provider = {
       id: 'openai' as const,
@@ -368,6 +370,7 @@ describe('model turn single flight', () => {
       generate: async () => '',
       stream: async function* () {
         streams += 1;
+        entered();
         await streamGate;
         yield '{"reply":"Ready.","plan":[]}';
       },
@@ -377,10 +380,7 @@ describe('model turn single flight', () => {
       resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
     };
     const first = runModelTurn('session-1', 'First message', deps);
-    for (let attempts = 0; attempts < 20; attempts += 1) {
-      if ((await sessionRepository(await openDatabase()).get('session-1'))?.pendingModelRequest) break;
-      await new Promise((resolve) => setTimeout(resolve, 5));
-    }
+    await streamEntered;
     expect((await sessionRepository(await openDatabase()).get('session-1'))?.pendingModelRequest).not.toBeNull();
     const second = await runModelTurn('session-1', 'Second message', deps);
 

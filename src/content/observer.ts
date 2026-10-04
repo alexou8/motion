@@ -7,9 +7,10 @@
  * page; this module never does.
  */
 import { resolveAdapter } from '@/core/adapters';
+import { boundedVisibleText } from '@/core/adapters/dom';
 import { evaluateAssessmentContext } from '@/core/policy';
 import type { Message } from '@/core/messaging';
-
+import { LIMITS } from '@/core/messaging/contracts';
 
 /** Milliseconds of DOM quiet before a page counts as rendered. */
 const SETTLE_MS = 400;
@@ -58,7 +59,7 @@ function observe(): void {
     pageType: detection.pageType,
     url,
     pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
+    visibleText: boundedVisibleText(document),
   });
 
   // D2L renders its web components after document_idle, so the same page is
@@ -108,7 +109,7 @@ export function extract(requestId: string): void {
     pageType: detection?.pageType ?? 'unsupported',
     url,
     pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
+    visibleText: boundedVisibleText(document),
   });
   if (assessment.restricted) {
     send({
@@ -123,14 +124,42 @@ export function extract(requestId: string): void {
     return;
   }
 
+  const extractedTasks = adapter.extractTasks(input);
+  const warnings = [...(detection?.warnings ?? [])];
+  let tasks = extractedTasks;
+  if (tasks.length > LIMITS.taskCount) {
+    // A large lecture index must not make the whole response fail validation,
+    // nor crowd out a genuine deadline near the end of the page.
+    tasks = [...tasks]
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.due.iso || b.due.raw.trim())) -
+          Number(Boolean(a.due.iso || a.due.raw.trim())),
+      )
+      .slice(0, LIMITS.taskCount);
+    warnings.unshift(
+      `This page has ${extractedTasks.length} items. Motion read ${LIMITS.taskCount}, prioritizing deadline evidence. Open a smaller module to read the remaining materials.`,
+    );
+  }
+
+  send({
+    type: 'page-observed',
+    url,
+    pageType: detection?.pageType ?? 'unsupported',
+    title: document.title.slice(0, LIMITS.title),
+    detectionConfidence: detection?.confidence ?? 'low',
+    restricted: false,
+    warnings: warnings.slice(0, LIMITS.warningCount),
+  });
+
   send({
     type: 'extraction-result',
     requestId,
     url,
     course: adapter.extractCourse(input),
-    tasks: adapter.extractTasks(input),
+    tasks,
     content: adapter.extractPageContent(input),
-    warnings: detection?.warnings ?? [],
+    warnings: warnings.slice(0, LIMITS.warningCount),
   });
 }
 
@@ -154,7 +183,7 @@ export function readContent(): { content: unknown } | { refused: string } {
     pageType: detection?.pageType ?? 'unsupported',
     url,
     pageTitle: document.title,
-    visibleText: document.body?.innerText?.slice(0, 4_000) ?? '',
+    visibleText: boundedVisibleText(document),
   });
   if (assessment.restricted) return { refused: assessment.reason };
 

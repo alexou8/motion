@@ -22,13 +22,16 @@ export function SourceLink({ href, pageTitle, className }: SourceLinkProps) {
 
   return (
     <a
-      className={cn('inline-flex min-h-6 max-w-full flex-wrap gap-x-1 text-xs text-signal underline underline-offset-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus', className)}
+      className={cn(
+        'inline-flex min-h-6 max-w-full flex-wrap gap-x-1 text-xs text-signal underline underline-offset-2 focus:outline-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus',
+        className,
+      )}
       href={source.href}
       target="_blank"
       rel="noreferrer"
     >
       <span className="truncate">{pageTitle || 'Source page'}</span>
-      <span>{source.origin}</span>
+      <span className="min-w-0 break-all">{source.origin}</span>
     </a>
   );
 }

@@ -33,6 +33,17 @@ function check(name, passed, detail = '') {
 const fixture = (name) => readFileSync(join(fixtureDir, `${name}.html`), 'utf8');
 const assignmentList = fixture('e2e-assignment-list');
 const assignment = fixture('e2e-agent-assignment');
+const shadowDashboard = `<!doctype html><title>Synthetic dashboard</title><main><h1>My Home</h1><d2l-my-courses-v2 id="courses"></d2l-my-courses-v2></main><script>
+  // Synthetic six-root course card; no real course records.
+  let host = document.getElementById('courses');
+  for (const name of ['d2l-my-courses-container-v2', 'd2l-my-courses-content-v2', 'd2l-my-courses-card-grid-v2', 'd2l-my-courses-enrollment-card', 'd2l-card']) {
+    const next = document.createElement(name);
+    host.attachShadow({ mode: 'open' }).append(next);
+    host = next;
+  }
+  host.textContent = 'Synthetic Example Course';
+  host.attachShadow({ mode: 'open' }).innerHTML = '<a href="/d2l/home/999999"><slot></slot></a>';
+</script>`;
 
 const userDataDir = await mkdtemp(join(tmpdir(), 'motion-agent-e2e-'));
 const context = await chromium.launchPersistentContext(userDataDir, {
@@ -216,12 +227,25 @@ try {
   await context.route(`${ORIGIN}/**`, (route) => {
     const url = new URL(route.request().url());
     let body = '<!doctype html><title>Not found</title><body>404</body>';
+    if (url.pathname === '/d2l/home') body = shadowDashboard;
     if (url.pathname === '/d2l/lms/dropbox/user/folders_list.d2l') body = assignmentList;
     if (url.pathname === '/d2l/lms/dropbox/user/folder_submit_files.d2l') body = assignment;
     if (url.pathname === '/d2l/home/999999') body = fixture('course-home');
     if (url.pathname.startsWith('/d2l/lms/quizzing/user/attempt/')) body = assignment;
     return route.fulfill({ status: body.includes('Not found') ? 404 : 200, contentType: 'text/html', body });
   });
+
+  const dashboardPage = await context.newPage();
+  await dashboardPage.goto(`${ORIGIN}/d2l/home`, { waitUntil: 'load' });
+  const dashboardTabId = await activeTabId();
+  const dashboardContent = await waitFor(async () => panel.evaluate(
+    (id) => chrome.tabs.sendMessage(id, { type: 'motion:extract-content' }).catch(() => null), dashboardTabId,
+  ));
+  const dashboardSnapshot = await panel.evaluate((id) => chrome.tabs.sendMessage(id, { type: 'motion:snapshot' }), dashboardTabId);
+  check('dashboard exposes the observed native course-card link through six open roots',
+    dashboardContent?.content?.links?.some((link) => link.href === `${ORIGIN}/d2l/home/999999` && link.label === 'Synthetic Example Course') &&
+      dashboardSnapshot?.elements?.some((entry) => entry.href === `${ORIGIN}/d2l/home/999999` && entry.label === 'Synthetic Example Course'));
+  await dashboardPage.close();
 
   const listPage = await context.newPage();
   listPage.on('pageerror', (error) => pageErrors.push(error.message));
@@ -317,6 +341,16 @@ try {
 
   const actorTabId = studentTabId;
   const actorPage = studentPage;
+  await actorPage.evaluate(() => {
+    const host = document.createElement('example-editor');
+    host.id = 'shadow-editor';
+    host.style.display = 'block';
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<label for="shadow-draft">Shadow draft field</label><input id="shadow-draft" name="shadow-draft" type="text">';
+    host.addEventListener('input', () => host.setAttribute('data-input-received', 'true'));
+    root.addEventListener('change', () => host.setAttribute('data-change-received', 'true'));
+    document.querySelector('main').append(host);
+  });
   const presenceObserver = await observePresence(context, actorPage);
 
   // Snapshot through the real content actor, then seed a normal paused
@@ -336,6 +370,7 @@ try {
     await chrome.storage.session.set({ 'motion.snapshots': { ...stored, [tabId]: value } });
   }, { tabId: actorTabId, value: snapshot });
   const field = snapshot?.elements?.find((element) => element.tag === 'input' && element.type === 'text');
+  const shadowField = snapshot?.elements?.find((element) => element.name === 'shadow-draft');
   const submit = snapshot?.elements?.find((element) => element.type === 'submit' || /submit/i.test(element.label));
   check('actor snapshot is typed, bounded, and available to the session', Boolean(snapshot?.snapshotId) && Boolean(field) && Boolean(submit), `${snapshot?.elements?.length ?? 0} element(s)`);
 
@@ -388,6 +423,19 @@ try {
       /Typing: A{71}…/.test(fillLabel?.text ?? '') && !(fillLabel?.text ?? '').includes(fillValue),
     JSON.stringify({ host: fillPresence?.host, halo: fillHalo, pointer: fillPointer, label: fillLabel }));
   check('approved actor fills the synthetic workspace field', (await actorPage.locator('#draft-field').inputValue()) === fillValue);
+
+  await actorPage.waitForTimeout(650);
+  await seedWorkflow({ id: 'e2e-shadow-fill', sessionId: createdSession.id, action: 'fill-form-field', title: 'Fill the shadow draft field', input: { tabId: actorTabId, snapshotId: snapshot?.snapshotId ?? '', handle: shadowField?.handle ?? '', value: 'Synthetic shadow draft', target: 'Shadow draft field' } });
+  await send({ type: 'workflow-command', workflowId: 'e2e-shadow-fill', command: 'resume' });
+  const shadowApproval = await waitFor(async () => (await state())?.approvals?.find((approval) => approval.action === 'fill-form-field' && approval.status === 'pending'));
+  check('shadow input still waits for worker approval', Boolean(shadowApproval) && (await actorPage.locator('#shadow-draft').inputValue()) === '');
+  const shadowPresence = await presenceObserver.during(() => send({ type: 'decide-approval', approvalId: shadowApproval?.id, approved: true }));
+  await waitFor(async () => (await actorPage.locator('#shadow-draft').inputValue()) === 'Synthetic shadow draft', 10_000);
+  check('authorized handle fills a connected open-shadow field with presence and native events',
+    shadowField?.label === 'Shadow draft field' && Boolean(shadowPresence?.layers.some((layer) => layer.className.includes('__halo'))) &&
+      (await actorPage.locator('#shadow-draft').inputValue()) === 'Synthetic shadow draft' &&
+      (await actorPage.locator('#shadow-editor').getAttribute('data-input-received')) === 'true' &&
+      (await actorPage.locator('#shadow-editor').getAttribute('data-change-received')) === 'true');
 
   await actorPage.waitForTimeout(650);
   check('presence cleans up after an authorized action completes', (await presenceObserver.snapshot()) === null);
@@ -610,7 +658,11 @@ try {
   check('forget key removes it from chrome.storage.session', !JSON.stringify(forgotten.session).includes(CANARY));
 
   await studentPage.bringToFront();
-  await panel.waitForTimeout(300);
+  // Restricted mode deliberately hides workspace actions. Return to ordinary
+  // coursework before testing the student's explicit Release action.
+  await studentPage.goto(`${ORIGIN}/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&db=101`, { waitUntil: 'load' });
+  await waitFor(async () => (await state())?.page?.pageType === 'assignment');
+  await refreshPanel();
   const releaseButton = panel.getByRole('button', { name: 'Release' }).first();
   if (await releaseButton.count()) {
     await releaseButton.click();
