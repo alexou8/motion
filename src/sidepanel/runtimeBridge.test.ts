@@ -159,6 +159,28 @@ it('refreshes saved coursework when an extraction finishes after its page observ
 });
 
 describe('worker command outcomes', () => {
+  it('replaces an older worker command-list error with actionable refresh guidance', () => {
+    const parseResult = vi.fn();
+    const result = toUiCommandResult(
+      {
+        ok: false,
+        error: "Malformed message: Invalid discriminator value. Expected 'synthetic-old-command'",
+      },
+      parseResult,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'extension-refresh-required',
+      recoverable: true,
+    });
+    if (!result.ok) {
+      expect(result.message).toMatch(/Reload Motion/);
+      expect(result.message).toMatch(/refresh the course page/);
+      expect(result.message).not.toContain('synthetic-old-command');
+    }
+    expect(parseResult).not.toHaveBeenCalled();
+  });
+
   it('keeps a worker refusal distinct from a malformed transport response', () => {
     expect(toUiCommandResult({ ok: false, code: 'restricted-page', error: 'Motion will not act inside this assessment.' }))
       .toEqual({ ok: false, code: 'restricted-page', message: 'Motion will not act inside this assessment.' });

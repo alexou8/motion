@@ -22,7 +22,17 @@ export function toUiCommandResult<T = undefined>(
       code: 'transport-malformed-response',
       message: 'Motion received an invalid response from its background worker. Try again.',
     };
-  if (!envelope.data.ok)
+  if (!envelope.data.ok) {
+    // An older worker can reject a newly added command after only the panel
+    // files have refreshed. Its Zod command list cannot help a student recover.
+    if (/^Malformed message: Invalid discriminator value\b/.test(envelope.data.error ?? ''))
+      return {
+        ok: false,
+        code: 'extension-refresh-required',
+        message:
+          "Motion could not understand this request. Reload Motion in your browser's Extensions page, then refresh the course page and try again.",
+        recoverable: true,
+      };
     return {
       ok: false,
       code: envelope.data.code ?? 'command-refused',
@@ -31,6 +41,7 @@ export function toUiCommandResult<T = undefined>(
         ? {}
         : { recoverable: envelope.data.recoverable }),
     };
+  }
   // A transport success only says the worker answered. Commands also carry
   // explicit domain no-ops (closed workspace tab, terminal session, declined
   // extraction). Do not clear UI feedback or report success for those results.

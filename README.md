@@ -138,6 +138,11 @@ npm run dist     # build + package
 That writes `motion-extension-<version>.zip`. Unzip it and load the folder as
 above, or load `dist/` directly with **Load unpacked**.
 
+After replacing an unpacked build, click Motion's **Reload** control on the
+browser's Extensions page, then refresh already-open LMS pages. Reopening the
+panel alone can leave the old worker and content scripts running alongside the
+new interface. See Chrome's [component reload guidance](https://developer.chrome.com/docs/extensions/get-started/tutorial/hello-world).
+
 Chrome 116 or newer; PDF text indexing requires Chromium 125 or newer.
 Drafting additionally needs Chrome's built-in on-device
 model — Motion says so plainly if it is unavailable rather than failing when you

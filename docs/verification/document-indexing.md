@@ -41,8 +41,20 @@ against the signed-in account. Browser control rejected the extension-manager
 URL, so that installed-account check remains **unverified**. No alternative
 profile, cookie transfer or policy workaround was used.
 
+An installed-account follow-up found that the selected folder still held an
+older build. The signed-in session renewed and the old observer recognized the
+lecture topic after a page refresh. Current artifacts were staged in that
+installed folder with a backup, and reopening the panel displayed Library and
+Coursework. The still-running old worker rejected the new document commands;
+this does not verify authenticated file fetching or indexing. No real assessment
+or course mutation was performed. A regression test verifies that the panel
+maps this version mismatch to reload instructions instead of its raw internal
+command list; that recovery message has not yet been checked in the installed
+browser.
+
 The remaining check needs the current `dist/` build loaded with **Load unpacked**
-in the signed-in Chromium browser. On a lecture topic, open Library, choose
+or the existing unpacked extension **Reloaded** in the signed-in Chromium browser,
+followed by an LMS page refresh. On a lecture topic, open Library, choose
 **Find files on this page**, index the observed file and compare a later-page
 search result and source topic with the original. Repeat read-only coursework
 tracking on content, assignment and quiz-list pages without starting an attempt.
@@ -54,7 +66,7 @@ full steps.
 | Check                                                  | Result                                                                                               |
 | ------------------------------------------------------ | ---------------------------------------------------------------------------------------------------- |
 | `npm run typecheck`                                    | Passed                                                                                               |
-| `npm test`                                             | 95 files, 1,250 tests passed                                                                         |
+| `npm test`                                             | 95 files, 1,251 tests passed                                                                         |
 | `npm run lint`                                         | Passed                                                                                               |
 | `npm run build`                                        | Passed; service-worker AST check rejects DOM globals                                                 |
 | `npm run test:documents` with axe and private PDF      | 26/26 checks passed                                                                                  |

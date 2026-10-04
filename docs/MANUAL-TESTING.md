@@ -110,6 +110,9 @@ Check keyboard skip navigation, light/dark appearance and narrow-panel reflow.
 1. `npm ci && npm run build` — the unpacked extension is `dist/`.
 2. Open `chrome://extensions` in Chrome 116 or newer, enable Developer mode,
    and *Load unpacked* → `dist/`. Use a dedicated test profile.
+   For an existing installation, click Motion's **Reload** control after replacing
+   the build and refresh already-open LMS pages. Reopening the panel alone does
+   not refresh its worker or content scripts.
 3. Confirm the extension loads with no manifest or runtime error, and that the
    service worker, side panel and options page each open without console errors.
 4. Sign in to your institution's D2L deployment in the browser yourself. Never
