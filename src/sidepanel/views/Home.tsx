@@ -3,8 +3,14 @@ import { z } from 'zod';
 import type { CourseTask } from '../../core/domain';
 import type { PanelState, SessionSummary } from '../../core/view/state';
 import { isStale } from '../../core/view/state';
-import { groupByWeek, type DeadlineWeekGroup } from '../../core/view';
+import {
+  deadlineBuckets,
+  groupByWeek,
+  taskNeedsReview,
+  type DeadlineWeekGroup,
+} from '../../core/view';
 import { isActiveTask, isUndatedMaterial } from '../../core/view/coursework';
+import { relativeDue, dueDateLabel } from '../../core/view/dueLabel';
 import {
   Button,
   EmptyState,
@@ -35,20 +41,6 @@ interface HomeProps {
   send: (command: MotionCommand) => void | Promise<boolean>;
   onOpenSession: (sessionId: string) => void;
   now: Date;
-}
-
-function relativeDue(iso: string | null, now: Date): string {
-  if (!iso) return 'Date not parsed';
-  const due = new Date(iso);
-  const difference = due.getTime() - now.getTime();
-  const days = Math.round(difference / 86_400_000);
-  if (Math.abs(difference) < 86_400_000 && now.toDateString() === due.toDateString())
-    return 'Due today';
-  if (days === 1) return 'Due tomorrow';
-  if (days === -1) return 'Due yesterday';
-  if (days > 1) return `Due in ${days} days`;
-  if (days < -1) return `${Math.abs(days)} days overdue`;
-  return `Due ${due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`;
 }
 
 const MOVED_CUE_DURATION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -86,16 +78,6 @@ function useDeadlineView(): ['list' | 'week', (view: 'list' | 'week') => void] {
   return [view, select];
 }
 
-function dueDateLabel(iso: string | null, timeZone: string | undefined): string {
-  if (!iso) return 'an unparsed date';
-  return new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    weekday: 'short',
-    month: 'short',
-    day: 'numeric',
-  }).format(new Date(iso));
-}
-
 function isRecentlyMoved(task: CourseTask, now: Date): boolean {
   if (!task.dueChangedAt) return false;
   const changedAt = new Date(task.dueChangedAt).getTime();
@@ -127,41 +109,56 @@ function DeadlineItem({
   task,
   bucket,
   now,
+  courseLabel,
 }: {
   task: CourseTask;
   bucket: 'today' | 'upcoming' | 'overdue' | 'needsReview';
   now: Date;
+  courseLabel?: string;
 }) {
   const movedFrom = task.dueHistory.at(-1);
   const dueConflict = task.dueConflict;
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  const needsReview = bucket === 'needsReview' || taskNeedsReview(task);
+  const dateLabel = dueDateLabel(task.due, timeZone);
+  const previousLabel = movedFrom
+    ? dueDateLabel({ iso: movedFrom.iso, timeAssumed: true }, timeZone)
+    : null;
   return (
-    <TrackItem state={taskMarker(task, bucket)} title={task.title}>
+    <TrackItem state={taskMarker(task, needsReview ? 'needsReview' : bucket)} title={task.title}>
+      {courseLabel ? (
+        <p className="mt-1 text-xs text-ink-muted">
+          {courseLabel} · {task.kind}
+        </p>
+      ) : null}
       <div className="mt-1 flex flex-wrap items-baseline gap-x-3 gap-y-1 text-sm text-ink-muted">
-        <span>{relativeDue(task.due.iso, now)}</span>
-        {bucket === 'needsReview' ? (
-          <span className="font-medium text-attention">Needs review</span>
-        ) : null}
+        <span>{relativeDue(task.due.iso, now, timeZone)}</span>
+        {needsReview ? <span className="font-medium text-attention">Needs review</span> : null}
         {movedFrom && isRecentlyMoved(task, now) ? (
           <span className="rounded-full border border-danger px-2 py-0.5 text-xs font-medium text-danger">
             Moved
           </span>
         ) : null}
       </div>
+      {task.due.iso ? (
+        <p className="mt-1 text-xs text-ink-muted">
+          <time dateTime={task.due.iso}>{dateLabel}</time>
+          {task.due.timeAssumed ? ' · Time needs review' : null}
+        </p>
+      ) : null}
       {movedFrom && isRecentlyMoved(task, now) ? (
         <p className="mt-1 text-xs text-danger">
-          Moved from{' '}
-          <del aria-label={`Previously due ${dueDateLabel(movedFrom.iso, task.due.timeZone)}`}>
-            {dueDateLabel(movedFrom.iso, task.due.timeZone)}
-          </del>
+          Moved from <del aria-label={`Previously due ${previousLabel}`}>{previousLabel}</del>
         </p>
       ) : null}
       {dueConflict ? (
         <p className="mt-1 text-xs font-medium text-attention">
-          Learn changed this date to {dueDateLabel(dueConflict.observed.iso, task.due.timeZone)};
-          you set {dueDateLabel(task.due.iso, task.due.timeZone)}. Needs review.
+          Learn changed this date to{' '}
+          {dueDateLabel({ ...dueConflict.observed, timeAssumed: true }, timeZone)}; you set{' '}
+          {dateLabel}. Needs review.
         </p>
       ) : null}
-      {bucket === 'needsReview' ? (
+      {needsReview ? (
         <>
           <p className="mt-1 text-xs text-attention text-pretty">{needsReviewReason(task)}</p>
           {task.due.raw ? (
@@ -183,6 +180,7 @@ const BUCKET_LABELS = {
   upcoming: 'Upcoming',
   overdue: 'Overdue',
   needsReview: 'Needs review',
+  later: 'Later',
 } as const;
 
 function DeadlineSummary({
@@ -218,7 +216,7 @@ function DeadlineSummary({
           </li>
         ))}
       </ul>
-      {updated ? <p className="text-xs">Updated {updated}</p> : null}
+      {updated ? <p className="text-xs">Latest deadline read {updated}</p> : null}
     </div>
   );
 }
@@ -317,18 +315,67 @@ function relativeUpdatedAt(value: string, now: Date): string {
 
 function DeadlineSections({ state, now }: { state: PanelState; now: Date }) {
   const [view, setView] = useDeadlineView();
-  const byId = new Map(state.tasks.map((task) => [task.id, task]));
-  const buckets = (['today', 'overdue', 'needsReview', 'upcoming'] as const)
-    .map((bucket) => ({
-      bucket,
-      tasks: state.deadlines[bucket].map((id) => byId.get(id)).filter((t): t is CourseTask => !!t),
-    }))
-    .filter((section) => section.tasks.length > 0);
-
-  const activeTasks = state.tasks.filter((task) => isActiveTask(task) && !isUndatedMaterial(task));
-  if (buckets.length === 0 && activeTasks.length === 0) return null;
+  const [courseFilter, setCourseFilter] = useState<string | null>(null);
+  const activeTasks = state.tasks
+    .filter((task) => isActiveTask(task) && !isUndatedMaterial(task))
+    .sort(
+      (a, b) =>
+        (a.due.iso ? Date.parse(a.due.iso) : Infinity) -
+          (b.due.iso ? Date.parse(b.due.iso) : Infinity) || a.title.localeCompare(b.title),
+    );
+  if (activeTasks.length === 0) return null;
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  const weeks = groupByWeek(activeTasks, now, timeZone);
+  const courseIds = [...new Set(activeTasks.map((task) => task.courseId))];
+  const selectedCourse = courseFilter && courseIds.includes(courseFilter) ? courseFilter : null;
+  const visibleTasks = activeTasks.filter(
+    (task) => !selectedCourse || task.courseId === selectedCourse,
+  );
+  const grouped = deadlineBuckets(visibleTasks, now, timeZone);
+  const bucketed = new Set(
+    Object.values(grouped)
+      .flat()
+      .map((task) => task.id),
+  );
+  const buckets = [
+    ...(['overdue', 'today', 'needsReview', 'upcoming'] as const).map((bucket) => ({
+      bucket,
+      tasks: grouped[bucket],
+    })),
+    { bucket: 'later' as const, tasks: visibleTasks.filter((task) => !bucketed.has(task.id)) },
+  ].filter((section) => section.tasks.length > 0);
+  const weeks = groupByWeek(
+    visibleTasks.filter((task) => !taskNeedsReview(task)),
+    now,
+    timeZone,
+  );
+  const knownCourses = new Map(
+    [...state.courses, ...(state.course ? [state.course] : [])].map((course) => [
+      course.id,
+      course,
+    ]),
+  );
+  const courseNames = new Map(
+    [...knownCourses].map(([id, course]) => [id, course.code ?? course.name]),
+  );
+
+  const renderBucket = ({ bucket, tasks }: (typeof buckets)[number]) => (
+    <div key={bucket} className="grid gap-2">
+      <h3 className="text-sm font-medium text-ink-muted">
+        {BUCKET_LABELS[bucket]} · {tasks.length}
+      </h3>
+      <Track label={BUCKET_LABELS[bucket]}>
+        {tasks.map((task) => (
+          <DeadlineItem
+            key={task.id}
+            task={task}
+            bucket={bucket === 'later' ? 'upcoming' : bucket}
+            now={now}
+            courseLabel={courseNames.get(task.courseId) ?? 'Unknown course'}
+          />
+        ))}
+      </Track>
+    </div>
+  );
 
   return (
     <section className="grid gap-5" aria-labelledby="deadlines-title">
@@ -359,24 +406,57 @@ function DeadlineSections({ state, now }: { state: PanelState; now: Date }) {
           </button>
         </div>
       </div>
-      <DeadlineSummary state={state} tasks={activeTasks} now={now} />
-      {view === 'list'
-        ? buckets.map(({ bucket, tasks }) => (
-            <div key={bucket} className="grid gap-2">
-              <h3 className="text-sm font-medium text-ink-muted">{BUCKET_LABELS[bucket]}</h3>
-              <Track label={BUCKET_LABELS[bucket]}>
-                {tasks.map((task) => (
-                  <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />
-                ))}
-              </Track>
-            </div>
-          ))
-        : weeks.map((week) => <WeekSection key={week.key} week={week} now={now} />)}
+      {courseIds.length > 1 ? (
+        <label className="grid gap-1 text-xs text-ink-muted">
+          Filter by course
+          <select
+            value={selectedCourse ?? ''}
+            onChange={(event) => setCourseFilter(event.target.value || null)}
+            className="min-h-8 w-full min-w-0 rounded border border-edge bg-surface px-2 text-sm text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+          >
+            <option value="">All courses</option>
+            {courseIds.map((id) => (
+              <option key={id} value={id}>
+                {knownCourses.get(id)?.code ?? knownCourses.get(id)?.name ?? 'Unknown course'}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+      <DeadlineSummary state={state} tasks={visibleTasks} now={now} />
+      <p className="text-xs text-ink-muted">
+        Dates shown in {timeZone}. Check Learn before submitting.
+      </p>
+      {state.connection !== 'supported' ? (
+        <p className="text-xs text-attention" role="status">
+          Saved deadlines · Open a signed-in course page to check for changes.
+        </p>
+      ) : null}
+      {view === 'list' ? (
+        buckets.map(renderBucket)
+      ) : (
+        <>
+          {grouped.needsReview.length > 0
+            ? renderBucket({ bucket: 'needsReview', tasks: grouped.needsReview })
+            : null}
+          {weeks.map((week) => (
+            <WeekSection key={week.key} week={week} now={now} courseNames={courseNames} />
+          ))}
+        </>
+      )}
     </section>
   );
 }
 
-function WeekSection({ week, now }: { week: DeadlineWeekGroup; now: Date }) {
+function WeekSection({
+  week,
+  now,
+  courseNames,
+}: {
+  week: DeadlineWeekGroup;
+  now: Date;
+  courseNames: Map<string, string>;
+}) {
   // Week grouping is temporal, not a confidence verdict. In particular, a
   // normal deadline beyond next week belongs to the Later section without
   // acquiring the review warning used by the list's Needs review bucket.
@@ -389,7 +469,13 @@ function WeekSection({ week, now }: { week: DeadlineWeekGroup; now: Date }) {
       </h3>
       <Track label={week.label}>
         {week.tasks.map((task) => (
-          <DeadlineItem key={task.id} task={task} bucket={bucket} now={now} />
+          <DeadlineItem
+            key={task.id}
+            task={task}
+            bucket={bucket}
+            now={now}
+            courseLabel={courseNames.get(task.courseId) ?? 'Unknown course'}
+          />
         ))}
       </Track>
     </div>
@@ -559,11 +645,24 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
   const start = (goal: string) => send({ type: 'session-create', goal, tabId: null });
 
   if (state.connection === 'restricted') return <RestrictedView state={state} send={send} />;
-  if (state.connection === 'idle') return <IdleView state={state} send={send} />;
-  if (state.connection === 'unsupported') return <UnsupportedView state={state} send={send} />;
-  if (state.connection === 'permission-needed')
-    return <PermissionNeededView state={state} send={send} />;
-  if (state.connection === 'signed-out') return <SignedOutView state={state} send={send} />;
+  if (state.connection !== 'supported') {
+    const connectionView =
+      state.connection === 'idle' ? (
+        <IdleView state={state} send={send} />
+      ) : state.connection === 'unsupported' ? (
+        <UnsupportedView state={state} send={send} />
+      ) : state.connection === 'permission-needed' ? (
+        <PermissionNeededView state={state} send={send} />
+      ) : (
+        <SignedOutView state={state} send={send} />
+      );
+    return (
+      <div className="grid gap-6">
+        {connectionView}
+        <DeadlineSections state={state} now={now} />
+      </div>
+    );
+  }
 
   const hints = suggestions(state);
 

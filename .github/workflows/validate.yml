@@ -51,6 +51,9 @@ jobs:
       - name: Build production extension
         run: npm run build
 
+      - name: Store package safety tests
+        run: npm run test:package
+
       - name: Install test browser
         run: npx playwright install --with-deps chromium
 

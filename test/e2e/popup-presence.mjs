@@ -34,13 +34,16 @@ try {
   const extensionPage = await context.newPage();
   await extensionPage.goto(`chrome-extension://${extensionId}/src/sidepanel/index.html`);
   const popupBefore = await popup.innerText('body');
-  const mark = await popup.locator('.motion-brand-mark').evaluate((node) => {
+  const mark = await popup.locator('.motion-brand-mark').evaluate(async (node) => {
     const css = getComputedStyle(node);
     const bounds = node.getBoundingClientRect();
-    return { mask: css.maskImage || css.webkitMaskImage, color: css.backgroundColor, width: bounds.width, height: bounds.height };
+    const url = css.backgroundImage.match(/url\(["']?(.+?)["']?\)/)?.[1];
+    const image = new Image();
+    if (url) { image.src = url; await image.decode(); }
+    return { image: css.backgroundImage, loaded: image.naturalWidth > 0, width: bounds.width, height: bounds.height };
   });
-  check('popup renders the shared Motion mark with visible dimensions and accent',
-    mark.mask !== 'none' && mark.mask.includes('motion-mark') && mark.width > 0 && mark.height > 0 && mark.color !== 'rgba(0, 0, 0, 0)');
+  check('popup renders the shared full-colour Motion mark with visible dimensions and loaded artwork',
+    mark.image.includes('motion-mark') && mark.loaded && mark.width > 0 && mark.height > 0);
   await mkdir(resolve('.motion-local/logo-review'), { recursive: true });
   await popup.emulateMedia({ colorScheme: 'light' });
   await popup.locator('main').screenshot({ path: resolve('.motion-local/logo-review/popup-light.png') });

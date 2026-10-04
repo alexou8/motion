@@ -37,6 +37,7 @@ describe('manifest.config production build', () => {
     expect(hostPermissions.every((host) => host.startsWith('https://'))).toBe(true);
     const manifestRecord = resolved as { permissions?: string[]; optional_permissions?: string[] };
     expect(manifestRecord.permissions).not.toContain('nativeMessaging');
+    expect(manifestRecord.permissions).not.toContain('scripting');
     expect(manifestRecord.optional_permissions).toContain('nativeMessaging');
   });
 
@@ -55,7 +56,10 @@ describe('manifest.config production build', () => {
     process.env.MOTION_E2E_KEYCHAIN = '1';
     vi.resetModules();
     const { default: manifest } = await import('./manifest.config');
-    const resolved = await manifest as { permissions?: string[]; optional_permissions?: string[] };
+    const resolved = (await manifest) as {
+      permissions?: string[];
+      optional_permissions?: string[];
+    };
     expect(resolved.permissions).toContain('nativeMessaging');
     expect(resolved.optional_permissions ?? []).not.toContain('nativeMessaging');
   });

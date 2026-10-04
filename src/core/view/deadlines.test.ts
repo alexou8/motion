@@ -46,6 +46,19 @@ function task(id: string, overrides: Partial<CourseTask> = {}): CourseTask {
 }
 
 describe('deadlineBuckets', () => {
+  it('marks an elapsed deadline earlier today as overdue', () => {
+    const past = task('past-today', { due: due({ iso: '2026-03-10T14:59:00.000Z' }) });
+    const buckets = deadlineBuckets([past], NOW, TZ);
+    expect(buckets.overdue.map((item) => item.id)).toEqual(['past-today']);
+    expect(buckets.today).toHaveLength(0);
+  });
+
+  it('keeps next-day deadlines out of Today on the spring DST transition', () => {
+    const nextDay = task('synthetic-monday', { due: due({ iso: '2026-03-09T04:30:00.000Z' }) });
+    const buckets = deadlineBuckets([nextDay], new Date('2026-03-08T05:30:00.000Z'), TZ);
+    expect(buckets.upcoming.map((item) => item.id)).toEqual(['synthetic-monday']);
+    expect(buckets.today).toHaveLength(0);
+  });
   it('places a task due today (Toronto) in today, not overdue/upcoming', () => {
     // 2026-03-10 23:30 UTC = 18:30 EST — still "today" in Toronto.
     const t = task('t-today', { due: due({ iso: '2026-03-10T23:30:00.000Z' }) });
@@ -82,8 +95,15 @@ describe('deadlineBuckets', () => {
       due: due({ iso: '2026-03-09T12:00:00.000Z' }),
       status: 'submitted',
     });
-    const graded = task('t-graded', { due: due({ iso: '2026-03-09T12:00:00.000Z' }), status: 'graded' });
-    const archived = task('t-archived', { due: due({ iso: '2026-03-09T12:00:00.000Z' }), archived: true, status: 'archived' });
+    const graded = task('t-graded', {
+      due: due({ iso: '2026-03-09T12:00:00.000Z' }),
+      status: 'graded',
+    });
+    const archived = task('t-archived', {
+      due: due({ iso: '2026-03-09T12:00:00.000Z' }),
+      archived: true,
+      status: 'archived',
+    });
     const buckets = deadlineBuckets([submitted, graded, archived], NOW, TZ);
     expect(buckets.overdue).toHaveLength(0);
     expect(buckets.needsReview).toHaveLength(0);
@@ -125,7 +145,11 @@ describe('deadlineBuckets', () => {
 
   it('a confirmed correction with explicit zone/time is never needs-review', () => {
     const t = task('t-confirmed', {
-      due: due({ iso: '2026-03-15T12:00:00.000Z', confidence: 'confirmed', zoneEvidence: 'explicit' }),
+      due: due({
+        iso: '2026-03-15T12:00:00.000Z',
+        confidence: 'confirmed',
+        zoneEvidence: 'explicit',
+      }),
     });
     const buckets = deadlineBuckets([t], NOW, TZ);
     expect(buckets.needsReview).toHaveLength(0);

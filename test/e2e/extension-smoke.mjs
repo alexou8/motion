@@ -46,7 +46,7 @@ const jsonFixture = (name) => readFileSync(join(fixtureDir, `${name}.json`), 'ut
 // fixture dates eventually become overdue and stop exercising these buckets.
 const calendarFixture = JSON.parse(jsonFixture('discovery-calendar-events'));
 const thisWeek = new Date();
-thisWeek.setHours(12, 0, 0, 0);
+thisWeek.setHours(23, 59, 59, 999);
 const later = new Date(thisWeek);
 later.setDate(later.getDate() + 14);
 calendarFixture.Items[0].EndDateTime = thisWeek.toISOString();
@@ -370,7 +370,7 @@ try {
   // A same-tab navigation into an attempt: the tab events fire before the
   // content script reports, so only an observation-driven refresh catches it.
   await courseTab.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
-  await panel.waitForTimeout(1_200);
+  await panel.getByText('Restricted mode', { exact: true }).waitFor({ state: 'visible' });
   check(
     'navigating the same tab into an attempt reaches the rendered panel',
     /Restricted mode/i.test(await panel.innerText('body')),
@@ -453,6 +453,7 @@ try {
   await page.bringToFront();
   await page.goto(`${ORIGIN}/d2l/home/999999?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
+  await panel.getByRole('textbox', { name: 'What do you want to work on?' }).waitFor({ state: 'visible' });
   check('the composer is offered on a readable course page', (await panel.locator('textarea').count()) === 1);
   const discoveryState = await getState();
   if (discoveryState?.result?.discovery?.optedIn === null) {
@@ -481,9 +482,48 @@ try {
   // switching the deadline view.
   await panel.getByRole('button', { name: 'Week', exact: true }).first().click();
   const weekText = await panel.innerText('body');
-  check('deadline week view shows this week and later without uncertainty labels', /This week/i.test(weekText) && /Later/i.test(weekText) && !/Needs review/i.test(weekText));
+  const scannedQuiz = panel.getByRole('heading', { name: 'Chapter 1 Quiz', exact: true }).locator('..');
+  const scannedDiscussion = panel.getByRole('heading', { name: 'Discussion 1', exact: true }).locator('..');
+  check('deadline week view shows this week and later without uncertainty labels on confirmed API dates',
+    /This week/i.test(weekText) && /Later/i.test(weekText) &&
+    !/Needs review/i.test(await scannedQuiz.innerText()) &&
+    !/Needs review/i.test(await scannedDiscussion.innerText()));
+  check('uncertain cached dates retain their review warnings in Week view',
+    /Needs review/.test(weekText));
+  const previousViewport = panel.viewportSize();
+  for (const theme of ['light', 'dark']) {
+    await panel.emulateMedia({ colorScheme: theme });
+    await panel.setViewportSize({ width: 320, height: 800 });
+    const layout = await panel.evaluate(() => {
+      const main = document.querySelector('main');
+      return document.documentElement.scrollWidth <= innerWidth && (!main || main.scrollWidth <= main.clientWidth);
+    });
+    check(`${theme} deadline view fits a 320px panel without horizontal overflow`, layout);
+  }
+  if (previousViewport) await panel.setViewportSize(previousViewport);
+  await panel.emulateMedia({ colorScheme: 'light' });
+  await panel.getByLabel('Filter by course').selectOption('d2l:101');
+  check('course filter narrows the week view to the selected course',
+    await panel.getByText('2 deadlines across 1 course', { exact: true }).count() === 1 &&
+    await panel.getByRole('heading', { name: 'Chapter 1 Quiz', exact: true }).count() === 1 &&
+    await panel.getByRole('heading', { name: 'Discussion 1', exact: true }).count() === 1);
+  await panel.getByRole('button', { name: 'List', exact: true }).click();
+  check('course filter also applies to List and retains distant deadlines',
+    await panel.getByText('2 deadlines across 1 course', { exact: true }).count() === 1 &&
+    await panel.getByRole('heading', { name: 'Discussion 1', exact: true }).count() === 1 &&
+    /Later/.test(await panel.innerText('body')));
+  if (process.env.MOTION_CAPTURE_STORE === '1') {
+    const { captureStoreAssets } = await import('../../scripts/capture-store-assets.mjs');
+    await captureStoreAssets(context, panel);
+  }
+  await panel.getByLabel('Filter by course').selectOption('');
+  await page.goto(`${ORIGIN}/d2l/home/424242?ou=424242`, { waitUntil: 'load' });
+  await panel.waitForTimeout(1_200);
+  check('signed-out panel keeps cached deadlines with a freshness warning',
+    /Saved deadlines/.test(await panel.innerText('body')) && await panel.getByRole('heading', { name: 'Chapter 1 Quiz', exact: true }).count() === 1);
   await page.goto(`${ORIGIN}/d2l/lms/quizzing/user/attempt/201?ou=999999`, { waitUntil: 'load' });
   await panel.waitForTimeout(1_200);
+  await panel.getByText('Restricted mode', { exact: true }).waitFor({ state: 'visible' });
   const restrictedBody = await panel.innerText('body');
   const restrictedControls = await panel.locator('button, a, textarea, input, select, form').allInnerTexts();
   check(
