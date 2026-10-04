@@ -41,7 +41,7 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 describe('AI/settings handlers', () => {
   it('stores a key only in session secrets and never returns or logs the canary', async () => {
@@ -154,6 +154,7 @@ describe('AI/settings handlers', () => {
   });
 
   it('runs provider health checks and returns an honest result without echoing the key', async () => {
+    await preferences.update({ cloudDisclosureAccepted: ['openai'] });
     await secrets.set('openai', CANARY);
     const result = await handleAiMessage(
       { type: 'test-provider', providerId: 'openai' },
@@ -168,6 +169,72 @@ describe('AI/settings handlers', () => {
     );
     expect(JSON.stringify(result)).not.toContain(CANARY);
     expect(result).toEqual({ availability: { status: 'available', message: 'OpenAI is ready.' } });
+  });
+
+  it.each(['openai', 'anthropic'] as const)('never sends a %s health request after disclosure or host access is revoked', async (providerId) => {
+    await secrets.set(providerId, CANARY);
+    const fetchImpl = vi.fn();
+    const deps = { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl,
+      permissions: { contains: vi.fn(async () => true) } };
+    await expect(handleAiMessage({ type: 'test-provider', providerId }, deps)).rejects.toThrow(/disclosure/i);
+    await preferences.update({ cloudDisclosureAccepted: [providerId] });
+    deps.permissions.contains.mockResolvedValue(false);
+    await expect(handleAiMessage({ type: 'test-provider', providerId }, deps)).rejects.toThrow(/permission/i);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not send a health request if disclosure is revoked while the credential is being retrieved', async () => {
+    await preferences.update({ cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    vi.spyOn(secrets, 'get').mockImplementation(async () => {
+      await preferences.update({ cloudDisclosureAccepted: [] });
+      return CANARY;
+    });
+    const fetchImpl = vi.fn();
+    const result = await handleAiMessage({ type: 'test-provider', providerId: 'openai' }, {
+      preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl,
+      permissions: { contains: async () => true },
+    });
+    expect(result).toMatchObject({ availability: { status: 'network-error' } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(['test-provider', 'list-provider-models'] as const)('stops %s when Forget wins during a delayed credential read', async (type) => {
+    await preferences.update({ cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    let entered!: () => void;
+    let release!: (key: string) => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const credential = new Promise<string>((resolve) => { release = resolve; });
+    vi.spyOn(secrets, 'has').mockResolvedValue(true);
+    vi.spyOn(secrets, 'get').mockImplementation(async () => { entered(); return credential; });
+    const fetchImpl = vi.fn();
+    const deps = { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl,
+      permissions: { contains: async () => true } };
+    const pending = handleAiMessage({ type, providerId: 'openai' }, deps);
+    await reading;
+    await handleAiMessage({ type: 'forget-provider-key', providerId: 'openai' }, deps);
+    release(CANARY);
+    await pending;
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('aborts a health check waiting for its model-list response body when the key is forgotten', async () => {
+    await preferences.update({ cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    let cancelled = false;
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+      pull() { entered(); }, cancel() { cancelled = true; },
+    }), { status: 200 }));
+    const deps = { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl,
+      permissions: { contains: async () => true } };
+    const pending = handleAiMessage({ type: 'test-provider', providerId: 'openai' }, deps);
+    await reading;
+    await handleAiMessage({ type: 'forget-provider-key', providerId: 'openai' }, deps);
+    await pending;
+    expect(cancelled).toBe(true);
   });
 
   it('lists only bounded text-capable account models after every cloud gate passes', async () => {

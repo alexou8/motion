@@ -144,7 +144,7 @@ export class OpenAIProvider implements AIProvider {
     return { status: 'available', message: 'OpenAI is ready.' };
   }
 
-  async listModels(): Promise<string[]> {
+  async listModels(options: Pick<GenerateRequest, 'signal'> = {}): Promise<string[]> {
     const key = await this.key();
     if (!key) throw new ProviderError('not-configured', 'OpenAI is not configured.');
     const response = await requestWithRetry({
@@ -153,6 +153,7 @@ export class OpenAIProvider implements AIProvider {
       fetchImpl: this.fetchImpl,
       timeoutMs: DEFAULT_HEALTH_TIMEOUT_MS,
       knownSecrets: [key],
+      signal: options.signal,
     });
     if (!response.ok) throw await this.toProviderError(response, key, 'GET');
     let rawBody: unknown;
@@ -166,9 +167,9 @@ export class OpenAIProvider implements AIProvider {
     return body.data.data.map((model) => model.id);
   }
 
-  async healthCheck(): Promise<ProviderAvailability> {
+  async healthCheck(options: Pick<GenerateRequest, 'signal'> = {}): Promise<ProviderAvailability> {
     try {
-      await this.listModels();
+      await this.listModels(options);
       return { status: 'available', message: 'OpenAI is ready.' };
     } catch (err) {
       return this.availabilityFromError(err);

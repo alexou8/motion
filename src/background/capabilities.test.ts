@@ -7,6 +7,9 @@ import {
 } from '@/core/workflows';
 import { InMemoryWorkflowStore } from '@/core/storage/workflowStore';
 import type { ApprovalRequest } from '@/core/policy';
+import { DEFAULT_AI_PREFERENCES } from '@/core/ai/preferences';
+import { handleAiMessage } from './aiHandlers';
+import { abortCloudRequests } from './cloudRequests';
 import { FakeTabs } from '@/test/fakeTabs';
 import { openDatabase } from '@/core/storage/db';
 import { sessionRepository } from '@/core/storage/repositories';
@@ -63,8 +66,9 @@ beforeAll(() => {
           (Array.isArray(key) ? key : [key]).forEach((item) => sessionStore.delete(item));
         },
       },
-      local: { get: async () => ({}), set: async () => undefined },
+      local: { get: async () => ({ 'motion.preferences': { ...DEFAULT_AI_PREFERENCES, providerId: 'openai', cloudDisclosureAccepted: ['openai'] } }), set: async () => undefined },
     },
+    permissions: { contains: async () => true },
   });
 });
 
@@ -171,6 +175,37 @@ describe('recovering after the worker died mid-step', () => {
 });
 
 describe('capability boundaries', () => {
+  it.each(['disclosure', 'provider', 'key', 'host'] as const)('aborts nonstream generation after %s revocation and discards a late result', async (change) => {
+    await seedSession();
+    let started!: () => void;
+    let finish!: (value: string) => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const output = new Promise<string>((resolve) => { finish = resolve; });
+    let signal: AbortSignal | undefined;
+    const provider = {
+      id: 'openai' as const, displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: false, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: false }),
+      availability: async () => ({ status: 'available' as const, message: '' }),
+      generate: async (request: { signal?: AbortSignal }) => { signal = request.signal; started(); return output; },
+      stream: async function* () { yield ''; },
+    };
+    const capability = buildCapabilities(new FakeTabs(), {
+      resolveProvider: async () => ({ kind: 'ready', provider, providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    }).find((item) => item.action === 'generate-draft')!;
+    const pending = capability.execute(context());
+    await entered;
+    if (change === 'host') abortCloudRequests();
+    else await handleAiMessage(change === 'disclosure'
+      ? { type: 'accept-cloud-disclosure', providerId: 'openai', accepted: false }
+      : change === 'provider' ? { type: 'set-ai-preferences', providerId: 'chrome-local' }
+      : { type: 'forget-provider-key', providerId: 'openai' });
+    expect(signal?.aborted).toBe(true);
+    finish('Synthetic output returned after cancellation');
+    await expect(pending).resolves.toMatchObject({ kind: 'skipped' });
+    const db = await openDatabase();
+    expect((await sessionRepository(db).get('cap-session'))?.artifacts).toEqual([]);
+  });
+
   it('counts active deadline work without counting lecture materials or completed and archived tasks', async () => {
     const courseId = 'd2l:909090';
     await seedSession({ courseId });
@@ -461,6 +496,35 @@ describe('capability boundaries', () => {
 
     await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'skipped' });
     expect(act).not.toHaveBeenCalled();
+  });
+
+  it('does not perform an actor effect when cancellation occurs during the settings read', async () => {
+    await seedSession({ workspace: { groupId: 100, groupTitle: 'Motion · CP363 · A2', sessionKey: 'session-1', ownedTabIds: [10], adoptedTabIds: [], releasedTabIds: [] } });
+    let current = true;
+    const settings = vi.spyOn(chrome.storage.local, 'get').mockImplementation(async () => {
+      current = false;
+      return { 'motion.preferences': DEFAULT_AI_PREFERENCES };
+    });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find((item) => item.action === 'focus-element')!;
+    const actorContext = context('settings-cancel-race', async () => current);
+    actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1' };
+    try {
+      await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'skipped' });
+      expect(act).not.toHaveBeenCalled();
+    } finally { settings.mockRestore(); }
+  });
+
+  it('does not perform configurable work after its ongoing consent was revoked', async () => {
+    await seedSession({ workspace: { groupId: 100, groupTitle: 'Motion · CP363 · A2', sessionKey: 'session-1', ownedTabIds: [10], adoptedTabIds: [], releasedTabIds: [] } });
+    const act = vi.fn(async () => ({ ok: true }));
+    const capability = buildCapabilities(new FakeTabs(), { act }).find((item) => item.action === 'fill-form-field')!;
+    const actorContext = context();
+    actorContext.step.input = { tabId: 10, snapshotId: 'snap-1', handle: 'e1', value: 'Synthetic draft' };
+    await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'blocked', reason: expect.stringContaining('revoked') });
+    expect(act).not.toHaveBeenCalled();
+    actorContext.step.consumedApprovalId = 'fresh-per-step-approval';
+    await expect(capability.execute(actorContext)).resolves.toMatchObject({ kind: 'done' });
   });
 
   it('refuses a workspace control on a restricted assessment tab', async () => {

@@ -133,6 +133,6 @@ python3 -m unittest discover -s native/tests -v
 python3 native/package.py
 ```
 
-The packager creates `motion-keychain-companion-0.1.1.zip` containing only the
+The packager creates `motion-keychain-companion-0.1.2.zip` containing only the
 host source, installer source, README, and this document. It contains no
 Native Messaging registrations, vault records, extension IDs, or API keys.

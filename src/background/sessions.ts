@@ -13,6 +13,7 @@ import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { createEngine } from './recovery';
 import { closeSessionWorkspace } from './workspaceEvents';
 import { recoverStaleModelRequests, runFallbackPlan, runModelTurn, stopGeneration } from './modelTurn';
+import { abortSessionRequests } from './cloudRequests';
 
 const ACTIVE_SESSION_KEY = 'motion.activeSessionId';
 
@@ -224,6 +225,7 @@ export async function adoptWorkspaceTab(
 async function applyIntent(session: AgentSession, text: string): Promise<AgentSession> {
   const intent = detectIntent(text);
   if (!intent) return (await runModelTurn(session.id, text)) ?? session;
+  if (intent.type === 'exclude-source') abortSessionRequests(session.id);
   const now = new Date().toISOString();
   if (intent.type === 'open-everything') {
     const next = await updateExistingSession(session.id, (current) =>
@@ -242,7 +244,7 @@ async function applyIntent(session: AgentSession, text: string): Promise<AgentSe
   if (intent.type === 'resume') {
     for (const id of current.workflowIds) await engine.resume(id);
   }
-  return (await updateExistingSession(session.id, (latest) => {
+  const result = (await updateExistingSession(session.id, (latest) => {
     if (terminalRefusal(latest)) return null;
     let next = appendMessage(latest, { id: crypto.randomUUID(), role: 'student', text }, now);
     if (intent.type === 'pause' || intent.type === 'stop') {
@@ -258,6 +260,7 @@ async function applyIntent(session: AgentSession, text: string): Promise<AgentSe
       return appendMessage(next, { id: crypto.randomUUID(), role: 'motion', text: step ? `The current step is “${step.title}” because it supports your stated goal.` : 'There is no active step yet.' }, now);
     }
     if (intent.type === 'exclude-source') {
+      abortSessionRequests(session.id);
       const source = next.context.sources.find((item) => item.url.includes(intent.hint ?? '') || item.title.toLowerCase().includes((intent.hint ?? '').toLowerCase()));
       next = source ? excludeSource(next, source.url, now) : next;
       return appendMessage(next, { id: crypto.randomUUID(), role: 'motion', text: source ? `I will not use “${source.title || source.url}”.` : 'Tell me which source you want to exclude.' }, now);
@@ -269,6 +272,8 @@ async function applyIntent(session: AgentSession, text: string): Promise<AgentSe
     }
     return appendMessage(next, { id: crypto.randomUUID(), role: 'motion', text: `I’ll show the ${intent.range === 'all' ? 'known' : intent.range} deadlines in the deadline view.` }, now);
   })) ?? (await getSession(session.id)) ?? session;
+  if (intent.type === 'exclude-source') abortSessionRequests(session.id);
+  return result;
 }
 
 export async function handleSessionMessage(message: SessionMessage): Promise<unknown> {
@@ -289,6 +294,7 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
       return refusal ? { session, refusal } : { session: await applyIntent(session, message.text) };
     }
     case 'session-source': {
+      if (message.excluded) abortSessionRequests(message.sessionId);
       const session = await getSession(message.sessionId);
       if (!session) return { updated: false };
       const now = new Date().toISOString();
@@ -297,6 +303,7 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
       const next = await updateExistingSession(session.id, (current) => terminalRefusal(current)
         ? null
         : { ...current, context: { ...current.context, sources: current.context.sources.map((source) => source.url === message.url ? { ...source, excluded: message.excluded } : source) }, updatedAt: now });
+      if (message.excluded) abortSessionRequests(message.sessionId);
       return { updated: next !== null, session: next };
     }
     case 'session-tab': {

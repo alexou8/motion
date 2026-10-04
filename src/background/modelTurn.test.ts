@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ProviderError } from '@/core/ai/types';
+import { DEFAULT_AI_PREFERENCES } from '@/core/ai/preferences';
 import { deleteDatabase, openDatabase } from '@/core/storage/db';
 import { sessionRepository, updateSession } from '@/core/storage/repositories';
 import { Repository } from '@/core/storage/repository';
@@ -8,6 +9,10 @@ import { courseTaskSchema } from '@/core/domain';
 import type { AgentSession } from '@/core/session';
 import { FakeTabs } from '@/test/fakeTabs';
 import { MODEL_RECOVERY_ALARM_PREFIX, recoverStaleModelRequests, runFallbackPlan, runModelTurn, stopGeneration } from './modelTurn';
+import { handleAiMessage } from './aiHandlers';
+import { handleSessionMessage } from './sessions';
+import { OpenAIProvider } from '@/platform/ai/openai';
+import { guardedProviderFetch } from './providers';
 
 const NOW = '2026-09-16T12:00:00.000Z';
 
@@ -30,9 +35,10 @@ beforeEach(async () => {
   vi.stubGlobal('chrome', {
     storage: {
       session: { get: vi.fn(async () => ({})), set: vi.fn(async () => undefined), remove: vi.fn(async () => undefined) },
-      local: { get: vi.fn(async () => ({})), set: vi.fn(async () => undefined) },
+      local: { get: vi.fn(async () => ({ 'motion.preferences': { ...DEFAULT_AI_PREFERENCES, providerId: 'openai', cloudDisclosureAccepted: ['openai'] } })), set: vi.fn(async () => undefined) },
     },
     alarms: { create: vi.fn(async () => undefined) },
+    permissions: { contains: vi.fn(async () => true) },
   });
 });
 
@@ -141,7 +147,117 @@ describe('SOL-19 interim: recovery alarm on claim', () => {
 });
 
 describe('model turn single flight', () => {
-  it('does not commit a provider reply when Stop wins during post-stream plan preparation', async () => {
+  it('never transmits a prepared prompt if a source is excluded during the provider credential read', async () => {
+    const db = await openDatabase();
+    const url = 'https://school.brightspace.com/d2l/le/content/363/viewContent/1/View';
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null,
+      context: { sources: [{ url, title: 'Synthetic private source', kind: 'reading', excluded: false,
+        provenance: url, excerpt: 'SYNTHETIC_PRIVATE_EXCERPT' }] } }));
+    db.close();
+    let entered!: () => void;
+    let release!: (key: string) => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    const credential = new Promise<string>((resolve) => { release = resolve; });
+    const fetchImpl = vi.fn();
+    const provider = new OpenAIProvider({
+      secrets: { persistence: 'session', get: async () => { entered(); return credential; },
+        has: async () => true, set: async () => undefined, forget: async () => undefined },
+      fetchImpl: guardedProviderFetch('openai', { fetchImpl }),
+    });
+    const pending = runModelTurn('session-1', 'Synthetic question', { tabs: new FakeTabs(),
+      resolveProvider: async () => ({ kind: 'ready', provider, providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }) });
+    await reading;
+    await handleSessionMessage({ type: 'session-source', sessionId: 'session-1', url, excluded: true });
+    release('sk-test-SYNTHETIC1234567890');
+    expect((await pending)?.pendingModelRequest).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('omits a source excluded while browser context is being prepared from the outgoing prompt', async () => {
+    const db = await openDatabase();
+    const url = 'https://school.brightspace.com/d2l/le/content/363/viewContent/1/View';
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null,
+      context: { sources: [{ url, title: 'SYNTHETIC_PRIVATE_SOURCE_TITLE', kind: 'reading', excluded: false,
+        provenance: url, excerpt: 'SYNTHETIC_PRIVATE_EXCERPT' }] } }));
+    db.close();
+    const tabs = new FakeTabs();
+    tabs.sessionKey = async () => {
+      const activeDb = await openDatabase();
+      await updateSession(activeDb, 'session-1', (current) => ({ ...current,
+        context: { ...current.context, sources: current.context.sources.map((source) => ({ ...source, excluded: true })) } }));
+      activeDb.close();
+      return 'session-1';
+    };
+    let sent = '';
+    const provider = {
+      id: 'openai' as const, displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }), generate: async () => '',
+      stream: async function* (request: { system: string }) { sent = request.system; yield '{"reply":"Synthetic answer","plan":[]}'; },
+    };
+    await runModelTurn('session-1', 'Synthetic question', { tabs,
+      resolveProvider: async () => ({ kind: 'ready', provider, providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }) });
+    expect(sent).not.toBe('');
+    expect(sent).not.toContain('SYNTHETIC_PRIVATE_SOURCE_TITLE');
+    expect(sent).not.toContain('SYNTHETIC_PRIVATE_EXCERPT');
+    expect(sent).not.toContain('S1');
+  });
+
+  it.each(['disclosure', 'permission', 'provider'] as const)('never starts a cloud stream when %s changes during setup', async (change) => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
+    db.close();
+    const stream = vi.fn(async function* () { yield '{"reply":"Synthetic answer","plan":[]}'; });
+    const provider = {
+      id: 'openai' as const, displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }), generate: async () => '', stream,
+    };
+    const tabs = new FakeTabs();
+    tabs.sessionKey = async () => {
+      if (change === 'permission') (chrome.permissions.contains as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(false);
+      else (chrome.storage.local.get as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ 'motion.preferences': {
+        ...DEFAULT_AI_PREFERENCES,
+        providerId: change === 'provider' ? 'chrome-local' : 'openai',
+        cloudDisclosureAccepted: change === 'disclosure' ? [] : ['openai'],
+      } });
+      return 'session-1';
+    };
+    const result = await runModelTurn('session-1', 'Synthetic private question', {
+      tabs, resolveProvider: async () => ({ kind: 'ready', provider, providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+    expect(stream).not.toHaveBeenCalled();
+    expect(result?.pendingModelRequest).toBeNull();
+  });
+
+  it('aborts a running cloud stream when its disclosure is revoked', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
+    db.close();
+    let started!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const provider = {
+      id: 'openai' as const, displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }), generate: async () => '',
+      stream: async function* (request: { signal?: AbortSignal }) {
+        observedSignal = request.signal;
+        started();
+        await new Promise<void>((_resolve, reject) => request.signal?.addEventListener('abort', () => reject(new ProviderError('cancelled', 'Synthetic cancellation')), { once: true }));
+        yield '';
+      },
+    };
+    const pending = runModelTurn('session-1', 'Synthetic private question', {
+      tabs: new FakeTabs(), resolveProvider: async () => ({ kind: 'ready', provider, providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+    await entered;
+    await handleAiMessage({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: false });
+    expect(observedSignal?.aborted).toBe(true);
+    expect((await pending)?.pendingModelRequest).toBeNull();
+  });
+
+  it.each(['stop', 'disclosure', 'source'] as const)('does not commit a provider reply when %s wins during post-stream plan preparation', async (change) => {
     const db = await openDatabase();
     await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
     db.close();
@@ -155,7 +271,9 @@ describe('model turn single flight', () => {
       sessionKeyCalls += 1;
       if (sessionKeyCalls === 2) {
         signalPersistLookup();
-        await stopGeneration('session-1');
+        if (change === 'stop') await stopGeneration('session-1');
+        else if (change === 'disclosure') await handleAiMessage({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: false });
+        else await handleSessionMessage({ type: 'session-source', sessionId: 'session-1', url: 'https://school.brightspace.com/d2l/le/content/363/viewContent/1/View', excluded: true });
       }
       return originalSessionKey();
     };
@@ -166,7 +284,7 @@ describe('model turn single flight', () => {
       availability: async () => ({ status: 'available' as const, message: '' }),
       generate: async () => '',
       stream: async function* () {
-        yield '{"reply":"This reply arrived after Stop.","plan":[]}';
+        yield '{"reply":"This reply arrived after Stop.","plan":[{"title":"Save a synthetic note","call":{"tool":"create_note","title":"Synthetic note","text":"Must not be saved after cancellation"}}]}';
         streamFinished = true;
       },
     };
@@ -182,7 +300,7 @@ describe('model turn single flight', () => {
     const stored = await sessionRepository(await openDatabase()).get('session-1');
     expect(stored?.conversation.map((entry) => entry.text)).toContain('Start the turn.');
     expect(stored?.conversation.map((entry) => entry.text)).not.toContain('This reply arrived after Stop.');
-    expect(stored).toMatchObject({ status: 'waiting', pendingModelRequest: null, modelTurnGeneration: 3 });
+    expect(stored).toMatchObject({ status: 'waiting', pendingModelRequest: null, modelTurnGeneration: change === 'stop' ? 3 : 2, workflowIds: [] });
   });
 
   it('publishes a stoppable empty preview while waiting for the first provider delta', async () => {

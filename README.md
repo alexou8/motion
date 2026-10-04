@@ -37,7 +37,8 @@ Motion knows what an assignment page is.
 ## What it does
 
 - **Reads the LMS you are on.** D2L Brightspace first, including
-  institution deployments such as Laurier's MyLearningSpace.
+  brightspace.com and desire2learn.com subdomains and Laurier's
+  mylearningspace.wlu.ca. Other institution domains are not supported yet.
 - **Keeps coursework in one view.** Browse saved assignments, quizzes,
   discussions and lecture materials by course, type, status or title. Slides
   and handouts without deadlines remain visible without invented due dates.
@@ -58,7 +59,9 @@ Motion knows what an assignment page is.
 - **Lets you choose the AI model.** Settings offers named OpenAI and Claude
   models, including economical choices for routine coursework. Refresh models
   checks the models available to your API account; explicit unavailable choices
-  are blocked rather than replaced. API keys last only for the browser session.
+  are blocked rather than replaced. API keys last for the browser session by
+  default; explicit opt-in can remember them in an OS credential vault through
+  a separately installed companion.
 - **Checks your draft against the rubric** before you hand it in, and tells you
   where it compared wording only rather than pretending to grade you.
 - **Extracts deadlines with their receipts.** Every due date keeps the raw text
@@ -93,6 +96,13 @@ Motion knows what an assignment page is.
 8. **Calm clarity.** A side panel beside a busy LMS should recede, not compete.
 
 ## Getting started
+
+Chrome Web Store submission materials are in [CHROMEWEBSTORE.md](CHROMEWEBSTORE.md),
+with the exact upload package and checks in
+[submission verification](docs/verification/submission-readiness-2026-10-04.md).
+The [public privacy policy](https://alexou8.github.io/motion/privacy.html) is
+published; the extension has not been submitted or approved. Developer-dashboard
+fields and any requested authenticated reviewer access remain publisher steps.
 
 Requires Node 22+.
 

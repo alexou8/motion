@@ -22,12 +22,17 @@ import { registerInferencePort } from './inferencePort';
 import { onTabRemoved, onTabUpdated } from './workspaceEvents';
 import { warn } from './log';
 import { MODEL_RETRY_ALARM_PREFIX, MODEL_RECOVERY_ALARM_PREFIX } from './modelTurn';
+import { abortCloudRequests } from './cloudRequests';
 import { recoverStaleModelRequests } from './sessions';
 import { reconcileReminders, registerReminderListeners } from './reminders';
 
 // --- Registered synchronously. Do not move these into an async function. ---
 
 registerInferencePort();
+
+// A revoked provider permission stops streams already in flight; new requests
+// independently recheck disclosure, selection and permission before sending.
+chrome.permissions.onRemoved.addListener(() => abortCloudRequests());
 
 chrome.runtime.onInstalled.addListener((details) => {
   if (details.reason === 'update') {

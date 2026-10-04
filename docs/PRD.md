@@ -121,7 +121,10 @@ backend.
   mode requires disclosure acceptance and sends the student's message, session
   plan/state labels, relevant notes and bounded page excerpts to the selected
   provider only, during the model turn. Excerpts are capped at 8,000 characters
-  per source and 24,000 characters per request, with excluded sources omitted.
+  per source. Selected page/note text has a 24,000-character budget; the complete
+  agent system prompt has a separate 24,000-character cap. Bounded conversation
+  history is additional, and excluded sources are omitted from new direct
+  source context. Earlier notes/conversation may still contain their material.
 - Keys default to trusted session storage; explicit opt-in may remember them
   only in the OS credential vault through the optional native companion.
   Browser local/sync storage, IndexedDB, telemetry and Motion servers receive

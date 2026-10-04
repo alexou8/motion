@@ -14,7 +14,7 @@ If you enable deadline scanning for a supported host, Motion reads that site's c
 
 Motion has no account system, analytics, advertising, install tracking, or telemetry. It has no developer-operated server receiving your coursework.
 
-When you choose a PDF or PPTX source in Library, Motion downloads it from the supported course destination and indexes selectable text locally with page or slide numbers, course and source metadata. Bundled parsers process the file on your device. Indexing does not send files or their text to an AI provider. You can search, read, reindex, or remove individual indexes.
+When you choose a PDF or PPTX source in Library, Motion downloads it from the supported course destination and indexes selectable text locally with page or slide numbers, course and source metadata. You can also explicitly import a PDF or PPTX from your device; Motion indexes its text and stores the filename and your chosen course association locally. Bundled parsers process the file on your device. Indexing does not send files or their text to an AI provider. You can search, read, reindex, or remove individual indexes.
 
 ## Local storage and processing
 
@@ -26,9 +26,11 @@ Reminders are off by default. After you enable them, notifications use locally s
 
 ## Optional cloud AI providers
 
-When you select OpenAI or Anthropic, accept the cloud-processing disclosure, and grant permission for that provider, Motion sends your message or goal, relevant session state, notes, and bounded excerpts directly to the selected provider over HTTPS. Sources you exclude are omitted from that model turn. Motion does not proxy these requests through a Motion server or silently switch providers.
+When you select OpenAI or Anthropic, accept the cloud-processing disclosure, and grant permission for that provider, Motion sends your message or goal, relevant session state, notes, and bounded excerpts directly to the selected provider over HTTPS. Sources you exclude are omitted as direct source context from new model requests. Previously saved notes or conversation may still contain material from those sources; exclusion cannot retract content already sent to a provider. Motion does not proxy these requests through a Motion server or silently switch providers.
 
 Provider API keys are sent to the selected provider to authenticate requests. Keys are held in trusted browser-session storage by default and disappear when the browser session ends. They are never saved in browser local storage, Chrome sync, IndexedDB, logs, or ordinary files. If you explicitly choose to remember a key and install the optional local companion, it is saved in your operating system's credential vault. The companion connects locally and has no server.
+
+Testing a cloud provider or refreshing its available models also requires that provider's disclosure and endpoint permission. These checks send your API key directly to the provider to retrieve model names; they do not send coursework, chat messages, or a test prompt. Model selection during a cloud turn may retrieve the same model catalogue.
 
 Provider processing and retention are governed by the selected provider's terms and privacy policies: [OpenAI](https://openai.com/policies/privacy-policy/) and [Anthropic](https://www.anthropic.com/legal/privacy). Any usage fees are charged by that provider. Revoking cloud disclosure, removing the provider's permission, or selecting the local provider prevents subsequent cloud turns.
 
@@ -40,11 +42,13 @@ Motion does not sell user data, use it for advertising, or use it to determine c
 
 ## Retention and deletion
 
-Local records remain until you delete them or remove the extension. Settings → Data & privacy → Delete all Motion data removes coursework records, local Motion preferences, session data, and configured provider keys. If removal of a remembered key fails because the companion is unavailable, Motion reports that failure; restore companion access and retry, or remove the credential directly from your OS credential vault. Forget key in AI settings removes an individual provider key.
+Local records remain until you delete them or remove the extension. Settings → Privacy & data → Delete all Motion data removes coursework records, document indexes, local Motion preferences, session data, and configured provider keys. If removal of a remembered key fails because the companion is unavailable, Motion reports that failure; restore companion access and retry, or remove the credential directly from your OS credential vault. Forget key in AI settings removes an individual provider key.
 
 Deleting local records does not retract content you already submitted to an LMS or sent to a cloud provider. Those services control their copies. Uninstalling the browser extension removes its browser-profile data but does not uninstall the optional companion or guarantee removal of its OS-vault credentials; use Forget key before uninstalling.
 
 ## Policy changes and contact
+
+This public policy page is hosted by GitHub Pages. Motion adds no analytics, tracking scripts, or cookies to the page. GitHub may process technical request information, such as your IP address, to operate its hosting service under the [GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement). Visiting the policy page does not send your coursework or provider keys to GitHub.
 
 This policy will be updated when Motion's data practices change. The date above identifies the latest revision. For support and privacy questions, contact [alexoudev8@gmail.com](mailto:alexoudev8@gmail.com) or use [Motion's issue tracker](https://github.com/alexou8/motion/issues). Avoid posting private coursework or API keys in public issues.
 

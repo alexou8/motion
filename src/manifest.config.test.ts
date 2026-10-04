@@ -35,10 +35,18 @@ describe('manifest.config production build', () => {
     const hostPermissions = (resolved as { host_permissions?: string[] }).host_permissions ?? [];
     expect(hostPermissions).not.toContain('https://api.openai.com/*');
     expect(hostPermissions.every((host) => host.startsWith('https://'))).toBe(true);
-    const manifestRecord = resolved as { permissions?: string[]; optional_permissions?: string[] };
+    const manifestRecord = resolved as {
+      permissions?: string[];
+      optional_permissions?: string[];
+      optional_host_permissions?: string[];
+    };
     expect(manifestRecord.permissions).not.toContain('nativeMessaging');
     expect(manifestRecord.permissions).not.toContain('scripting');
     expect(manifestRecord.optional_permissions).toContain('nativeMessaging');
+    expect(manifestRecord.optional_host_permissions).toEqual([
+      'https://api.openai.com/*',
+      'https://api.anthropic.com/*',
+    ]);
   });
 
   it('only adds the local provider-stream host permission when the e2e provider flag is set', async () => {

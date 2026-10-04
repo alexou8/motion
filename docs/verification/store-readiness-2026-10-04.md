@@ -1,5 +1,10 @@
 # Motion store preparation verification — October 4, 2026
 
+The subsequent [submission audit](submission-readiness-2026-10-04.md) supersedes
+the archive hash and remaining publication requirements below. It includes
+consent fixes, narrower provider permissions, stronger package/license gates,
+refreshed screenshots, and a published standalone privacy policy.
+
 ## Scope and review
 
 Compared Motion with WATnow's public repository: course filters, complete future
@@ -96,20 +101,20 @@ than inheriting `timeAssumed: true`; its no-warning assertion was strengthened.
 
 ## Remaining submission requirements and limits
 
-The policy source has not been published. A stable public HTTPS policy URL must
-be hosted and verified signed out before submission. Chrome Web Store developer
+The policy is now published and verified signed out at
+<https://alexou8.github.io/motion/privacy.html>. Chrome Web Store developer
 registration/verification and dashboard declarations must be completed by the
 publisher. Confirm the uploaded version is greater than any existing version of
 the same store item. Supply permitted reviewer access or a demonstration if
 needed; do not share a student's password.
 
-Current live-institution markup, custom HTTPS institution hosts outside the
-built-in content-script matches, provider/account availability, and OS-vault
+Current live-institution markup, provider/account availability, and OS-vault
 installation for a store-assigned extension ID require their own validation.
 Existing per-provider/native transport evidence is in
 `browser-verification.md`. Reminder suppression uses stored submission status;
 a fresh LMS submission-status recheck remains a roadmap item.
 
-The ZIP and listing materials are locally prepared. Privacy-policy publication,
-Chrome Web Store submission, and store approval remain outstanding. Static packaging checks supplement browser testing and
+The ZIP and listing materials are locally prepared. Chrome Web Store submission
+and store approval remain outstanding. Institutions outside the built-in hosts
+are not supported. Static packaging checks supplement browser testing and
 are not a complete security audit or a guarantee of store acceptance.

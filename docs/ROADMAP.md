@@ -67,6 +67,15 @@ Native transport, installer and restart evidence are tracked in
 
 ## Deadline usability and store preparation — October 4, 2026
 
+Submission audit follow-up: optional HTTPS access is narrowed to OpenAI and
+Anthropic. Cloud operations recheck mutable consent, and browser permission
+revocation cancels active cloud requests. Actor dispatch rechecks cancellation
+and configurable permission after settings reads. Production packaging verifies
+all worker modules and runtime license notices. The public policy is hosted and
+verified at <https://alexou8.github.io/motion/privacy.html>; the extension
+changes are not submitted to the store. Final evidence is recorded in
+[submission verification](verification/submission-readiness-2026-10-04.md).
+
 [WATnow's public repository](https://github.com/EricJujianZou/watnow) provided
 comparison points: course filtering, full future lists, exact times, moved dates,
 and cached coursework. Motion keeps its existing workspace design, opt-in
@@ -83,11 +92,12 @@ scanning, and assessment/approval boundaries.
 - **Branding:** original rising M with purple/gold artwork, purple/lavender action
   accents, preserved warm backgrounds and typography; contrast checks pass.
 - **Local store materials:** production ZIP, full bundled licenses, icon sizes,
-  listing screenshots and promo tile, publisher/contact details, permission
+  listing screenshots and promo tile, a synthetic reviewer walkthrough recording,
+  publisher/contact details, permission
   justifications, and privacy policy source. Removed unused scripting permission.
   Packaging now rejects test permissions, missing/wrong icons, development files,
   unsafe execution patterns, and absent license notices.
-- **Submission still requires:** a verified public policy URL, developer-dashboard
+- **Submission still requires:** developer-dashboard
   registration/verification and disclosures, any reviewer access requirements,
   and current live-LMS checks. No publication or store approval is claimed.
 - **Remaining improvement:** verify submission state from a readable LMS page

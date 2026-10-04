@@ -13,6 +13,7 @@ playwright-report/
 # Packaged extension builds
 motion-extension-*.zip
 .motion-local/
+.motion-site/
 .vscode/
 .claude/
 *.code-workspace

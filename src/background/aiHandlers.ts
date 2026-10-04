@@ -29,8 +29,11 @@ import {
   providerBlockerFromError,
   providerDisplayNames,
   providerOrigins,
+  assertCurrentProviderConsent,
+  guardedProviderFetch,
   type PermissionsCheck,
 } from './providers';
+import { abortCloudRequests, registerCloudRequest, releaseCloudRequest } from './cloudRequests';
 
 const aiMessageSchema = z.discriminatedUnion('type', [
   aiStatusResultInputSchema(),
@@ -106,16 +109,17 @@ function defaultPermissions(): PermissionsCheck {
   };
 }
 
-function registryDeps(ctx: HandlerContext): RegistryDeps {
+function registryDeps(providerId: ProviderId, ctx: HandlerContext): RegistryDeps {
   return {
     secrets: ctx.secrets,
     chromeLocal: getInferencePort,
-    ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}),
+    fetchImpl: guardedProviderFetch(providerId, { preferencesStore: ctx.preferences,
+      permissions: ctx.permissions, ...(ctx.fetchImpl ? { fetchImpl: ctx.fetchImpl } : {}) }, false),
   };
 }
 
 function providerFor(providerId: ProviderId, ctx: HandlerContext) {
-  return createProvider(providerId, registryDeps(ctx));
+  return createProvider(providerId, registryDeps(providerId, ctx));
 }
 
 function isProviderStatus(value: string): value is ProviderStatus {
@@ -248,9 +252,11 @@ async function handleListProviderModels(
     throw new Error(`Add a ${displayName} API key for this browser session before refreshing models.`);
   }
 
+  const requestKey = `models:${crypto.randomUUID()}`;
+  const controller = registerCloudRequest(requestKey, providerId);
   try {
     const provider = providerFor(providerId, ctx);
-    const listed = provider.listModels ? await bounded(() => provider.listModels!()) : [];
+    const listed = provider.listModels ? await bounded(() => provider.listModels!({ signal: controller.signal })) : [];
     const models = [...new Set(listed.filter((id) => isSupportedTextModel(providerId, id)))];
     return providerModelListResultSchema.parse({ providerId, models, source: 'account' });
   } catch {
@@ -259,6 +265,8 @@ async function handleListProviderModels(
       models: curatedModelsFor(providerId).map((model) => model.id),
       source: 'fallback',
     });
+  } finally {
+    releaseCloudRequest(requestKey, controller);
   }
 }
 
@@ -269,6 +277,7 @@ async function handleSetProviderKey(message: Extract<AiMessage, { type: 'set-pro
 }
 
 async function handleForgetProviderKey(message: Extract<AiMessage, { type: 'forget-provider-key' }>, ctx: HandlerContext) {
+  abortCloudRequests(message.providerId);
   await ctx.secrets.forget(message.providerId);
   return { configured: false };
 }
@@ -278,18 +287,25 @@ async function handleKeychainStatus(message: Extract<AiMessage, { type: 'keychai
 }
 
 async function handleTestProvider(message: Extract<AiMessage, { type: 'test-provider' }>, ctx: HandlerContext) {
+  await assertCurrentProviderConsent(message.providerId, { preferencesStore: ctx.preferences, permissions: ctx.permissions }, false);
+  const requestKey = `health:${crypto.randomUUID()}`;
+  const controller = registerCloudRequest(requestKey, message.providerId);
   const provider = providerFor(message.providerId, ctx);
   try {
-    const availability = await bounded(() => provider.healthCheck ? provider.healthCheck() : provider.availability());
+    const availability = await bounded(() => provider.healthCheck ? provider.healthCheck({ signal: controller.signal }) : provider.availability());
     return { availability };
   } catch (error) {
     return { availability: availabilityFromError(error, message.providerId) };
+  } finally {
+    releaseCloudRequest(requestKey, controller);
   }
 }
 
 async function handleSetAiPreferences(message: Extract<AiMessage, { type: 'set-ai-preferences' }>, ctx: HandlerContext) {
   const { type: _type, ...patch } = message;
+  const previous = await ctx.preferences.get();
   const next = await ctx.preferences.update(patch);
+  if (previous.providerId !== next.providerId) abortCloudRequests(previous.providerId);
   return { preferences: aiPreferencesSchema.parse(next) };
 }
 
@@ -299,6 +315,7 @@ async function handleAcceptCloudDisclosure(message: Extract<AiMessage, { type: '
   if (message.accepted) accepted.add(message.providerId);
   else accepted.delete(message.providerId);
   const next = await ctx.preferences.update({ cloudDisclosureAccepted: [...accepted] });
+  if (!message.accepted) abortCloudRequests(message.providerId);
   return { providerId: message.providerId, accepted: next.cloudDisclosureAccepted.includes(message.providerId) };
 }
 
@@ -306,6 +323,7 @@ async function handleDeleteLocalData(ctx: HandlerContext) {
   return withLock(DOCUMENT_LIFECYCLE_LOCK, () => deleteLocalDataUnderLock(ctx));
 }
 async function deleteLocalDataUnderLock(ctx: HandlerContext) {
+  abortCloudRequests();
   // Remove remembered OS-vault entries before clearing the metadata that says
   // which providers opted in. A failure leaves the local data intact so the
   // student can retry rather than receiving a false deletion confirmation.

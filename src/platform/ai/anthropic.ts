@@ -156,7 +156,7 @@ export class AnthropicProvider implements AIProvider {
     return { status: 'available', message: 'Anthropic is ready.' };
   }
 
-  async listModels(): Promise<string[]> {
+  async listModels(options: Pick<GenerateRequest, 'signal'> = {}): Promise<string[]> {
     const key = await this.key();
     if (!key) throw new ProviderError('not-configured', 'Anthropic is not configured.');
     const ids: string[] = [];
@@ -171,6 +171,7 @@ export class AnthropicProvider implements AIProvider {
         fetchImpl: this.fetchImpl,
         timeoutMs: DEFAULT_HEALTH_TIMEOUT_MS,
         knownSecrets: [key],
+        signal: options.signal,
       });
       if (!response.ok) throw await this.toProviderError(response, key, 'GET');
       let rawBody: unknown;
@@ -197,9 +198,9 @@ export class AnthropicProvider implements AIProvider {
     throw badResponseError('Anthropic');
   }
 
-  async healthCheck(): Promise<ProviderAvailability> {
+  async healthCheck(options: Pick<GenerateRequest, 'signal'> = {}): Promise<ProviderAvailability> {
     try {
-      await this.listModels();
+      await this.listModels(options);
       return { status: 'available', message: 'Anthropic is ready.' };
     } catch (err) {
       return this.availabilityFromError(err);

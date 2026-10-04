@@ -28,7 +28,7 @@ const manifest: ManifestV3Export = {
   manifest_version: 3,
   name: 'Motion — From Coursework to Completion',
   short_name: 'Motion',
-  version: '0.1.1',
+  version: '0.1.2',
   description:
     'Organize Brightspace coursework with source-linked deadlines, reminders, and guided work sessions you control.',
   // chrome.sidePanel requires 114+; opening it from an action requires 116.
@@ -79,12 +79,8 @@ const manifest: ManifestV3Export = {
     ...E2E_PROVIDER_HOST_PERMISSIONS,
   ],
 
-  /**
-   * Institution deployments live on their own domains. Rather than shipping a
-   * broad grant, Motion asks for one host at a time, from a user gesture, and
-   * the student can revoke it.
-   */
-  optional_host_permissions: ['https://*/*'],
+  /** Cloud access is limited to the two supported providers and remains opt-in. */
+  optional_host_permissions: ['https://api.openai.com/*', 'https://api.anthropic.com/*'],
 
   content_scripts: [
     {
