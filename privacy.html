@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; font-src 'self'; img-src 'self'; base-uri 'none'; form-action 'none'">
+  <meta name="description" content="How Motion handles coursework, local storage, optional AI providers, and deletion. Published by Alex Ou.">
+  <title>Privacy policy · Motion</title>
+  <link rel="icon" type="image/png" href="assets/icon-32.png">
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <a class="skip" href="#policy">Skip to privacy policy</a>
+  <header><a class="brand" href="index.html"><img src="assets/motion-mark.svg" alt="" width="40" height="40">Motion</a><a href="https://github.com/alexou8/motion/issues">Support</a></header>
+  <div class="layout">
+    <nav aria-label="Policy sections"><p>On this page</p><ul><li><a href="#information-motion-handles">Information Motion handles</a></li>
+<li><a href="#local-storage-and-processing">Local storage and processing</a></li>
+<li><a href="#optional-cloud-ai-providers">Optional cloud AI providers</a></li>
+<li><a href="#coursework-actions-and-sharing">Coursework actions and sharing</a></li>
+<li><a href="#retention-and-deletion">Retention and deletion</a></li>
+<li><a href="#policy-changes-and-contact">Policy changes and contact</a></li></ul></nav>
+    <main id="policy" tabindex="-1"><h1>Privacy policy</h1>
+<p class="updated">Last updated: October 4, 2026</p>
+<p>Motion is a coursework browser extension published by Alex Ou. Privacy questions and deletion requests can be sent to <a href="mailto:alexoudev8@gmail.com">alexoudev8@gmail.com</a>.</p>
+<h2 id="information-motion-handles">Information Motion handles</h2>
+<p>Motion reads supported D2L Brightspace course pages to organize course names, task titles, instructions, deadlines, source URLs, and relevant excerpts. It stores coursework records, notes, checklists, drafts, chat messages, session plans, workflow progress, approval decisions, and settings in your browser profile. Course material or text you provide may include personal information or communications.</p>
+<p>Motion uses the active tab's URL and title to identify supported coursework and records tabs associated with a Motion workspace. It does not build a browsing history of unrelated sites. It does not read or retain content from a page it detects as a graded, timed, or proctored attempt.</p>
+<p>If you enable deadline scanning for a supported host, Motion reads that site's course and calendar data using your existing signed-in browser session. These read-only requests go to your LMS. Motion does not collect your LMS password or copy its session cookies or tokens into its records.</p>
+<p>Motion has no account system, analytics, advertising, install tracking, or telemetry. It has no developer-operated server receiving your coursework.</p>
+<p>When you choose a PDF or PPTX source in Library, Motion downloads it from the supported course destination and indexes selectable text locally with page or slide numbers, course and source metadata. You can also explicitly import a PDF or PPTX from your device; Motion indexes its text and stores the filename and your chosen course association locally. Bundled parsers process the file on your device. Indexing does not send files or their text to an AI provider. You can search, read, reindex, or remove individual indexes.</p>
+<h2 id="local-storage-and-processing">Local storage and processing</h2>
+<p>Coursework, document indexes, and session records are stored in the extension's IndexedDB database. Preferences, scanning summaries, reminder state, and theme/view choices are stored locally in the browser. Motion does not sync this data through Chrome sync. Local records are protected by your device and browser profile; Motion does not independently encrypt them.</p>
+<p>Chrome's on-device model, when available and selected, processes model turns locally. Chrome may need to download its model before use. Model availability depends on your browser, device, and Chrome configuration. Deadline organization does not require an AI provider.</p>
+<p>Reminders are off by default. After you enable them, notifications use locally stored task titles and due dates. Notifications can be visible to others using or viewing your device. Stored submission status suppresses reminders; Motion cannot guarantee a fresh submission status while your LMS is unavailable.</p>
+<h2 id="optional-cloud-ai-providers">Optional cloud AI providers</h2>
+<p>When you select OpenAI or Anthropic, accept the cloud-processing disclosure, and grant permission for that provider, Motion sends your message or goal, relevant session state, notes, and bounded excerpts directly to the selected provider over HTTPS. Sources you exclude are omitted from that model turn. Motion does not proxy these requests through a Motion server or silently switch providers.</p>
+<p>Provider API keys are sent to the selected provider to authenticate requests. Keys are held in trusted browser-session storage by default and disappear when the browser session ends. They are never saved in browser local storage, Chrome sync, IndexedDB, logs, or ordinary files. If you explicitly choose to remember a key and install the optional local companion, it is saved in your operating system's credential vault. The companion connects locally and has no server.</p>
+<p>Testing a cloud provider or refreshing its available models also requires that provider's disclosure and endpoint permission. These checks send your API key directly to the provider to retrieve model names; they do not send coursework, chat messages, or a test prompt. Model selection during a cloud turn may retrieve the same model catalogue.</p>
+<p>Provider processing and retention are governed by the selected provider's terms and privacy policies: <a href="https://openai.com/policies/privacy-policy/">OpenAI</a> and <a href="https://www.anthropic.com/legal/privacy">Anthropic</a>. Any usage fees are charged by that provider. Revoking cloud disclosure, removing the provider's permission, or selecting the local provider prevents subsequent cloud turns.</p>
+<h2 id="coursework-actions-and-sharing">Coursework actions and sharing</h2>
+<p>Motion may prepare coursework, notes, or drafts at your direction. A supported consequential submission, upload, post, or send requires a fresh approval for that specific target and action. Approving one action does not approve future actions. Approved content goes to the selected course destination. Motion refuses actions inside detected graded, timed, or proctored attempts.</p>
+<p>Motion does not sell user data, use it for advertising, or use it to determine creditworthiness or lending eligibility. Information is used only to provide the coursework features you choose. Motion's use and transfer of information received from Google APIs adheres to the Chrome Web Store User Data Policy, including its Limited Use requirements.</p>
+<h2 id="retention-and-deletion">Retention and deletion</h2>
+<p>Local records remain until you delete them or remove the extension. Settings → Privacy &amp; data → Delete all Motion data removes coursework records, document indexes, local Motion preferences, session data, and configured provider keys. If removal of a remembered key fails because the companion is unavailable, Motion reports that failure; restore companion access and retry, or remove the credential directly from your OS credential vault. Forget key in AI settings removes an individual provider key.</p>
+<p>Deleting local records does not retract content you already submitted to an LMS or sent to a cloud provider. Those services control their copies. Uninstalling the browser extension removes its browser-profile data but does not uninstall the optional companion or guarantee removal of its OS-vault credentials; use Forget key before uninstalling.</p>
+<h2 id="policy-changes-and-contact">Policy changes and contact</h2>
+<p>This public policy page is hosted by GitHub Pages. Motion adds no analytics, tracking scripts, or cookies to the page. GitHub may process technical request information, such as your IP address, to operate its hosting service under the <a href="https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement">GitHub Privacy Statement</a>. Visiting the policy page does not send your coursework or provider keys to GitHub.</p>
+<p>This policy will be updated when Motion's data practices change. The date above identifies the latest revision. For support and privacy questions, contact <a href="mailto:alexoudev8@gmail.com">alexoudev8@gmail.com</a> or use <a href="https://github.com/alexou8/motion/issues">Motion's issue tracker</a>. Avoid posting private coursework or API keys in public issues.</p>
+<p>Motion is independent and is not affiliated with or endorsed by Wilfrid Laurier University, D2L, OpenAI, or Anthropic.</p></main>
+  </div>
+  <footer><p>Motion · Published by Alex Ou</p><a href="mailto:alexoudev8@gmail.com">Privacy questions</a><a href="https://github.com/alexou8/motion">Project source</a></footer>
+</body>
+</html>
