@@ -92,8 +92,11 @@ never acts inside a graded, timed or proctored attempt.
   request from the browser to the selected provider only after disclosure and
   just-in-time host permission. The request contains the student's message,
   session plan/state labels, relevant notes, and bounded excerpts from pages
-  Motion read for the session: at most 8,000 characters per source and 24,000
-  characters per request, excluding sources the student excluded. There is no
+  Motion read for the session: at most 8,000 characters per source excerpt and
+  a 24,000-character selected page/note text budget. The complete agent system
+  prompt has a separate 24,000-character cap; bounded conversation history is
+  additional. Excluded sources are omitted from new direct source context;
+  prior notes/conversation may still contain their material. There is no
   Motion proxy or telemetry.
 - Never stored: LMS passwords, session tokens or cookies copied from pages,
   browsing history unrelated to a supported course page. BYOK keys default to

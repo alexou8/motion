@@ -212,6 +212,20 @@ describe('requestWithRetry', () => {
     expect(requestSignal?.aborted).toBe(true);
     vi.useRealTimers();
   });
+
+  it('cancels a response body when revocation won before its abort listener was attached', async () => {
+    const controller = new AbortController();
+    let cancelled = false;
+    const response = await requestWithRetry({
+      url: 'https://api.openai.com/v1/models', init: { method: 'GET' }, signal: controller.signal,
+      fetchImpl: async () => {
+        controller.abort();
+        return new Response(new ReadableStream<Uint8Array>({ cancel() { cancelled = true; } }));
+      },
+    });
+    await expect(response.text()).rejects.toMatchObject({ name: 'AbortError' });
+    expect(cancelled).toBe(true);
+  });
 });
 
 describe('classifyHttpError', () => {

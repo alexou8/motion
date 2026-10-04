@@ -38,8 +38,12 @@ if (!workerEntry) {
   throw new Error('The service worker loader does not resolve to a distinct service-worker entry.');
 }
 
-if (containsDomGlobals(workerEntry.source)) {
-  throw new Error('The service worker bundle contains DOM globals and will fail to register.');
+for (const module of workerModules) {
+  if (containsDomGlobals(module.source)) {
+    throw new Error(
+      `The service worker module ${module.path} contains DOM globals and will fail to register.`,
+    );
+  }
 }
 
 console.log('Verified that the service worker bundle is free of DOM globals.');

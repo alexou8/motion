@@ -27,9 +27,11 @@ import { ChromeTabs, groupTitle, isOpenableUrl, type TabsCapability } from '@/pl
 import { actInContentScript, askContentScript, snapshotContentScript } from './contentBridge';
 import {
   providerBlockerFromError,
+  assertCurrentProviderConsent,
   resolveSessionProvider,
   type ProviderResolution,
 } from './providers';
+import { registerCloudRequest, releaseCloudRequest } from './cloudRequests';
 
 const SNAPSHOTS_KEY = 'motion.snapshots';
 const OBSERVATION_PREFIX = 'observation:';
@@ -463,9 +465,6 @@ function actorCapability(action: ActorAction, services: CapabilityServices): Ste
         return { kind: 'blocked', reason: 'Motion only acts inside this session’s workspace.' };
       if (await isRestricted(tabId))
         return { kind: 'blocked', reason: 'Motion will not act in a restricted assessment.' };
-      // The page/approval checks above await browser state. The workflow can
-      // be paused or cancelled during either wait, so re-check ownership at
-      // the last possible point before the remote DOM effect.
       if (!(await context.stillCurrent()))
         return { kind: 'skipped', reason: 'Stopped before acting on the page.' };
       const request: ActRequest =
@@ -501,7 +500,15 @@ function actorCapability(action: ActorAction, services: CapabilityServices): Ste
               : { type: 'click', snapshotId, handle };
       // Resolve the visual preference only after all policy, ownership, and
       // freshness checks have passed. It changes presentation, never authority.
-      const showOnPagePointer = (await new ChromePreferencesStore().get()).showOnPagePointer;
+      const preferences = await new ChromePreferencesStore().get();
+      if (tierOf(action) === 'configurable' && !context.step.consumedApprovalId &&
+        !preferences.allowedConfigurableActions.some((allowed) => allowed === action))
+        return { kind: 'blocked', reason: 'Permission for this action was revoked. Review and approve it again.' };
+      // Read presentation and consent before the final cancellation check;
+      // neither may introduce another await after that check and before act.
+      if (!(await context.stillCurrent()))
+        return { kind: 'skipped', reason: 'Stopped before acting on the page.' };
+      const showOnPagePointer = preferences.showOnPagePointer;
       const result = await services.act(
         tabId,
         request,
@@ -541,22 +548,33 @@ function providerCapability(
       const { value: session } = await sessionFor(context);
       const db = await openDatabase();
       const notes = (await new Repository(db, STORE.notes, noteSchema).all()).records;
-      const prompt = buildLayeredPrompt({
+      const buildPrompt = (currentSession: AgentSession) => buildLayeredPrompt({
         systemPolicy: 'You are Motion. Help the student understand and prepare coursework. Do not claim to have completed work the student has not reviewed.',
         userGoal: request,
         // A session title/goal can originate on an LMS page. Trusted state is
         // deliberately limited to Motion-issued identity and state; all
         // student/page-derived metadata stays inside the fenced context.
-        trustedState: `Session id: ${session.id} (status: ${session.status})`,
+        trustedState: `Session id: ${currentSession.id} (status: ${currentSession.status})`,
         untrusted: [
-          ...buildStepContext(session, notes),
-          { label: 'session metadata', text: `Title: ${session.title}\nGoal: ${session.goal}` },
+          ...buildStepContext(currentSession, notes),
+          { label: 'session metadata', text: `Title: ${currentSession.title}\nGoal: ${currentSession.goal}` },
         ],
       });
       const resolved = await services.resolveProvider();
       if (resolved.kind === 'blocked') return { kind: 'blocked', reason: resolved.blocker.message };
+      const requestKey = `workflow:${context.intentKey}`;
+      const controller = registerCloudRequest(requestKey, resolved.providerId, session.id);
       try {
-        const output = await generate(resolved.provider, resolved.model, request, prompt);
+        await assertCurrentProviderConsent(resolved.providerId);
+        if (!(await context.stillCurrent()))
+          return { kind: 'skipped', reason: 'Stopped before contacting the provider.' };
+        const { value: latestSession } = await sessionFor(context);
+        if (controller.signal.aborted) return { kind: 'skipped', reason: 'Stopped before contacting the provider.' };
+        const prompt = buildPrompt(latestSession);
+        const output = await generate(resolved.provider, resolved.model, request, prompt, controller.signal);
+        const current = await context.stillCurrent();
+        if (controller.signal.aborted || !current)
+          return { kind: 'skipped', reason: 'Stopped before saving the provider result.' };
         const now = services.now().toISOString();
         const noteId = crypto.randomUUID();
         await new Repository(db, STORE.notes, noteSchema).put({
@@ -600,16 +618,19 @@ function providerCapability(
           kind: 'blocked',
           reason: providerBlockerFromError(error, resolved.displayName).message,
         };
+      } finally {
+        releaseCloudRequest(requestKey, controller);
       }
     },
   };
 }
 
-async function generate(provider: AIProvider, model: string, request: string, prompt: string): Promise<string> {
+async function generate(provider: AIProvider, model: string, request: string, prompt: string, signal: AbortSignal): Promise<string> {
   return provider.generate({
     system: prompt,
     messages: [{ role: 'user', content: request }],
     model,
+    signal,
   });
 }
 

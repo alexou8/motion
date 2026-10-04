@@ -28,6 +28,34 @@ for (const [name, mutate, error] of [
     /Unexpected permissions/,
   ],
   [
+    'broad optional provider hosts',
+    (dir, m) => {
+      m.optional_host_permissions = ['https://*/*'];
+    },
+    /Unexpected hosts/,
+  ],
+  [
+    'unsupported Chrome version',
+    (dir, m) => {
+      m.minimum_chrome_version = '115';
+    },
+    /Chrome 116/,
+  ],
+  [
+    'missing Chrome version',
+    (dir, m) => {
+      delete m.minimum_chrome_version;
+    },
+    /Chrome 116/,
+  ],
+  [
+    'classic service worker',
+    (dir, m) => {
+      delete m.background.type;
+    },
+    /ES modules/,
+  ],
+  [
     'unused scripting',
     (dir, m) => {
       m.permissions.push('scripting');
@@ -93,6 +121,27 @@ for (const [name, mutate, error] of [
     /web-accessible/,
   ],
   [
+    'missing web-accessible chunk',
+    (dir, m) => {
+      m.web_accessible_resources[0].resources.push('assets/missing.js');
+    },
+    /ENOENT/,
+  ],
+  [
+    'web-accessible chunks on every site',
+    (dir, m) => {
+      m.web_accessible_resources[0].matches = ['https://*/*'];
+    },
+    /resource hosts/,
+  ],
+  [
+    'incomplete runtime notices',
+    (dir) => {
+      writeFileSync(join(dir, 'THIRD_PARTY_NOTICES.txt'), 'SIL OPEN FONT LICENSE\nReact');
+    },
+    /Missing bundled licenses/,
+  ],
+  [
     'path traversal',
     (dir, m) => {
       m.side_panel.default_path = '../outside.html';
@@ -131,4 +180,24 @@ test('packaging CLI refuses a test build before writing an archive', (t) => {
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Unexpected hosts/);
   assert.throws(() => readFileSync(join(root, `motion-extension-${version}.zip`)), /ENOENT/);
+});
+
+// Synthetic injected modules prove the browser-independent worker check follows
+// imports instead of checking only the entry bundle.
+test('build verification rejects DOM globals in a worker dependency', (t) => {
+  const root = mkdtempSync(join(tmpdir(), 'motion-worker-graph-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const dist = join(root, 'dist');
+  cpSync('dist', dist, { recursive: true });
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ version }));
+  const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
+  const loader = join(dist, manifest.background.service_worker);
+  writeFileSync(loader, `${readFileSync(loader, 'utf8')}\nimport './synthetic-shared.js';`);
+  writeFileSync(join(dist, 'synthetic-shared.js'), 'document.title = "Synthetic fixture";');
+  const result = spawnSync(process.execPath, [resolve('scripts/verify-extension-build.mjs')], {
+    cwd: root,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /synthetic-shared\.js contains DOM globals/);
 });

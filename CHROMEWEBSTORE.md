@@ -18,11 +18,11 @@ See source-linked deadlines across your courses. Filter by course, switch betwee
 
 Enable scanning on a supported course site to find deadlines across your courses. Turn on local reminders with separate lead times for assignments, quizzes, discussions, and other coursework. Reminders respect quiet hours and stop for tasks recorded as submitted or archived. Check Learn for the current submission status and deadline before handing in work.
 
-Use Coursework to search and filter saved tasks and materials. Library can index selectable PDF text and PowerPoint slide text locally, keeping page or slide numbers and source links. No AI provider receives documents during indexing. Local document parsing requires Chromium 125 or newer.
+Use Coursework to search and filter saved tasks and materials. Library can index selectable PDF text and PowerPoint slide text locally from course materials or files you import, keeping page or slide numbers and source references. No AI provider receives documents during indexing. Local document parsing requires Chromium 125 or newer.
 
 Start a guided work session to build a checklist, prepare a draft, or review coursework with Chrome's on-device model when available, or OpenAI or Anthropic if you choose and configure one. Follow progress, pause work, and review consequential actions before approving them. Motion does not act inside detected graded, timed, or proctored attempts.
 
-Open a supported D2L Brightspace or MyLearningSpace page, click the Motion toolbar icon, and choose an action in the launcher to open the side panel. AI setup and reminder preferences live in Settings. Chrome 116 or newer is required; on-device AI additionally depends on browser and device support.
+Open a supported D2L Brightspace page on brightspace.com, desire2learn.com, or Laurier's mylearningspace.wlu.ca, click the Motion toolbar icon, and choose an action in the launcher to open the side panel. Other institution domains are not supported in this release. AI setup and reminder preferences live in Settings. Chrome 116 or newer is required; on-device AI additionally depends on browser and device support.
 
 Coursework records stay in your browser profile. Motion has no server, ads, or telemetry. Cloud AI is optional: after disclosure and permission, relevant messages and excerpts go directly to your selected provider. API keys last for the browser session by default. Remembering a key requires explicit opt-in and a separately installed OS credential-vault companion. Supported submissions, uploads, posts, and sends require fresh approval for each specific action.
 
@@ -47,7 +47,9 @@ Bug reports: https://github.com/alexou8/motion/issues
 | Dark screenshot        | 1280×800 PNG   | `docs/store-assets/screenshot-dark.png`  | Capture from production extension using synthetic coursework |
 | Small promotional tile | 440×280 PNG    | `docs/store-assets/promo-440x280.png`    | Required; generated from canonical branding                  |
 
-Screenshots combine an actual 400px-wide production side-panel capture with listing copy. They explicitly label the coursework as synthetic. The isolated browser harness contacts no live LMS or AI provider. Regenerate after a UI change with `MOTION_CAPTURE_STORE=1 npm run test:extension` following `npm run build`. Raw panel captures are included for inspection, not store upload. No store graphics or fixtures enter the extension ZIP.
+Screenshots combine an actual 400×710px production side-panel capture with listing copy. They explicitly label the coursework as synthetic. The isolated browser harness contacts no live LMS or AI provider. Regenerate after a UI change with `MOTION_CAPTURE_STORE=1 npm run test:extension` following `npm run build`. Raw panel captures are included for inspection, not store upload. No store graphics or fixtures enter the extension ZIP.
+
+A captioned, snapshot-based reviewer walkthrough is prepared at `docs/store-assets/reviewer-demo.webm` (1280×800, approximately 40 seconds). Its chapter guide and limits are in `docs/store-assets/reviewer-demo.md`. It shows the production UI using synthetic coursework, deadline scanning/filtering, List/Week views, the document-import control, and AI/reminder/privacy settings. It demonstrates no live institution, provider, or consequential action. Reproduce after a build with `node scripts/capture-reviewer-demo.mjs`.
 
 ## Permissions justification
 
@@ -63,9 +65,10 @@ Screenshots combine an actual 400px-wide production side-panel capture with list
 | `https://*.brightspace.com/*`      | required host | Reads supported Brightspace coursework pages and course deadline data.                                                                                                                                                                                                                                                                              |
 | `https://*.desire2learn.com/*`     | required host | Reads supported legacy D2L coursework pages and course deadline data.                                                                                                                                                                                                                                                                               |
 | `https://mylearningspace.wlu.ca/*` | required host | Reads supported Laurier MyLearningSpace coursework pages and course deadline data.                                                                                                                                                                                                                                                                  |
-| `https://*/*`                      | optional host | Enables just-in-time requests for a specific HTTPS provider endpoint or a student-selected institution host. Each request is narrowed to one origin; the wildcard is never requested as a whole. Cloud requests use only the selected fixed provider endpoint. Custom institution support beyond the built-in hosts needs separate live validation. |
+| `https://api.openai.com/*`         | optional host | Requested only when the student enables OpenAI after the cloud-processing disclosure. Sends bounded coursework requests and the student's API key directly to OpenAI; provider tests and model refresh retrieve available model names without coursework content. |
+| `https://api.anthropic.com/*`      | optional host | Requested only when the student enables Anthropic after the cloud-processing disclosure. Sends bounded coursework requests and the student's API key directly to Anthropic; provider tests and model refresh retrieve available model names without coursework content. |
 
-OpenAI (`https://api.openai.com/*`) and Anthropic (`https://api.anthropic.com/*`) are runtime origin requests covered by the optional HTTPS pattern, not additional manifest declarations. The unused `scripting` permission was removed. No permission was added.
+The two provider origins are the only optional HTTPS hosts. Motion does not request access to arbitrary institution domains. The unused `scripting` permission was removed. No permission was added.
 
 ## Privacy and data use
 
@@ -93,7 +96,9 @@ The dashboard disclosures must cover optional features as well as the default lo
 
 Policy source: `docs/PRIVACY.md`. It includes provider authentication, local retention, the optional OS vault, deletion failure behavior, and approved LMS actions.
 
-**Public privacy policy URL: still required.** Publish this exact policy to a stable public HTTPS page, verify it is accessible while signed out, and enter that URL in the dashboard. The policy has not been publicly hosted.
+**Public privacy policy URL:** https://alexou8.github.io/motion/privacy.html
+
+Published and verified without authentication on 2026-10-04. The public `privacy.md` matches `docs/PRIVACY.md` byte for byte. The standalone page has bundled fonts, light/dark styles, section navigation, and no scripts or analytics. Browser checks verified HTTP 200, working keyboard skip navigation, and no overflow at 320/640/1280px. Enter this URL in the dashboard. Maintenance instructions: `docs/site-hosting.md`.
 
 ## Distribution and developer information
 
@@ -113,22 +118,42 @@ Policy source: `docs/PRIVACY.md`. It includes provider authentication, local ret
 
 | Version | Date       | Changes                                                                                                                                                                              | Status                     |
 | ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| 0.1.1   | 2026-10-04 | Rising M mark; Laurier-inspired purple/gold branding; complete and filterable deadline list; exact times and calendar fixes; cached deadlines; package validation and listing assets | Local draft; not submitted |
+| 0.1.2   | 2026-10-04 | Rising M mark; complete deadline views and cached coursework; cloud consent and cancellation fixes; provider-only optional hosts; package/license validation; listing assets and public privacy policy | Chrome Web Store submission pending |
 | 0.1.0   | 2026-09-07 | Initial draft listing and service-worker packaging                                                                                                                                   | Draft                      |
 
 ## Validation and submission checklist
 
 Required local checks: `npm run typecheck`, `npm test`, `npm run lint`, `npm run build`, `npm run test:package`, `npm run test:extension`. `npm run package` refuses development/test permission sets, missing or wrongly sized icons, source maps, fixture files, unsafe code patterns, web-accessible extension UI, and missing bundled licenses. Static checks supplement browser testing and do not guarantee store approval.
 
-Upload `motion-extension-0.1.1.zip` as-is; `manifest.json` is at the archive root. Upload the two 1280×800 screenshots, 128px icon, and 440×280 promotional tile separately. Store graphics and policy source are excluded from the extension package.
+Upload `motion-extension-0.1.2.zip` as-is; `manifest.json` is at the archive root. Upload the two 1280×800 screenshots, 128px icon, and 440×280 promotional tile separately. Store graphics and policy source are excluded from the extension package.
 
 Before submission:
 
-- Publish and verify the public privacy-policy URL.
+- Enter the verified public privacy-policy URL above in the dashboard.
 - Complete Chrome Web Store developer account registration/verification and any required dashboard contact/distribution fields.
-- Confirm 0.1.1 exceeds any version already uploaded for the same store item; no version was changed in this task.
+- Confirm 0.1.2 exceeds any version already uploaded for the same store item. This release increments the existing GitHub version 0.1.1.
 - Complete the disclosure and permission fields using the text above, including optional cloud behavior.
-- Provide reviewer instructions for the authenticated LMS if the dashboard requests them. Never share a student's password; arrange permitted reviewer access or supply a current demonstration recording.
+- Supply the reviewer instructions below and the prepared demonstration recording through the dashboard's reviewer channel. If authenticated access is requested, supply permitted access to a synthetic course. No reviewer account or private credentials are included in this repository.
 - Run the current live MyLearningSpace checklist in `docs/MANUAL-TESTING.md`. Synthetic browser tests prove package integration, not current institution markup or all remote course-action flows.
 
-Local-model availability varies. Custom institutions outside the built-in content-script matches and production OS-vault installation need separate validation. No remote submission, account change, policy publication, or store approval is claimed.
+Local-model availability varies. Institutions outside the built-in content-script matches are not supported. Production OS-vault installation needs separate validation. The policy is published; Chrome Web Store submission and approval remain outstanding.
+
+## Reviewer instructions
+
+Motion has no separate account or subscription. Coursework reading requires an existing signed-in D2L Brightspace session on a supported domain: subdomains of brightspace.com or desire2learn.com, or mylearningspace.wlu.ca. Use a permitted demonstration account with synthetic course content. A login-free production demonstration page is not bundled. The screenshots use synthetic data from an isolated test harness; they are not a public LMS demo.
+
+1. On any ordinary tab, click Motion's toolbar icon, then **Open Motion**. The side panel opens. On an unrelated website, the panel explains that the page is unsupported while keeping saved coursework available. **Settings** opens the full-page settings screen without requiring an LMS or AI account.
+2. In a permitted synthetic Brightspace course, open an assignment list or assignment instructions outside an active assessment. Reopen the toolbar launcher and choose **Read this page**. Open **Coursework** to inspect saved tasks and materials; source links return to their original course pages.
+3. Open **Workspace**, choose **Enable scanning**, then **Scan all courses**. Inspect **Deadlines**, filter by course, and switch between **List** and **Week**. This uses the existing LMS browser session and sends no coursework to an AI provider. Turn scanning off using its checkbox.
+4. In **Library**, select an accessible synthetic course PDF or PPTX and index it, or use **Import a PDF or PowerPoint** to choose a synthetic file from your device without an LMS login. Search the selectable text and inspect page/slide references. Indexing is local, requires Chromium 125 or newer, and does not require a configured AI provider.
+5. In **Settings → AI**, leave Chrome's built-in model selected to inspect local-model availability. If unavailable on the review device, core reading and deadline features still work and AI sessions show the availability blocker. Optional OpenAI/Anthropic use requires accepting that provider's disclosure, granting its endpoint permission, and entering a valid key belonging to the reviewer. **Test provider** and **Refresh models** make authenticated model-list requests without coursework. Paid usage is billed by the provider. No publisher key is supplied.
+6. Start a guided workspace using synthetic instructions. Confirm the plan and session are visible; pause or stop it. Remote submissions, uploads, posts, and sends require approval for the exact target and action each time. Test those only in an authorized synthetic course. Never enter a real graded/timed/proctored attempt to test the assessment block.
+7. In **Settings → Reminders**, confirm reminders start off and can be enabled with lead times and quiet hours. In **Settings → Privacy & data**, choose **Delete all Motion data**, then **Delete everything**, to clear browser records and configured keys. This does not delete anything in the LMS. The optional OS-vault companion is separately installed and is not needed for normal session-only keys.
+
+These instructions do not substitute for reviewer access. Provide any demonstration account or recording through the dashboard's private reviewer channel, using only synthetic course content.
+
+The prepared recording and chapter guide are under `docs/store-assets/reviewer-demo.webm` and `reviewer-demo.md`. The recording captures extension documents directly, so the reviewer should still verify toolbar/side-panel opening using step 1. Live AI generation, completed document imports, native-companion installation, assessment handling and remote course actions are outside its scope.
+
+## Requirement references
+
+Verified against the official Chrome documentation on 2026-10-04: [listing images](https://developer.chrome.com/docs/webstore/images), [privacy fields](https://developer.chrome.com/docs/webstore/cws-dashboard-privacy), [privacy policies](https://developer.chrome.com/docs/webstore/program-policies/privacy), and [Manifest V3 code requirements](https://developer.chrome.com/docs/webstore/program-policies/mv3-requirements). The 128px PNG icon, at least one screenshot, and 440×280 small promotional tile are mandatory. All executable logic ships with the extension; provider responses are constrained to operations implemented and authorized by the bundled code.

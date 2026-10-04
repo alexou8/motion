@@ -27,6 +27,15 @@ export function verifyStorePackage(directory, version) {
   if (manifest.manifest_version !== 3) throw new Error('Store package must use Manifest V3.');
   if (manifest.version !== version) throw new Error('Package and manifest versions differ.');
   if (
+    typeof manifest.minimum_chrome_version !== 'string' ||
+    !/^\d+(?:\.\d+){0,3}$/.test(manifest.minimum_chrome_version) ||
+    Number(manifest.minimum_chrome_version.split('.')[0]) < 116
+  ) {
+    throw new Error('Store package must require Chrome 116 or newer for sidePanel.open.');
+  }
+  if (manifest.background?.type !== 'module')
+    throw new Error('Store service worker must use ES modules.');
+  if (
     !manifest.name ||
     manifest.name.length > 75 ||
     !manifest.description ||
@@ -42,7 +51,10 @@ export function verifyStorePackage(directory, version) {
   }
   if (
     !sameSet(manifest.host_permissions, hosts) ||
-    !sameSet(manifest.optional_host_permissions, ['https://*/*'])
+    !sameSet(manifest.optional_host_permissions, [
+      'https://api.openai.com/*',
+      'https://api.anthropic.com/*',
+    ])
   ) {
     throw new Error('Unexpected hosts: test build or unreviewed host change.');
   }
@@ -79,6 +91,9 @@ export function verifyStorePackage(directory, version) {
   for (const entry of manifest.web_accessible_resources ?? []) {
     if (entry.resources.some((path) => /\.html?$|\*/i.test(path)))
       throw new Error('Extension UI must not be web-accessible.');
+    if (!sameSet(entry.matches, hosts))
+      throw new Error('Unexpected web-accessible resource hosts.');
+    for (const path of entry.resources) file(path);
   }
   function walk(directory) {
     for (const name of readdirSync(directory)) {
@@ -111,7 +126,14 @@ export function verifyStorePackage(directory, version) {
   }
   walk(root);
   const notices = file('THIRD_PARTY_NOTICES.txt').toString();
-  if (!notices.includes('SIL OPEN FONT LICENSE') || !notices.includes('React'))
+  if (
+    !notices.includes('SIL OPEN FONT LICENSE') ||
+    !['React', 'Scheduler', 'Zod', 'clsx', 'tailwind-merge', 'fflate', 'PDF.js', 'core-js'].every(
+      (name) => notices.includes(name),
+    ) ||
+    !notices.includes('Apache License') ||
+    !notices.includes('Denis Pushkarev')
+  )
     throw new Error('Missing bundled licenses.');
   return manifest;
 }

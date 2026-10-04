@@ -29,6 +29,27 @@ afterEach(() => {
 });
 
 describe('resolveSessionProvider', () => {
+  it('never enumerates account models when disclosure is revoked during availability setup', async () => {
+    const settings = preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    const store = secrets({ openai: 'sk-test-SYNTHETIC1234567890' });
+    store.has = async () => { await settings.update({ cloudDisclosureAccepted: [] }); return true; };
+    const fetchImpl = vi.fn();
+    const result = await resolveSessionProvider({ preferencesStore: settings, secrets: store,
+      permissions: { contains: async () => true }, fetchImpl });
+    expect(result).toMatchObject({ kind: 'blocked', blocker: { kind: 'permission' } });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('never sends a model-list request after a delayed credential read observes revoked consent', async () => {
+    const settings = preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    const store = secrets({ openai: 'sk-test-SYNTHETIC1234567890' });
+    store.get = async () => { await settings.update({ cloudDisclosureAccepted: [] }); return 'sk-test-SYNTHETIC1234567890'; };
+    const fetchImpl = vi.fn();
+    await resolveSessionProvider({ preferencesStore: settings, secrets: store,
+      permissions: { contains: async () => true }, fetchImpl });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it('blocks a selected cloud provider until its disclosure is accepted', async () => {
     const result = await resolveSessionProvider({
       preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'openai' }),

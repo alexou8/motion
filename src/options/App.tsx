@@ -816,17 +816,26 @@ function Privacy({
       <h2 id="data-heading" className="font-serif text-lg">
         Privacy &amp; data
       </h2>
+      <p className="mt-2 text-sm">
+        <a href="https://alexou8.github.io/motion/privacy.html" target="_blank" rel="noopener noreferrer" className={`text-signal underline ${focus}`}>
+          Read the full privacy policy
+        </a>
+      </p>
       <div className={`${card} mt-4`}>
         <h3 className="text-md font-medium">What is stored locally</h3>
         <p className="mt-1 text-sm text-ink-muted">
-          Everything Motion stores stays in this browser: courses, deadlines, notes, checklists,
-          sessions, and workflows. There is no account and no server, so this stored database is
-          not uploaded and nothing syncs between devices. A selected cloud provider receives only
-          the bounded request described below.
+          Courses, deadlines, document indexes, notes, checklists, sessions, and workflows stay
+          in this browser profile. Motion has no account or server receiving this database and
+          does not sync it between devices. Optional cloud requests are described below.
         </p>
         <p className="mt-2 text-sm text-ink-muted">
           Stored data is protected by your browser profile. It is not separately encrypted, so
           anyone who can use this signed-in profile can read it.
+        </p>
+        <p className="mt-2 text-sm text-ink-muted">
+          Provider keys last for the browser session by default. Remembering a key requires
+          your explicit choice and a separately installed companion that stores it in your
+          operating system&apos;s credential vault.
         </p>
       </div>
       <div className={`${card} mt-4`}>
@@ -834,10 +843,12 @@ function Privacy({
         <p className="mt-1 text-sm text-ink-muted">
           If you choose OpenAI or Anthropic, Motion sends your message, session plan/state labels,
           relevant notes, and bounded excerpts from pages read for this session to that provider
-          to generate a response. Each source excerpt is at most 8,000 characters and each request
-          is at most 24,000 characters; sources you excluded are omitted. Nothing is sent unless
-          you have accepted that provider&apos;s disclosure and selected it. Chrome&apos;s built-in model
-          never sends anything off this device.
+          to generate a response. Motion limits the included excerpts and recent conversation
+          history. Excluded sources are omitted from new source context; earlier notes and
+          conversation may still contain their material. Model turns require
+          the selected provider&apos;s disclosure and endpoint permission. Testing a provider or
+          refreshing its models sends authentication information after disclosure and permission,
+          without coursework. Chrome&apos;s built-in model processes your prompts locally.
         </p>
       </div>
       <div className={`${card} mt-4`}>

@@ -15,10 +15,11 @@ import { explainProviderError, explainProviderStatus } from '@/core/ai/explain';
 import { isSupportedTextModel, resolveModel } from '@/core/ai/models';
 import type { AIPreferences } from '@/core/ai/preferences';
 import { createProvider, type RegistryDeps } from '@/platform/ai/registry';
-import { E2E_PROVIDER_BASE_URL } from '@/platform/ai/http';
+import { E2E_PROVIDER_BASE_URL, type FetchLike } from '@/platform/ai/http';
 import { ChromePreferencesStore, type PreferencesStore } from '@/platform/ai/preferencesStore';
 import { HybridSecretStore, type SecretStore } from '@/platform/ai/secrets';
 import { getInferencePort } from './inferencePort';
+import { registerCloudRequest, releaseCloudRequest } from './cloudRequests';
 
 const DISPLAY_NAMES: Record<ProviderId, string> = {
   'chrome-local': 'Chrome’s on-device model',
@@ -136,6 +137,47 @@ function cloudOriginFor(providerId: ProviderId): string | undefined {
   return PROVIDER_ORIGINS[providerId];
 }
 
+/** Recheck mutable consent after setup I/O, immediately before a cloud effect. */
+export async function assertCurrentProviderConsent(
+  providerId: ProviderId,
+  deps: Pick<ResolveSessionProviderDeps, 'preferencesStore' | 'permissions'> = {},
+  requireSelected = true,
+): Promise<void> {
+  if (providerId === 'chrome-local') return;
+  const preferences = await (deps.preferencesStore ?? new ChromePreferencesStore()).get();
+  if (requireSelected && preferences.providerId !== providerId)
+    throw new ProviderError('cancelled', 'The selected provider changed. Start a new turn.');
+  if (!preferences.cloudDisclosureAccepted.includes(providerId))
+    throw new ProviderError('needs-permission', `Accept the ${DISPLAY_NAMES[providerId]} cloud-processing disclosure before connecting.`);
+  const origin = cloudOriginFor(providerId);
+  if (!origin || !await (deps.permissions ?? defaultPermissions()).contains({ origins: [origin] }))
+    throw new ProviderError('needs-permission', `Grant Motion permission to reach ${DISPLAY_NAMES[providerId]} before connecting.`);
+}
+
+/** Enforces consent at the actual network boundary, after credential reads. */
+export function guardedProviderFetch(
+  providerId: ProviderId,
+  deps: Pick<ResolveSessionProviderDeps, 'preferencesStore' | 'permissions' | 'fetchImpl'> = {},
+  requireSelected = true,
+): FetchLike {
+  const fetchImpl = deps.fetchImpl ?? fetch.bind(globalThis);
+  return async (input, init) => {
+    const key = `network:${crypto.randomUUID()}`;
+    const controller = registerCloudRequest(key, providerId);
+    const onAbort = () => controller.abort(init?.signal?.reason);
+    if (init?.signal?.aborted) onAbort();
+    else init?.signal?.addEventListener('abort', onAbort, { once: true });
+    try {
+      await assertCurrentProviderConsent(providerId, deps, requireSelected);
+      if (controller.signal.aborted) throw new DOMException('Request cancelled.', 'AbortError');
+      return await fetchImpl(input, { ...init, signal: controller.signal });
+    } finally {
+      init?.signal?.removeEventListener('abort', onAbort);
+      releaseCloudRequest(key, controller);
+    }
+  };
+}
+
 /**
  * Resolves the provider the current session should use for a model turn:
  * reads saved preferences, enforces the cloud-disclosure and host-permission
@@ -181,7 +223,8 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
   const registryDeps: RegistryDeps = {
     secrets,
     chromeLocal: deps.getPort ?? getInferencePort,
-    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+    fetchImpl: guardedProviderFetch(providerId, { preferencesStore, ...(deps.permissions ? { permissions: deps.permissions } : {}),
+      ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) }),
   };
   const provider = createProvider(providerId, registryDeps);
 
@@ -213,9 +256,21 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
     };
   }
 
-  const listedIds = cloud && provider.listModels
-    ? await provider.listModels().catch(() => undefined)
-    : undefined;
+  if (cloud) {
+    try { await assertCurrentProviderConsent(providerId, { preferencesStore, ...(deps.permissions ? { permissions: deps.permissions } : {}) }); }
+    catch (error) { return { kind: 'blocked', blocker: providerBlockerFromError(error, displayName) }; }
+  }
+  let listedIds: string[] | undefined;
+  if (cloud && provider.listModels) {
+    const requestKey = `models:${crypto.randomUUID()}`;
+    const controller = registerCloudRequest(requestKey, providerId);
+    try { listedIds = await provider.listModels({ signal: controller.signal }).catch(() => undefined); }
+    finally { releaseCloudRequest(requestKey, controller); }
+    if (controller.signal.aborted)
+      return { kind: 'blocked', blocker: { kind: 'permission', message: 'The provider connection was revoked. Connect again to continue.' } };
+    try { await assertCurrentProviderConsent(providerId, { preferencesStore, ...(deps.permissions ? { permissions: deps.permissions } : {}) }); }
+    catch (error) { return { kind: 'blocked', blocker: providerBlockerFromError(error, displayName) }; }
+  }
   const resolved = resolveModel(
     providerId,
     preferences.model,

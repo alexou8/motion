@@ -181,12 +181,14 @@ already implemented. — *Mitigated (`src/core/policy`, tested)*
 An approval record is effectively a bearer token. Without binding, one approval
 could authorize a different action, a later attempt, or a different target.
 
-An approval binds to the workflow id, workflow definition version, stable step
-id, attempt generation, canonical action type, target origin, and a hash of the
-immutable action parameters; expiry is checked immediately before dispatch and
-the approval is consumed atomically for exactly one attempt. — *Partially
-mitigated*: expiry, prohibition-first checking and status handling are
-implemented and tested; parameter binding and atomic consumption are *Planned*.
+An approval identifies its workflow and stable step, binds the step attempt
+and canonical action/target/payload digest, and expires before dispatch. The
+workflow's atomic lease claim stamps the consumed approval id, preventing a
+second executor from dispatching the same approval; its approval record is
+subsequently marked consumed. Legacy approvals missing binding or expiry fail
+closed. — *Mitigated (`src/core/policy/policy.test.ts`,
+`src/core/workflows/engine.test.ts`)*. The target digest is an integrity check,
+not protection against compromise of the privileged extension context.
 
 ## T7 — Concurrent execution of the same workflow
 
@@ -216,11 +218,12 @@ workflow resumes at the right step after an update reorders its plan
 
 Broad host access would let Motion read unrelated browsing.
 
-Built-in host permissions cover D2L hosts only; anything else is an optional
-permission requested just-in-time and revocable, and the supported set is
-visible in the extension options. `activeTab` is deliberately unused — it does
-not function from a side panel. — *Partially mitigated (manifest); options UI
-Planned*
+Built-in host permissions cover only the declared D2L domains. Optional host
+permissions name only OpenAI and Anthropic; no wildcard host grant or custom
+institution feature ships. Settings requests each provider from the student's
+gesture and exposes granted access. Runtime operations independently enforce
+disclosure, selection, and provider permission. Browser permission removal
+aborts live cloud requests. — *Mitigated (manifest, provider/worker tests)*
 
 ## T10 — Permission prompts lost by asynchronous orchestration
 
@@ -233,7 +236,8 @@ the workflow persists and resumes only once the outcome is known. — *Planned*
 
 ## T11 — Supply-chain compromise of a dependency
 
-Runtime dependencies are React, Zod, clsx and tailwind-merge. The lockfile is
+Runtime dependencies are React, Zod, clsx, tailwind-merge, fflate and PDF.js,
+including their bundled runtime components. The lockfile is
 committed, `npm audit` reports zero vulnerabilities, and no remote code is
 loaded at runtime, so a compromised *build* dependency cannot reach users
 without a rebuild and reload. — *Partially mitigated*; automated dependency
@@ -434,9 +438,21 @@ not claimed*
 Local mode stays local. Cloud mode names the selected provider and requires
 disclosure acceptance before sending the student's message, session plan/state
 labels, relevant notes, and bounded excerpts from pages read for the session.
-Each source is capped at 8,000 characters and each request at 24,000; excluded
-sources are omitted. There is no Motion proxy, telemetry, or silent provider
+Each source excerpt is capped at 8,000 characters. Selected page/note context
+has a 24,000-character text budget, and the complete agent system prompt has
+its own 24,000-character cap; bounded conversation history is additional. Excluded
+sources are omitted from direct source context; earlier notes/conversation may
+still contain their material. There is no Motion proxy, telemetry, or silent provider
 fallback. — *Mitigated in design*
+
+The submission audit added a final consent guard at the actual provider fetch
+boundary, after credential reads, and transient cancellation handles for live
+cloud operations. Disclosure revocation, provider change, key removal, data
+deletion and browser permission removal cancel active cloud work; persistent
+preferences remain authoritative after worker restart. These controls cannot
+retract content already transmitted to the provider. Configurable actor actions
+also reread settings and workflow ownership before dispatch. Regression tests
+exercise revocation during setup, active requests and actor preference reads.
 
 ## T22 — Inference-port spoofing
 

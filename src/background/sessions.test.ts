@@ -3,6 +3,7 @@ import { agentSessionSchema } from '@/core/session';
 import { deleteDatabase, openDatabase } from '@/core/storage/db';
 import { sessionRepository } from '@/core/storage/repositories';
 import { FakeTabs } from '@/test/fakeTabs';
+import { registerCloudRequest, releaseCloudRequest } from './cloudRequests';
 
 const NOW = '2026-09-16T12:00:00.000Z';
 const { runModelTurn } = vi.hoisted(() => ({ runModelTurn: vi.fn() }));
@@ -71,6 +72,30 @@ describe('session lifecycle', () => {
 });
 
 describe('terminal AgentSession entry points', () => {
+  it.each(['source-button', 'source-command'] as const)('cancels only the session whose source is excluded by %s', async (entry) => {
+    const db = await openDatabase();
+    const sourceUrl = 'https://school.brightspace.com/d2l/le/content/363/viewContent/1/View';
+    await sessionRepository(db).put({ ...makeSession('completed'), status: 'active',
+      context: { sources: [{ url: sourceUrl, title: 'Synthetic source', kind: 'reading', excluded: false,
+        provenance: sourceUrl, excerpt: 'Synthetic content' }] } });
+    db.close();
+    const active = registerCloudRequest('source-test', 'openai', 'session-1');
+    const unrelated = registerCloudRequest('unrelated-source-test', 'openai', 'session-other');
+    try {
+      await handleSessionMessage(entry === 'source-button'
+        ? { type: 'session-source', sessionId: 'session-1', url: sourceUrl, excluded: true }
+        : { type: 'session-message', sessionId: 'session-1', text: "Don't use this source Synthetic source", tabId: null });
+      expect(active.signal.aborted).toBe(true);
+      expect(unrelated.signal.aborted).toBe(false);
+      const currentDb = await openDatabase();
+      expect((await sessionRepository(currentDb).get('session-1'))?.context.sources[0]?.excluded).toBe(true);
+      currentDb.close();
+    } finally {
+      releaseCloudRequest('source-test', active);
+      releaseCloudRequest('unrelated-source-test', unrelated);
+    }
+  });
+
   it.each(['completed', 'archived'] as const)('refuses every mutating entry for %s sessions', async (status) => {
     const db = await openDatabase();
     await sessionRepository(db).put(makeSession(status));

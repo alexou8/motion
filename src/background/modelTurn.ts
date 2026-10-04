@@ -18,16 +18,15 @@ import { ChromeTabs, type TabsCapability } from '@/platform/tabs';
 import { supportedHosts } from '@/core/adapters';
 import { snapshotResultSchema, type SnapshotResult } from '@/core/actor/contracts';
 import { createEngine } from './recovery';
-import { providerBlockerFromError, resolveSessionProvider, type ProviderResolution } from './providers';
+import { assertCurrentProviderConsent, providerBlockerFromError, resolveSessionProvider, type ProviderResolution } from './providers';
+import { abortSessionRequests, hasActiveRequest, registerCloudRequest, releaseCloudRequest } from './cloudRequests';
+export { abortCloudRequests } from './cloudRequests';
 
 const STREAMING_KEY = 'motion.streaming';
 const SNAPSHOTS_KEY = 'motion.snapshots';
 export const MODEL_RETRY_ALARM_PREFIX = 'motion:model-retry:';
 const STREAM_WRITE_INTERVAL_MS = 150;
 const STREAM_MAX_LENGTH = 40_000;
-
-/** Controllers intentionally only live for an active request in this worker. */
-const activeRequests = new Map<string, AbortController>();
 
 export interface ModelTurnDeps {
   resolveProvider?: () => Promise<ProviderResolution>;
@@ -104,13 +103,14 @@ interface ModelReplyResult {
   planSteps: { id: string; title: string; status: 'pending' }[] | null;
   requestKey: string | null;
   generation: number;
+  signal?: AbortSignal;
 }
 
 /**
  * SOL-2: applies only the fields this model turn owns, re-read against the
  * latest committed session rather than a whole-row CAS against a stale
- * snapshot. A concurrent mutation (a source excluded mid-turn, a pause, a
- * blocker recorded by another path) must never cost the student their reply.
+ * snapshot. Unrelated concurrent edits must not lose the student's reply.
+ * Cancellation and source exclusion intentionally discard the old turn.
  *
  * The plan (and the transition to `waiting` when there is no plan) is only
  * applied when the session is still in the same turn generation and not
@@ -129,6 +129,7 @@ async function applyModelTurnResult(
   let planApplied = false;
   try {
     const session = await updateSession(db, sessionId, (current) => {
+      if (result.signal?.aborted) return null;
       if (result.requestKey && (
         current.pendingModelRequest?.key !== result.requestKey
         || current.pendingModelRequest.generation !== result.generation
@@ -307,9 +308,11 @@ async function persistPlan(
   reply: string,
   plan: AgentPlanStep[],
   deps: ModelTurnDeps,
+  signal?: AbortSignal,
 ): Promise<AgentSession> {
   const { refs } = await refsFor(session, deps.tabs ?? new ChromeTabs());
   const guarded = await guardPlan(plan, refs, session.conversation.length, session.taskId);
+  if (signal?.aborted) throw new ProviderError('cancelled', 'Generation stopped.');
   const now = timestamp(deps);
   const activities = guarded.rejected.map((reason) => ({
     id: crypto.randomUUID(),
@@ -326,7 +329,9 @@ async function persistPlan(
     planSteps,
     requestKey: session.pendingModelRequest?.key ?? null,
     generation: session.modelTurnGeneration,
+    ...(signal ? { signal } : {}),
   }, now);
+  if (signal?.aborted) throw new ProviderError('cancelled', 'Generation stopped.');
   if (!applied) return (await loadSession(session.id)) ?? session;
   if (guarded.steps.length === 0 || !applied.planApplied) return applied.session;
 
@@ -337,12 +342,17 @@ async function persistPlan(
   // student had already paused/cancelled out from under itself force the
   // session back to `active` via `engine.create`'s own projection.
   const engine = await (deps.createWorkflowEngine ?? createEngine)(deps.tabs);
+  if (signal?.aborted) throw new ProviderError('cancelled', 'Generation stopped.');
   const workflow = await engine.create('agent-turn', {
     sessionId: applied.session.id,
     turnSeq: applied.session.conversation.length,
     modelTurnGeneration: session.modelTurnGeneration,
     steps: guarded.steps,
   }, { courseId: applied.session.courseId, title: applied.session.title });
+  if (signal?.aborted) {
+    await engine.cancel(workflow.id);
+    throw new ProviderError('cancelled', 'Generation stopped.');
+  }
 
   const db = await openDatabase();
   let attached: AgentSession | null;
@@ -350,6 +360,7 @@ async function persistPlan(
     attached = await updateSession(db, applied.session.id, (current) => {
       const expectedRequestKey = session.pendingModelRequest?.key;
       if (
+        signal?.aborted ||
         (expectedRequestKey !== undefined && (
           current.pendingModelRequest?.key !== expectedRequestKey
           || current.pendingModelRequest?.generation !== session.modelTurnGeneration
@@ -373,6 +384,10 @@ async function persistPlan(
   if (!attached) {
     await engine.cancel(workflow.id);
     return (await loadSession(session.id)) ?? applied.session;
+  }
+  if (signal?.aborted) {
+    await engine.cancel(workflow.id);
+    throw new ProviderError('cancelled', 'Generation stopped.');
   }
   await engine.advance(workflow.id);
   return (await loadSession(attached.id)) ?? attached;
@@ -480,8 +495,7 @@ export async function runModelTurn(
   // that window must abort before the provider is ever called — not merely
   // before the stream is awaited — so no chargeable request goes out after
   // the student pressed Stop.
-  const controller = new AbortController();
-  activeRequests.set(sessionId, controller);
+  const controller = registerCloudRequest(sessionId, resolution.providerId, sessionId);
   // A worker that dies while streaming or backing off never runs the
   // in-memory catch block below, and nothing else wakes a suspended worker
   // to notice — until this alarm fires. Schedule it the moment the request
@@ -500,13 +514,8 @@ export async function runModelTurn(
     // Setup does I/O too. Keep it inside the ownership/finally envelope so a
     // failed tab lookup or prompt build cannot strand a durable claim and its
     // in-memory abort controller forever.
-    const { refs, notes } = await refsFor(session, deps.tabs ?? new ChromeTabs());
-    const prompt = buildAgentPrompt({
-      session,
-      goalText: studentText,
-      refs,
-      stepContext: buildStepContext(session, notes),
-    });
+    const prepared = await refsFor(session, deps.tabs ?? new ChromeTabs());
+    await assertCurrentProviderConsent(resolution.providerId);
     // `updateSession()` resolves asynchronously. Stop can commit after its
     // claim transaction commits but before this worker receives the result
     // and installs the controller. Re-read at the final async boundary; once
@@ -526,7 +535,18 @@ export async function runModelTurn(
       // uses, so this is indistinguishable from any other stopped turn.
       throw new ProviderError('cancelled', 'Generation stopped.');
     }
-    const messages = session.conversation.slice(-12).map((entry) => ({
+    // Browser/ref setup can wait while the student excludes a source. Rebuild
+    // the prompt from the final session read so those exclusions apply to this
+    // outgoing turn, including source titles and reference metadata.
+    const excludedUrls = new Set(beforeStream.context.sources.filter((source) => source.excluded).map((source) => source.url));
+    const refs = buildTrustedRefs(beforeStream, {
+      links: prepared.links.filter((link) => !link.to.url || !excludedUrls.has(link.to.url)),
+      tasks: prepared.tasks.filter((task) => !excludedUrls.has(task.provenance.sourceUrl)),
+      notes: prepared.notes, snapshots: prepared.snapshots,
+      tabs: [...prepared.refs.tabByRef.values()].filter((tab) => !excludedUrls.has(tab.url)) });
+    const prompt = buildAgentPrompt({ session: beforeStream, goalText: studentText, refs,
+      stepContext: buildStepContext(beforeStream, prepared.notes) });
+    const messages = beforeStream.conversation.slice(-12).map((entry) => ({
       role: entry.role === 'student' ? 'user' as const : 'assistant' as const,
       content: entry.text.slice(0, 4_000),
     }));
@@ -552,6 +572,7 @@ export async function runModelTurn(
         await refreshHeartbeat(sessionId, requestKey, new Date(nowMs).toISOString());
       }
     }
+    if (controller.signal.aborted) throw new ProviderError('cancelled', 'Generation stopped.');
     if (!await storeStreaming(sessionId, requestKey, output)) return await loadSession(sessionId);
     session = await loadSession(sessionId);
     if (!session || session.pendingModelRequest?.key !== requestKey || session.pendingModelRequest.generation !== session.modelTurnGeneration) return session;
@@ -569,7 +590,7 @@ export async function runModelTurn(
     // Keep guard/workflow creation inside this request's catch/finally. A bare
     // returned promise would bypass the failure path, leaving the durable
     // claim behind after an engine or guard error.
-    return await persistPlan(session, parsed.response.reply.trim() || 'I prepared the next steps.', parsed.response.plan, deps);
+    return await persistPlan(session, parsed.response.reply.trim() || 'I prepared the next steps.', parsed.response.plan, deps, controller.signal);
   } catch (error) {
     session = await loadSession(sessionId);
     if (!session || session.pendingModelRequest?.key !== requestKey || session.pendingModelRequest.generation !== session.modelTurnGeneration) return session;
@@ -592,13 +613,13 @@ export async function runModelTurn(
     // newer turn already started) must never clear the newer turn's
     // controller out from under it — that would silently strand the newer
     // request without any way to abort it.
-    if (activeRequests.get(sessionId) === controller) activeRequests.delete(sessionId);
+    releaseCloudRequest(sessionId, controller);
     await clearStreaming(sessionId, requestKey);
   }
 }
 
 export async function stopGeneration(sessionId: string): Promise<void> {
-  activeRequests.get(sessionId)?.abort();
+  abortSessionRequests(sessionId);
   const db = await openDatabase();
   try {
     await updateSession(db, sessionId, (current) => current.pendingModelRequest
@@ -667,7 +688,7 @@ export async function recoverStaleModelRequests(now = Date.now()): Promise<void>
     if (!pending) continue;
     const heartbeatMs = Date.parse(pending.heartbeatAt ?? pending.startedAt);
     const isFresh = now - heartbeatMs <= HEARTBEAT_STALE_MS;
-    if (activeRequests.has(session.id) || isFresh) {
+    if (hasActiveRequest(session.id) || isFresh) {
       scheduleModelRecovery(session.id);
       continue;
     }

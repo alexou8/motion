@@ -210,6 +210,13 @@ function responseWithBodyCleanup(
       };
 
       signal.addEventListener('abort', onAbort, { once: true });
+      // Revocation can win while fetch resolves its headers, before this
+      // stream's listener exists. An already-aborted signal fires no new
+      // event, so handle it before beginning any body read.
+      if (signal.aborted) {
+        onAbort();
+        return;
+      }
       void (async () => {
         try {
           for (;;) {

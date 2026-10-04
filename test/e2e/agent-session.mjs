@@ -127,7 +127,9 @@ async function installMockFetch(worker, responses, mode = 'stream') {
   await worker.evaluate(({ nextResponses, nextMode }) => {
     globalThis.__motionMockResponses = [...nextResponses];
     globalThis.__motionMockMode = nextMode;
+    globalThis.__motionMockFetchCalls = 0;
     globalThis.fetch = async (input, init = {}) => {
+      globalThis.__motionMockFetchCalls += 1;
       const url = String(input);
       if (globalThis.__motionMockMode === '401') {
         return new Response(JSON.stringify({ error: { message: 'invalid api key' } }), { status: 401, headers: { 'content-type': 'application/json' } });
@@ -643,9 +645,40 @@ try {
     await context.unroute('https://api.openai.com/v1/responses');
   }
 
-  await installMockFetch(await waitForWorker(), [], '401');
-  const invalid = await send({ type: 'test-provider', providerId: 'openai' });
-  check('invalid API key gives understandable feedback', /API key is no longer valid/i.test(invalid?.result?.availability?.message ?? ''), 'worker/provider message is redacted and student-readable');
+  const healthWorker = await waitForWorker();
+  await installMockFetch(healthWorker, [], '401');
+  await send({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: false });
+  const undisclosed = await send({ type: 'test-provider', providerId: 'openai' });
+  check('provider connection test refuses revoked disclosure without making a request',
+    undisclosed?.ok === false && /disclosure/i.test(undisclosed?.error ?? '') &&
+    await healthWorker.evaluate(() => globalThis.__motionMockFetchCalls) === 0);
+  await send({ type: 'accept-cloud-disclosure', providerId: 'openai', accepted: true });
+  const permitted = await healthWorker.evaluate(() => chrome.permissions.contains({ origins: ['https://api.openai.com/*'] }));
+  if (!permitted) {
+    const denied = await send({ type: 'test-provider', providerId: 'openai' });
+    check('provider connection test refuses absent host permission without making a request',
+      denied?.ok === false && /permission/i.test(denied?.error ?? '') &&
+      await healthWorker.evaluate(() => globalThis.__motionMockFetchCalls) === 0);
+  }
+  // The synthetic 401 path needs a granted origin. Headless Chrome cannot
+  // drive its permission dialog, so simulate only this contains result while
+  // fetch remains the in-worker fake above. No network or shipped grant changes.
+  await healthWorker.evaluate(() => {
+    globalThis.__motionOriginalContains = chrome.permissions.contains;
+    chrome.permissions.contains = (request) => request.origins?.length === 1 &&
+      request.origins[0] === 'https://api.openai.com/*'
+      ? Promise.resolve(true) : globalThis.__motionOriginalContains.call(chrome.permissions, request);
+  });
+  try {
+    const invalid = await send({ type: 'test-provider', providerId: 'openai' });
+    check('invalid API key gives understandable feedback after disclosure and permission',
+      /API key is no longer valid/i.test(invalid?.result?.availability?.message ?? ''), 'worker/provider message is redacted and student-readable');
+  } finally {
+    await healthWorker.evaluate(() => {
+      chrome.permissions.contains = globalThis.__motionOriginalContains;
+      delete globalThis.__motionOriginalContains;
+    });
+  }
 
   // Secrets: only the session area may contain the canary, and no UI/IDB/log
   // path may echo it. This check intentionally never prints the key.
