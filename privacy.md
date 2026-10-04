@@ -26,7 +26,7 @@ Reminders are off by default. After you enable them, notifications use locally s
 
 ## Optional cloud AI providers
 
-When you select OpenAI or Anthropic, accept the cloud-processing disclosure, and grant permission for that provider, Motion sends your message or goal, relevant session state, notes, and bounded excerpts directly to the selected provider over HTTPS. Sources you exclude are omitted from that model turn. Motion does not proxy these requests through a Motion server or silently switch providers.
+When you select OpenAI or Anthropic, accept the cloud-processing disclosure, and grant permission for that provider, Motion sends your message or goal, relevant session state, notes, and bounded excerpts directly to the selected provider over HTTPS. Sources you exclude are omitted as direct source context from new model requests. Previously saved notes or conversation may still contain material from those sources; exclusion cannot retract content already sent to a provider. Motion does not proxy these requests through a Motion server or silently switch providers.
 
 Provider API keys are sent to the selected provider to authenticate requests. Keys are held in trusted browser-session storage by default and disappear when the browser session ends. They are never saved in browser local storage, Chrome sync, IndexedDB, logs, or ordinary files. If you explicitly choose to remember a key and install the optional local companion, it is saved in your operating system's credential vault. The companion connects locally and has no server.
 
