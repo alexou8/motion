@@ -31,11 +31,14 @@
     "package:keychain": "python3 native/package.py",
     "build:e2e-keychain": "MOTION_E2E_KEYCHAIN=1 MOTION_E2E_PROVIDER_HOSTS=1 MOTION_BUILD_OUTDIR=dist-e2e-keychain vite build",
     "test:keychain-browser": "node test/e2e/keychain-companion.mjs",
-    "test:release": "node --test scripts/package.test.mjs scripts/release.test.mjs",
-    "test:coursework": "node test/e2e/coursework.mjs"
+    "test:release": "node --test scripts/package.test.mjs scripts/release.test.mjs scripts/worker-source.test.mjs",
+    "test:coursework": "node test/e2e/coursework.mjs",
+    "test:documents": "node test/e2e/documents.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "fflate": "^0.8.3",
+    "pdfjs-dist": "^6.4.299",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.4",

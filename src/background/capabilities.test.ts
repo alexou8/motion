@@ -219,7 +219,7 @@ describe('capability boundaries', () => {
     const content: PageContent = {
       pageType: 'assignment', title: 'Synthetic instructions',
       url: 'https://school.brightspace.com/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363',
-      text: 'Use a synthetic source and explain your method.', headings: [], links: [], capturedAt: NOW,
+      text: 'Use a synthetic source and explain your method.', headings: [], links: [], resources: [], capturedAt: NOW,
       instructionBlocks: [], warnings: [],
     };
     const capability = buildCapabilities(tabs, { askContent: async () => content }).find(
@@ -258,7 +258,7 @@ describe('capability boundaries', () => {
     const capability = buildCapabilities(new FakeTabs(), {
       askContent: async () => ({
         pageType: 'quiz-attempt', title: 'Synthetic quiz', url: 'https://school.brightspace.com/d2l/lms/quizzing/user/attempt/1',
-        text: 'Question 1', headings: [], links: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
+        text: 'Question 1', headings: [], links: [], resources: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
       }),
       snapshot,
     }).find((item) => item.action === 'inspect-tab')!;
@@ -285,7 +285,7 @@ describe('capability boundaries', () => {
     const capability = buildCapabilities(new FakeTabs(), {
       askContent: async () => ({
         pageType: 'assignment', title: 'Synthetic assignment', url,
-        text: 'Instructions', headings: [], links: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
+        text: 'Instructions', headings: [], links: [], resources: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
       }),
       snapshot,
     }).find((item) => item.action === 'inspect-tab')!;
@@ -307,7 +307,7 @@ describe('capability boundaries', () => {
     const capability = buildCapabilities(new FakeTabs(), {
       askContent: async () => ({
         pageType: 'assignment', title: 'Synthetic assignment', url: 'https://school.brightspace.com/d2l/le/content/363/home',
-        text: 'Instructions', headings: [], links: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
+        text: 'Instructions', headings: [], links: [], resources: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
       }),
       snapshot,
     }).find((item) => item.action === 'inspect-tab')!;

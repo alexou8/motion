@@ -60,6 +60,7 @@ jobs:
           npm run test:agent
           npm run test:popup-presence
           npm run test:coursework
+          npm run test:documents
 
       - name: Verify provider streaming, cancellation and recovery
         run: |

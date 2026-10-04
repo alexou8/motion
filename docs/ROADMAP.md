@@ -4,11 +4,29 @@ Status is evidence-based. **Done** means implemented *and* covered by tests that
 run in `npm test`. **Partial** names exactly what is missing. Nothing is marked
 done because it was designed or documented.
 
-Last updated 2026-10-02. The provider Settings and panel E2E checks cover
+Last updated 2026-10-04. The provider Settings and panel E2E checks cover
 exact model selection, current and economical model choices, stream failures,
 cancellation and recovery. See [browser verification](verification/browser-verification.md)
 for this iteration's evidence and remaining live-account limitations. Older
 phase entries below retain their original scope and evidence.
+
+## Local lecture text indexing (2026-10-04)
+
+- **Implemented and browser verified:** Library indexes selectable PDF text and
+  PPTX slide text using bundled local workers. Search results retain page/slide
+  numbers; students can read text, filter by course, reindex an LMS source or
+  remove a local index. No AI provider receives indexed files or text.
+- **Implemented:** observed MyLearningSpace PDF.js viewer file references and
+  direct course-file links become page-bound source choices. Same-origin,
+  same-course checks, expiry, assessment refusal and deletion-safe import
+  tickets protect download and storage boundaries.
+- **Verified with a private downloaded lecture:** the production extension
+  indexed 22/22 pages and 11,741 characters in an isolated temporary profile.
+  Only counts are recorded; course content is absent from fixtures/screenshots.
+- **Limits:** no OCR, legacy `.ppt`, speaker notes or automatic whole-course
+  crawling. PDF indexing needs Chromium 125+. Full installed-extension execution
+  against the authenticated account remains unverified because browser control
+  blocks the extension manager. See [document verification](verification/document-indexing.md).
 
 ## Coursework overview and MyLearningSpace compatibility (2026-10-02)
 
@@ -29,8 +47,8 @@ phase entries below retain their original scope and evidence.
   publishing; extension ZIP packaging is deterministic and includes source/checksum
   metadata.
   Development downloads use a distinct prerelease channel. See [releases](releases.md).
-- **Limits:** observed pages only; no whole-course lecture crawl or PDF/slide-body
-  indexing. Authenticated MyLearningSpace behavior and GitHub publication are
+- **Limits:** observed pages only; no whole-course lecture crawl. Authenticated
+  MyLearningSpace behavior and GitHub publication are
   tracked separately from synthetic browser evidence in
   [coursework verification](verification/coursework-overview.md).
 
@@ -76,7 +94,7 @@ planned follow-ups, not verified Motion behavior:
 | D2L adapter and synthetic fixtures | **Partial** — route-based selectors, with fixtures rebuilt from the structure the live deployment actually serves. A list row, not a link, is now the unit of extraction: D2L puts several links to the same work on one row |
 | MyLearningSpace (institution deployment) support | **Partial** — live verification covers the recorded route shapes; synthetic fixtures pin the deployment-specific markup fixes for submission-count titles, duplicate discussion rows, quiz-list restricted-mode detection, page-name course titles, and the signed-out body-script stub. No live identifiers or course records are retained |
 | Deadline extraction with provenance and confidence | **Partial** — extraction, storage upsert, discovery, reminders, and correction history are implemented and focused-tested; live LMS behavior remains unverified |
-| Course dashboard | **Partial** — saved-coursework search and course/type/status filters are implemented and covered by component tests; no whole-course lecture crawl or PDF indexing |
+| Course dashboard | **Partial** — saved-coursework filters and local PDF/PPTX text indexing are implemented and browser verified; no whole-course lecture crawl or complete installed live-account verification |
 | Task correction and archive | **Partial** — corrections, canonical-id migration, dependent repointing, and archive tombstones are implemented and focused-tested; live LMS behavior remains unverified |
 | Source-linked notes | **Not started** — schema exists |
 

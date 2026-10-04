@@ -16,6 +16,7 @@ function content(links: { href: string; label: string }[], url = ASSIGNMENT): Pa
     text: '',
     headings: [],
     links,
+    resources: [],
     capturedAt: '2026-03-02T12:00:00.000Z',
     instructionBlocks: [],
     warnings: [],

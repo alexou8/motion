@@ -85,7 +85,8 @@ claim of complete accessibility conformance.
 ## Remaining limits
 
 - Materials are collected from observed modules/topics. There is no whole-course
-  lecture crawl or indexing of PDF, slide-body or externally hosted file contents.
+  lecture crawl. The follow-up [document verification](document-indexing.md) records
+  local PDF/PPTX text indexing and its separate browser/live-account evidence.
 - No new host permission, closed-root access, iframe traversal or arbitrary
   script/selector action was added.
 - Provider-backed study and drafting remain subject to the existing disclosure,

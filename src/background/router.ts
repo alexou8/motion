@@ -43,6 +43,7 @@ import { handleAiMessage } from './aiHandlers';
 import { resolveSessionProvider } from './providers';
 import { discoveryRunResultSchema } from '@/core/adapters/d2lDiscovery';
 import { reconcileReminders } from './reminders';
+import { handleDocumentMessage, forgetDocumentTab } from './documents';
 
 /**
  * Handles an already-authorized message.
@@ -60,6 +61,15 @@ export async function handleMessage(message: Message, tabId?: number): Promise<u
       return handleExtraction(message);
     case 'get-state':
       return buildAgentPanelState();
+    case 'get-document-sources':
+    case 'begin-document-import':
+    case 'fetch-document':
+    case 'store-document':
+    case 'store-document-local':
+    case 'get-documents':
+    case 'get-document':
+    case 'delete-document':
+      return handleDocumentMessage(message);
     case 'popup-context':
       return buildPopupLauncherState(message.tabId);
     case 'popup-command':
@@ -381,6 +391,7 @@ async function maybeAutomaticCourseScan(tabId: number, url: string): Promise<voi
  */
 export async function forgetTab(tabId: number): Promise<void> {
   await chrome.storage.session.remove(observationKey(tabId));
+  await forgetDocumentTab(tabId);
 }
 
 async function handleExtraction(

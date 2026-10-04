@@ -25,6 +25,9 @@ export default defineConfig({
   define: {
     __MOTION_PROVIDER_BASE_URL__: JSON.stringify(e2eProviderBaseUrl),
   },
+  // PDF.js and the slide XML parser ship as local module workers. They need no
+  // network code, sandbox page, or additional extension permission.
+  worker: { format: 'es' },
   build: {
     target: 'es2022',
     // Only the provider-stream e2e build (MOTION_E2E_PROVIDER_HOSTS=1, see

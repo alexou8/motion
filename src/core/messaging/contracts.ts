@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { courseSchema, courseTaskSchema, pageContentSchema, pageTypeSchema } from '../domain';
 import { SESSION_MESSAGE_SCHEMAS } from './sessionContracts';
 import { popupActionSchema } from '../view/popup';
+import { DOCUMENT_MESSAGE_SCHEMAS } from '../documents/library';
 import {
   snapshotRequestSchema,
 } from '../actor/contracts';
@@ -194,6 +195,7 @@ export const messageSchema = z.discriminatedUnion('type', [
   composeDraftSchema,
   modelStatusSchema,
   getChecklistSchema,
+  ...DOCUMENT_MESSAGE_SCHEMAS,
   ...SESSION_MESSAGE_SCHEMAS,
 ]);
 export type Message = z.infer<typeof messageSchema>;
@@ -226,6 +228,14 @@ export const ALLOWED_SENDERS: Record<MessageType, readonly SenderRole[]> = {
   'compose-draft': ['extension-ui'],
   'model-status': ['extension-ui'],
   'get-checklist': ['extension-ui'],
+  'get-document-sources': ['extension-ui'],
+  'begin-document-import': ['extension-ui'],
+  'fetch-document': ['extension-ui'],
+  'store-document': ['extension-ui'],
+  'store-document-local': ['extension-ui'],
+  'get-documents': ['extension-ui'],
+  'get-document': ['extension-ui'],
+  'delete-document': ['extension-ui'],
   'session-create': ['extension-ui'],
   'session-message': ['extension-ui'],
   'session-command': ['extension-ui'],

@@ -13,6 +13,7 @@ import { parseDueDate } from '@/core/parse/dueDate';
 import {
   absoluteUrl,
   allMatches,
+  boundedVisibleText,
   canonicalUrl,
   courseIdFromUrl,
   elementLabelText,
@@ -23,6 +24,7 @@ import {
   readablePageText,
 } from './dom';
 import type { AdapterInput, LearningPlatformAdapter, PageDetection } from './types';
+import { evaluateAssessmentContext } from '@/core/policy/assessment';
 
 const HOST_PATTERNS: readonly RegExp[] = [
   /(^|\.)brightspace\.com$/i,
@@ -682,6 +684,78 @@ function dueEvidenceRank(due: CourseTask['due']): number {
   return due.iso !== null ? 2 : due.raw.trim() ? 1 : 0;
 }
 
+/** Only an observed course-file endpoint can become a fetch target. */
+export function d2lDocumentResourceForUrl(
+  raw: string,
+  pageUrl: string,
+  hint?: 'pdf' | 'pptx',
+): { sourceUrl: string; format: 'pdf' | 'pptx' } | null {
+  try {
+    const page = new URL(pageUrl);
+    if (page.protocol !== 'https:' || !HOST_PATTERNS.some((pattern) => pattern.test(page.hostname))) return null;
+    const course = courseExternalId(pageUrl);
+    if (!course || !/^\d+$/.test(course)) return null;
+    const courseParams = (url: URL) => Array.from(url.searchParams).filter(([key]) => /^(?:ou|orgunitid)$/i.test(key)).map(([, value]) => value);
+    const pageParams = courseParams(page);
+    if (pageParams.length > 1) return null;
+    const pageIds = [courseIdFromUrl(pageUrl), ...pageParams].filter(Boolean);
+    if (pageIds.some((id) => id !== course)) return null;
+    let resource = new URL(raw, pageUrl);
+    if (resource.origin !== page.origin || resource.protocol !== 'https:' || resource.username || resource.password) return null;
+    // Brightspace's PDF.js wrapper exposes the file in its observed iframe URL.
+    // URLSearchParams decodes the wrapper once; the course-file URL keeps its
+    // own percent escapes, including spaces in lecture filenames.
+    if (/^\/d2l\/common\/assets\/pdfjs-d2l-dist\/web\/viewer\.html$/i.test(resource.pathname)) {
+      const files = resource.searchParams.getAll('file');
+      if (files.length !== 1 || !files[0]) return null;
+      resource = new URL(files[0], pageUrl);
+    }
+    if (resource.origin !== page.origin || resource.protocol !== 'https:' || resource.username || resource.password) return null;
+    const ous = courseParams(resource);
+    if (ous.length > 1 || ous.some((id) => id !== course)) return null;
+    const decodedPath = decodeURIComponent(resource.pathname);
+    if (/%(?:2f|5c|00|0a|0d)/i.test(resource.pathname) || decodedPath.includes('\\')
+      || /%(?:2e|2f|5c)/i.test(decodedPath) || decodedPath.split('/').some((part) => part === '..' || part === '.')) return null;
+    const enforced = resource.pathname.match(/^\/content\/enforced\/(\d+)(?:-[^/]+)?\/[^?#]+$/i);
+    const download = resource.pathname.match(/^\/d2l\/le\/content\/(\d+)\/topics\/files\/download\/\d+\/DirectFileTopicDownload\/?$/i);
+    if ((enforced?.[1] ?? download?.[1]) !== course) return null;
+    const extension = decodedPath.match(/\.(pdf|pptx)$/i)?.[1]?.toLowerCase();
+    const format = extension === 'pdf' || extension === 'pptx' ? extension : download ? hint : undefined;
+    if (!format || (hint && hint !== format)) return null;
+    resource.hash = '';
+    if (resource.href.length > 2_000) return null;
+    return { sourceUrl: resource.href, format };
+  } catch {
+    return null;
+  }
+}
+
+export function d2lDocumentResources(input: AdapterInput): PageContent['resources'] {
+  const detection = d2lAdapter.detectPage(input);
+  const pageType = detection?.pageType ?? 'unsupported';
+  if (!['content-module', 'content-topic', 'assignment'].includes(pageType)
+    || evaluateAssessmentContext({ pageType, url: input.url, pageTitle: input.document.title,
+      visibleText: boundedVisibleText(input.document) }).restricted) return [];
+  const resources: PageContent['resources'] = [];
+  const seen = new Set<string>();
+  for (const element of openShadowMatches(input.document, 'a[href], d2l-link[href], iframe[src], embed[src], object[data]')) {
+    const raw = element.getAttribute('href') ?? element.getAttribute('src') ?? element.getAttribute('data');
+    if (!raw) continue;
+    const label = element.getAttribute('download')?.trim() || element.getAttribute('aria-label')?.trim()
+      || element.getAttribute('title')?.trim() || elementLabelText(element);
+    const type = element.getAttribute('type');
+    const hint = type === 'application/pdf' || /\.pdf(?:\b|$)/i.test(label) ? 'pdf'
+      : type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || /\.pptx(?:\b|$)/i.test(label) ? 'pptx' : undefined;
+    const resource = d2lDocumentResourceForUrl(raw, input.url, hint);
+    if (!resource || seen.has(resource.sourceUrl)) continue;
+    seen.add(resource.sourceUrl);
+    const filename = decodeURIComponent(new URL(resource.sourceUrl).pathname.split('/').at(-1) ?? '').trim();
+    resources.push({ ...resource, title: (label || filename || `Lecture ${resource.format.toUpperCase()}`).slice(0, 500) });
+    if (resources.length >= 50) break;
+  }
+  return resources;
+}
+
 export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
   readonly id = 'd2l';
   readonly displayName = 'D2L Brightspace';
@@ -833,6 +907,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       text: readable.text,
       headings,
       links: links.slice(0, 200),
+      resources: d2lDocumentResources(input),
       instructionBlocks: instructionBlocksFor(pageType, input.document),
       capturedAt: input.now.toISOString(),
       warnings: [...(detection?.warnings ?? []), ...readable.warnings],

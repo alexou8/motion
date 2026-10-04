@@ -23,6 +23,8 @@ import { ChromePreferencesStore, type PreferencesStore } from '@/platform/ai/pre
 import { HybridSecretStore, SessionSecretStore, type SecretStore, type StorageArea } from '@/platform/ai/secrets';
 import { NativeKeychainAdapter, type KeychainVault } from '@/platform/ai/keychain';
 import { getInferencePort } from './inferencePort';
+import { DOCUMENT_LIFECYCLE_KEY, DOCUMENT_LIFECYCLE_LOCK } from './documents';
+import { withLock } from '@/platform/locks';
 import {
   providerBlockerFromError,
   providerDisplayNames,
@@ -300,31 +302,34 @@ async function handleAcceptCloudDisclosure(message: Extract<AiMessage, { type: '
   return { providerId: message.providerId, accepted: next.cloudDisclosureAccepted.includes(message.providerId) };
 }
 
-async function clearStorageArea(area: ClearableStorageArea): Promise<void> {
-  if (area.clear) {
-    await area.clear();
-    return;
-  }
-  const values = await area.get(null);
-  const keys = Object.keys(values);
-  if (keys.length > 0) await area.remove(keys);
-}
-
 async function handleDeleteLocalData(ctx: HandlerContext) {
+  return withLock(DOCUMENT_LIFECYCLE_LOCK, () => deleteLocalDataUnderLock(ctx));
+}
+async function deleteLocalDataUnderLock(ctx: HandlerContext) {
   // Remove remembered OS-vault entries before clearing the metadata that says
   // which providers opted in. A failure leaves the local data intact so the
   // student can retry rather than receiving a false deletion confirmation.
   for (const providerId of ['openai', 'anthropic'] as const) await ctx.secrets.forget(providerId);
+  // Preserve only a content-free revocation marker while clearing session
+  // storage. Imports begun before deletion must not recreate the library.
+  const lifecycle = { epoch: crypto.randomUUID(), deleting: true };
+  await ctx.session.set({ [DOCUMENT_LIFECYCLE_KEY]: lifecycle });
   const localValues = await ctx.local.get(null);
   const motionKeys = Object.keys(localValues).filter((key) => key.startsWith('motion.'));
   const results = await Promise.allSettled([
     ctx.deleteDatabase(),
     motionKeys.length > 0 ? ctx.local.remove(motionKeys) : Promise.resolve(),
-    clearStorageArea(ctx.session),
+    (async () => {
+      const sessionValues = await ctx.session.get(null);
+      const sessionKeys = Object.keys(sessionValues).filter((key) => key !== DOCUMENT_LIFECYCLE_KEY);
+      if (sessionKeys.length > 0) await ctx.session.remove(sessionKeys);
+    })(),
   ]);
   if (results.some((result) => result.status === 'rejected')) {
+    await ctx.session.set({ [DOCUMENT_LIFECYCLE_KEY]: { ...lifecycle, deleting: false } });
     throw new Error('Motion could not delete all local data. Close other Motion pages and try again.');
   }
+  await ctx.session.set({ [DOCUMENT_LIFECYCLE_KEY]: { ...lifecycle, deleting: false } });
   return { deleted: true };
 }
 

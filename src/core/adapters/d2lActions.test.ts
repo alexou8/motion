@@ -11,6 +11,7 @@ function pageContent(overrides: Partial<PageContent> = {}): PageContent {
     text: 'Submit your relational algebra solutions by the due date.',
     headings: ['Assignment 2'],
     links: [],
+    resources: [],
     capturedAt: '2025-01-10T12:00:00.000Z',
     instructionBlocks: [],
     warnings: [],

@@ -41,8 +41,12 @@ Motion knows what an assignment page is.
 - **Keeps coursework in one view.** Browse saved assignments, quizzes,
   discussions and lecture materials by course, type, status or title. Slides
   and handouts without deadlines remain visible without invented due dates.
-  Read a content module or a supported topic to add its items; this does not
-  yet index the contents of slide decks or PDFs.
+  Read a content module or a supported topic to add its items.
+- **Searches inside lecture files.** Library indexes selectable PDF text and
+  PowerPoint (.pptx) slide text locally, with page/slide references. Choose a
+  file exposed by the current LMS topic or import a downloaded copy. It accepts
+  files up to 20 MB and reports partial or image-only content honestly; OCR
+  and legacy `.ppt` files are not supported. Indexing sends nothing to AI.
 - **Turns an assignment into a checklist.** Every item traces back to the
   sentence in the instructions it came from. When nothing on the page is
   actually stated as a requirement, Motion says so rather than inventing one.
@@ -134,7 +138,8 @@ npm run dist     # build + package
 That writes `motion-extension-<version>.zip`. Unzip it and load the folder as
 above, or load `dist/` directly with **Load unpacked**.
 
-Chrome 116 or newer. Drafting additionally needs Chrome's built-in on-device
+Chrome 116 or newer; PDF text indexing requires Chromium 125 or newer.
+Drafting additionally needs Chrome's built-in on-device
 model — Motion says so plainly if it is unavailable rather than failing when you
 press the button.
 

@@ -6,6 +6,7 @@ import { motionCommandSchema, type MotionBridge, type MotionCommand } from './br
 import { useState } from 'react';
 import { Home, SessionView } from './views';
 import { CourseworkView } from './views/CourseworkView';
+import { LibraryView } from './views/LibraryView';
 
 export interface AppProps {
   bridge: MotionBridge;
@@ -77,7 +78,7 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
 
 export function App({ bridge, now = new Date(), className }: AppProps) {
   const state = usePanelState(bridge);
-  const [view, setView] = useState<'workspace' | 'coursework'>('workspace');
+  const [view, setView] = useState<'workspace' | 'coursework' | 'library'>('workspace');
   const main = useRef<HTMLElement>(null);
   const restricted = state.connection === 'restricted';
   const screen = restricted ? 'restricted' : (state.activeSession?.id ?? view);
@@ -130,6 +131,13 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
             onClick={() => setView('workspace')}
           >
             Workspace
+          </button>
+          <button
+            type="button"
+            aria-current={view === 'library' ? 'page' : undefined}
+            onClick={() => setView('library')}
+          >
+            Library
           </button>
           <button
             type="button"
@@ -186,6 +194,8 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
             />
           ) : view === 'coursework' ? (
             <CourseworkView state={state} send={send} />
+          ) : view === 'library' ? (
+            <LibraryView state={state} bridge={bridge} />
           ) : (
             <Home
               state={state}

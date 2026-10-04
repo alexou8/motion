@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { courseTaskSchema } from '@/core/domain';
-import { d2lAdapter } from './d2l';
+import { d2lAdapter, d2lDocumentResourceForUrl, d2lDocumentResources } from './d2l';
 import type { AdapterInput } from './types';
 
 const STOCK_ORIGIN = 'https://school.brightspace.com';
@@ -17,6 +17,64 @@ function fixture(name: string): Document {
 function input(url: string, document: Document): AdapterInput {
   return { url, document, now: new Date('2025-01-10T12:00:00.000Z'), timeZone: 'America/Toronto' };
 }
+
+describe('synthetic D2L lecture document resources', () => {
+  const page = `${WLU_ORIGIN}/d2l/le/content/123/viewContent/456/View`;
+  const file = '/content/enforced/123-SYNTHETIC/Lecture%201.pdf?ou=123';
+  it('unwraps the observed PDF.js iframe while preserving filename escapes', () => {
+    const viewer = `/d2l/common/assets/pdfjs-d2l-dist/web/viewer.html?file=${encodeURIComponent(file)}&lang=en-ca&container=synthetic#0`;
+    const document = new DOMParser().parseFromString(`<main><h1>Synthetic lecture</h1><iframe title="Synthetic lecture PDF" src="${viewer}"></iframe></main>`, 'text/html');
+    expect(d2lDocumentResources(input(page, document))).toEqual([{ sourceUrl: `${WLU_ORIGIN}${file}`, title: 'Synthetic lecture PDF', format: 'pdf' }]);
+    expect(d2lAdapter.extractPageContent(input(page, document)).resources).toHaveLength(1);
+  });
+  it('finds PDF and PPTX files from links, embeds and nested open shadow roots, with de-duplication', () => {
+    const document = new DOMParser().parseFromString(`<main><a href="${file}">Synthetic lecture PDF</a><embed src="${file}" type="application/pdf"><div id="synthetic-host"></div></main>`, 'text/html');
+    const shadow = document.getElementById('synthetic-host')!.attachShadow({ mode: 'open' });
+    shadow.innerHTML = '<d2l-link href="/content/enforced/123-SYNTHETIC/slides.pptx">Synthetic slides</d2l-link>';
+    expect(d2lDocumentResources(input(page, document))).toEqual([
+      { sourceUrl: `${WLU_ORIGIN}${file}`, title: 'Synthetic lecture PDF', format: 'pdf' },
+      { sourceUrl: `${WLU_ORIGIN}/content/enforced/123-SYNTHETIC/slides.pptx`, title: 'Synthetic slides', format: 'pptx' },
+    ]);
+  });
+  it('accepts a concrete D2L download only with a file-format hint', () => {
+    const download = '/d2l/le/content/123/topics/files/download/456/DirectFileTopicDownload';
+    expect(d2lDocumentResourceForUrl(download, page)).toBeNull();
+    expect(d2lDocumentResourceForUrl(download, page, 'pptx')).toEqual({ sourceUrl: `${WLU_ORIGIN}${download}`, format: 'pptx' });
+  });
+  it.each([
+    'https://evil.example/content/enforced/123-SYNTHETIC/lecture.pdf',
+    'http://mylearningspace.wlu.ca/content/enforced/123-SYNTHETIC/lecture.pdf',
+    '/content/enforced/999-SYNTHETIC/lecture.pdf',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?ou=999',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?ou=123&ou=999',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?orgUnitId=999',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?OU=999',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?Ou=123&oU=999',
+    '/content/enforced/123-SYNTHETIC/lecture.pdf?ou=123&orgUnitId=123',
+    '/content/enforced/123-SYNTHETIC/%2e%2e%2fadmin.pdf',
+    '/content/enforced/123-SYNTHETIC/%252e%252e%252fadmin.pdf',
+    '/content/enforced/123-SYNTHETIC/lecture%5csecret.pdf',
+    '/d2l/login?file=lecture.pdf',
+    '/d2l/le/content/123/viewContent/456/View?file=lecture.pdf',
+    'javascript:alert("lecture.pdf")',
+    '/d2l/common/assets/pdfjs-d2l-dist/web/viewer.html?file=https%3A%2F%2Fevil.example%2Flecture.pdf',
+    '/d2l/common/assets/pdfjs-d2l-dist/web/viewer.html?file=%2Fcontent%2Fenforced%2F123-SYNTHETIC%2Flecture.pdf&file=%2Fcontent%2Fenforced%2F999-SYNTHETIC%2Flecture.pdf',
+  ])('rejects unsafe or unrelated resource %s', (raw) => {
+    expect(d2lDocumentResourceForUrl(raw, page)).toBeNull();
+  });
+  it('rejects conflicting page course identifiers and file-format hints', () => {
+    expect(d2lDocumentResourceForUrl(file, `${page}?ou=999`)).toBeNull();
+    expect(d2lDocumentResourceForUrl(file, `${page}?OU=123&OU=999`)).toBeNull();
+    expect(d2lDocumentResourceForUrl(file, `${page}?oU=999`)).toBeNull();
+    expect(d2lDocumentResourceForUrl(file, page, 'pptx')).toBeNull();
+  });
+  it('caps observed documents at 50 and refuses attempt content', () => {
+    const document = new DOMParser().parseFromString(`<main>${Array.from({ length: 55 }, (_, index) => `<a href="/content/enforced/123-SYNTHETIC/lecture${index}.pdf">Synthetic lecture ${index}</a>`).join('')}</main>`, 'text/html');
+    expect(d2lDocumentResources(input(page, document))).toHaveLength(50);
+    document.body.append('Time remaining: Synthetic active assessment');
+    expect(d2lDocumentResources(input(page, document))).toEqual([]);
+  });
+});
 
 describe('D2L route detection', () => {
   it.each([

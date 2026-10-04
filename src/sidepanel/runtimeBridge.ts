@@ -7,6 +7,9 @@ import { parseWorkerResult } from './responses';
 import { ChromeLocalProvider } from '@/platform/ai/chromeLocal';
 import { attachInferenceHost } from '@/platform/ai/inferenceHost';
 import { INFERENCE_PORT_NAME } from '@/platform/ai/inferenceFrames';
+import { createDocumentImporter } from './documentBridge';
+import { toUiCommandResult } from './commandResult';
+export { toUiCommandResult } from './commandResult';
 
 /**
  * Connects the panel to the service worker.
@@ -26,7 +29,12 @@ const STREAMING_KEY = 'motion.streaming';
 
 const workerResponseSchema = z.union([
   z.object({ ok: z.literal(true), result: z.unknown().optional() }),
-  z.object({ ok: z.literal(false), code: z.string().optional(), error: z.string().optional(), recoverable: z.boolean().optional() }),
+  z.object({
+    ok: z.literal(false),
+    code: z.string().optional(),
+    error: z.string().optional(),
+    recoverable: z.boolean().optional(),
+  }),
 ]);
 
 /**
@@ -57,47 +65,21 @@ export async function resolveLmsTab(): Promise<chrome.tabs.Tab | null> {
 async function ask(message: unknown): Promise<unknown> {
   try {
     const response = await chrome.runtime.sendMessage(message);
-    return response ?? { ok: false, code: 'transport-no-response', error: 'The background worker did not respond.' };
+    return (
+      response ?? {
+        ok: false,
+        code: 'transport-no-response',
+        error: 'The background worker did not respond.',
+      }
+    );
   } catch (error) {
-    return { ok: false, code: 'transport-unavailable', error: error instanceof Error ? error.message : 'Motion could not reach its background worker.' };
-  }
-}
-
-export function toUiCommandResult<T = undefined>(raw: unknown, parser?: (value: unknown) => T | null): UiCommandResult<T> {
-  const envelope = workerResponseSchema.safeParse(raw);
-  if (!envelope.success)
-    return { ok: false, code: 'transport-malformed-response', message: 'Motion received an invalid response from its background worker. Try again.' };
-  if (!envelope.data.ok)
     return {
       ok: false,
-      code: envelope.data.code ?? 'command-refused',
-      message: envelope.data.error ?? 'Motion could not complete that action. Try again.',
-      ...(envelope.data.recoverable === undefined ? {} : { recoverable: envelope.data.recoverable }),
+      code: 'transport-unavailable',
+      error:
+        error instanceof Error ? error.message : 'Motion could not reach its background worker.',
     };
-  // A transport success only says the worker answered. Commands also carry
-  // explicit domain no-ops (closed workspace tab, terminal session, declined
-  // extraction). Do not clear UI feedback or report success for those results.
-  const result = envelope.data.result;
-  if (typeof result === 'object' && result !== null) {
-    const domain = result as { updated?: unknown; requested?: unknown; session?: unknown; refusal?: unknown; reason?: unknown };
-    const refusal = typeof domain.refusal === 'object' && domain.refusal !== null
-      ? (domain.refusal as { message?: unknown }).message
-      : undefined;
-    const message = typeof refusal === 'string'
-      ? refusal
-      : typeof domain.reason === 'string'
-        ? domain.reason
-        : 'Motion could not complete that action. Try again.';
-    if (domain.updated === false || domain.requested === false || domain.session === null || typeof refusal === 'string')
-      return { ok: false, code: 'command-refused', message };
   }
-  if (parser) {
-    const parsed = parser(envelope.data.result);
-    return parsed === null
-      ? { ok: false, code: 'transport-invalid-result', message: 'Motion received an invalid result. Refresh and try again.' }
-      : { ok: true, data: parsed };
-  }
-  return { ok: true };
 }
 
 /**
@@ -113,6 +95,14 @@ async function toWorkerMessage(
   state: PanelState,
 ): Promise<Record<string, unknown> | null> {
   switch (command.type) {
+    case 'get-document-sources': {
+      const tab = await resolveLmsTab();
+      return tab?.id === undefined ? null : { type: 'get-document-sources', tabId: tab.id };
+    }
+    case 'get-documents':
+    case 'get-document':
+    case 'delete-document':
+      return command;
     case 'session-create': {
       if (command.tabId !== null) return command;
       const tab = await resolveLmsTab();
@@ -235,6 +225,7 @@ export function createRuntimeBridge(): MotionBridge {
   let state: PanelState = EMPTY_PANEL_STATE;
   let refreshSequence = 0;
   const listeners = new Set<Listener>();
+  const documentListeners = new Set<Listener>();
 
   const emit = () => {
     for (const listener of listeners) listener();
@@ -313,26 +304,66 @@ export function createRuntimeBridge(): MotionBridge {
    * watching that is watching the fact itself rather than a proxy for it.
    */
   chrome.storage.session.onChanged.addListener((changes) => {
-    if (changes[STREAMING_KEY] || changes[ACTIVE_SESSION_KEY] || changes['motion.courseworkRevision']
-      || Object.keys(changes).some((key) => key.startsWith('observation:'))) void refresh();
+    if (changes['motion.documentRevision'] || changes['motion.documentLifecycle'])
+      for (const listener of documentListeners) listener();
+    if (
+      changes[STREAMING_KEY] ||
+      changes[ACTIVE_SESSION_KEY] ||
+      changes['motion.courseworkRevision'] ||
+      Object.keys(changes).some((key) => key.startsWith('observation:'))
+    )
+      void refresh();
   });
 
   /** Sends a command and returns the worker's answer for the panel to render. */
-  const request = async <T,>(command: MotionCommand): Promise<UiCommandResult<T>> => {
+  const request = async <T>(command: MotionCommand): Promise<UiCommandResult<T>> => {
+    if (command.type === 'index-document-source') {
+      const result = await documents.indexSource(command.handle);
+      await refresh();
+      return result as UiCommandResult<T>;
+    }
     const payload = await toWorkerMessage(command, state);
     if (!payload)
-      return { ok: false, code: 'target-unavailable', message: 'Motion could not find a supported page for that action.' };
-    const result = toUiCommandResult<T>(await ask(payload), (raw) => parseWorkerResult(command.type, raw) as T | null);
+      return {
+        ok: false,
+        code: 'target-unavailable',
+        message: 'Motion could not find a supported page for that action.',
+      };
+    const result = toUiCommandResult<T>(
+      await ask(payload),
+      (raw) => parseWorkerResult(command.type, raw) as T | null,
+    );
     if (!result.ok) return result;
-    await refresh();
+    if (!['get-documents', 'get-document', 'get-document-sources'].includes(command.type))
+      await refresh();
     // The worker is a boundary too: version skew or a worker defect must not
     // turn an unexpected result into rendered panel data.
     return result;
   };
 
+  const documents = createDocumentImporter(
+    ask,
+    async () => (await resolveLmsTab())?.id,
+    () => {
+      state = { ...state };
+      emit();
+    },
+  );
+
   return {
     getState: () => state,
     request,
+    importDocument: async (file, courseId) => {
+      const result = await documents.importFile(file, courseId);
+      await refresh();
+      return result;
+    },
+    cancelDocumentImport: documents.cancel,
+    documentImportStatus: documents.status,
+    subscribeDocuments: (listener) => {
+      documentListeners.add(listener);
+      return () => documentListeners.delete(listener);
+    },
 
     subscribe: (listener) => {
       listeners.add(listener);
@@ -340,6 +371,11 @@ export function createRuntimeBridge(): MotionBridge {
     },
 
     send: async (command: MotionCommand): Promise<UiCommandResult> => {
+      if (command.type === 'index-document-source') {
+        const result = await documents.indexSource(command.handle);
+        await refresh();
+        return result.ok ? { ok: true } : result;
+      }
       switch (command.type) {
         case 'open-settings':
           await chrome.runtime.openOptionsPage();
@@ -350,7 +386,12 @@ export function createRuntimeBridge(): MotionBridge {
           // await. This is why the panel asks directly rather than routing the
           // request through the worker (docs/THREAT_MODEL.md T10).
           const origin = state.page.url ? originPatternFor(state.page.url) : null;
-          if (!origin) return { ok: false, code: 'permission-unavailable', message: 'Motion could not identify this page to request access.' };
+          if (!origin)
+            return {
+              ok: false,
+              code: 'permission-unavailable',
+              message: 'Motion could not identify this page to request access.',
+            };
           // Do not await before this call: Chrome consumes the popup/panel click
           // gesture at the first async boundary.
           const permission = chrome.permissions.request({ origins: [origin] });
@@ -358,45 +399,70 @@ export function createRuntimeBridge(): MotionBridge {
           await refresh();
           return granted
             ? { ok: true }
-            : { ok: false, code: 'permission-denied', message: 'Browser access was not granted. You can try again from this page.', recoverable: true };
+            : {
+                ok: false,
+                code: 'permission-denied',
+                message: 'Browser access was not granted. You can try again from this page.',
+                recoverable: true,
+              };
         }
 
         case 'read-page': {
           const tab = await resolveLmsTab();
-          if (tab?.id === undefined) return { ok: false, code: 'target-unavailable', message: 'Motion could not find the current page.' };
-          const result = toUiCommandResult(await ask({ type: 'request-extraction', tabId: tab.id }));
+          if (tab?.id === undefined)
+            return {
+              ok: false,
+              code: 'target-unavailable',
+              message: 'Motion could not find the current page.',
+            };
+          const result = toUiCommandResult(
+            await ask({ type: 'request-extraction', tabId: tab.id }),
+          );
           await refresh();
           return result;
         }
 
         case 'create-note': {
           const tab = await resolveLmsTab();
-          if (!tab?.url || !command.pageUrl) return { ok: false, code: 'target-unavailable', message: 'Motion could not find the page for this note.' };
-          const result = toUiCommandResult(await ask({
-            type: 'create-note',
-            title: tab.title?.slice(0, 200) ?? 'Note',
-            courseId: state.course?.id ?? null,
-            taskId: null,
-            capturedText: '',
-            sourceUrl: command.pageUrl,
-            pageTitle: tab.title ?? '',
-            pageType: state.page.pageType ?? 'unsupported',
-          }));
+          if (!tab?.url || !command.pageUrl)
+            return {
+              ok: false,
+              code: 'target-unavailable',
+              message: 'Motion could not find the page for this note.',
+            };
+          const result = toUiCommandResult(
+            await ask({
+              type: 'create-note',
+              title: tab.title?.slice(0, 200) ?? 'Note',
+              courseId: state.course?.id ?? null,
+              taskId: null,
+              capturedText: '',
+              sourceUrl: command.pageUrl,
+              pageTitle: tab.title ?? '',
+              pageType: state.page.pageType ?? 'unsupported',
+            }),
+          );
           await refresh();
           return result;
         }
 
         case 'decide-approval': {
-          const result = toUiCommandResult(await ask({
-            type: 'decide-approval',
-            approvalId: command.approvalId,
-            approved: command.approved,
-          }));
+          const result = toUiCommandResult(
+            await ask({
+              type: 'decide-approval',
+              approvalId: command.approvalId,
+              approved: command.approved,
+            }),
+          );
           await refresh();
           return result;
         }
 
         case 'session-create':
+        case 'get-document-sources':
+        case 'get-documents':
+        case 'get-document':
+        case 'delete-document':
         case 'session-message':
         case 'session-command':
         case 'session-select':
@@ -412,18 +478,27 @@ export function createRuntimeBridge(): MotionBridge {
         case 'build-checklist':
         case 'scan-all-courses': {
           const payload = await toWorkerMessage(command, state);
-          if (!payload) return { ok: false, code: 'target-unavailable', message: 'Motion could not find a supported page for that action.' };
+          if (!payload)
+            return {
+              ok: false,
+              code: 'target-unavailable',
+              message: 'Motion could not find a supported page for that action.',
+            };
           const result = toUiCommandResult(
             await ask(payload),
             command.type === 'session-select'
-              ? (raw) => parseWorkerResult('session-select', raw) === null ? null : undefined
+              ? (raw) => (parseWorkerResult('session-select', raw) === null ? null : undefined)
               : undefined,
           );
           await refresh();
           return result;
         }
       }
-      return { ok: false, code: 'unsupported-command', message: 'Motion does not recognise that action.' };
+      return {
+        ok: false,
+        code: 'unsupported-command',
+        message: 'Motion does not recognise that action.',
+      };
     },
   };
 }
