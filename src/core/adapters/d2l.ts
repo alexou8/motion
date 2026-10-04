@@ -13,14 +13,18 @@ import { parseDueDate } from '@/core/parse/dueDate';
 import {
   absoluteUrl,
   allMatches,
+  boundedVisibleText,
   canonicalUrl,
   courseIdFromUrl,
+  elementLabelText,
   extractWeight,
   firstMatch,
   normalizedText,
+  openShadowMatches,
   readablePageText,
 } from './dom';
 import type { AdapterInput, LearningPlatformAdapter, PageDetection } from './types';
+import { evaluateAssessmentContext } from '@/core/policy/assessment';
 
 const HOST_PATTERNS: readonly RegExp[] = [
   /(^|\.)brightspace\.com$/i,
@@ -216,6 +220,7 @@ type TaskCandidate = {
   readonly href: string | null;
   readonly route: RouteTask | null;
   readonly strategy: string;
+  readonly observedTitle?: string;
 };
 
 const TASK_ID_QUERY_ALIASES = new Map<string, string>([
@@ -245,7 +250,7 @@ const TASK_ROUTE_PATTERNS: readonly { pattern: RegExp; route: RouteTask }[] = [
     route: { kind: 'discussion', strategy: 'route:discussion' },
   },
   {
-    pattern: /\/viewContent\//i,
+    pattern: /^\/d2l\/le\/content\/\d+\/viewContent\/\d+(?:\/|$)/i,
     route: { kind: 'content', strategy: 'route:content' },
   },
   // A closed or already-submitted dropbox item drops its submit link and
@@ -273,7 +278,10 @@ function safeTaskHref(rawHref: string, baseUrl: string): string | null {
   if (!absolute) return null;
   try {
     const parsed = new URL(absolute);
-    return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.toString() : null;
+    const source = new URL(baseUrl);
+    return source.protocol === 'https:' && parsed.protocol === 'https:' && parsed.origin === source.origin
+      ? parsed.toString()
+      : null;
   } catch {
     return null;
   }
@@ -427,7 +435,21 @@ function termFromName(name: string): string | null {
 }
 
 function pageTypeFromTaskHref(href: string): RouteTask | null {
-  return TASK_ROUTE_PATTERNS.find((candidate) => candidate.pattern.test(href))?.route ?? null;
+  const pathname = pathnameOf(href);
+  return pathname ? TASK_ROUTE_PATTERNS.find((candidate) => candidate.pattern.test(pathname))?.route ?? null : null;
+}
+
+function currentContentCandidate(input: AdapterInput, pageType: PageType): TaskCandidate | null {
+  if (pageType !== 'content-topic') return null;
+  const href = safeTaskHref(input.url, input.url);
+  const route = href ? pageTypeFromTaskHref(href) : null;
+  if (!href || route?.kind !== 'content') return null;
+  const heading = firstMatch(input.document, ['.d2l-page-title', 'main h1', '[role="main"] h1', 'h1']);
+  const title = normalizedText(heading);
+  if (!heading || !title) return null;
+  // The visible topic heading identifies this file. Dates in the lecture body
+  // or related links belong to their own items, not to the topic being opened.
+  return { row: heading, anchor: null, href, route, strategy: 'route:content-topic', observedTitle: title };
 }
 
 function meaningfulAncestor(element: Element): Element {
@@ -531,6 +553,7 @@ function taskAnchor(candidate: TaskCandidate): HTMLAnchorElement | null {
  * the simpler list markup on stock Brightspace relies on.
  */
 function taskTitle(candidate: TaskCandidate): string {
+  if (candidate.observedTitle) return candidate.observedTitle;
   const named = firstMatch(candidate.row, TASK_NAME_SELECTORS);
   const namedText = named ? nameText(named) : '';
   if (namedText) return namedText;
@@ -571,7 +594,11 @@ function dueText(element: Element): string {
 }
 
 function statusFor(element: Element): TaskStatus {
-  const status = element.textContent?.match(/\b(submitted|completed|graded|attempt \d+)\b/i)?.[1]?.toLowerCase();
+  const titleAndDateSelector = `${TASK_NAME_SELECTORS.join(', ')}, a, d2l-link, h1, h2, h3, h4, h5, h6, time, .d2l-dates-text, .d2l-folderdates-wrapper`;
+  if (element.matches(titleAndDateSelector)) return 'todo';
+  const copy = element.cloneNode(true) as Element;
+  for (const titleOrDate of copy.querySelectorAll(titleAndDateSelector)) titleOrDate.remove();
+  const status = copy.textContent?.match(/\b(submitted|completed|graded|attempt \d+)\b/i)?.[1]?.toLowerCase();
   if (status === 'submitted') return 'submitted';
   if (status === 'graded' || status === 'completed') return 'graded';
   if (status?.startsWith('attempt ')) return 'in-progress';
@@ -583,12 +610,14 @@ function courseExternalId(url: string): string | null {
 }
 
 function courseIdForTask(candidate: TaskCandidate, courseId: string | null): string | null {
-  const localId = candidate.href ? queryValue(candidate.href, ['ou', 'orgUnitId']) : null;
+  const pathId = candidate.href && candidate.route?.kind === 'content' ? courseIdFromUrl(candidate.href) : null;
+  const localId = pathId ?? (candidate.href ? queryValue(candidate.href, ['ou', 'orgUnitId']) : null);
   const resolved = localId ?? courseId;
   return resolved ? `d2l:${resolved}` : null;
 }
 
 function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageType, courseId: string | null): CourseTask | null {
+  if (candidate.route?.kind === 'content' && ASSESSMENT_PAGE_TYPES.includes(pageType)) return null;
   const capturedAt = input.now.toISOString();
   const title = taskTitle(candidate);
   const resolvedCourseId = courseIdForTask(candidate, courseId);
@@ -600,11 +629,10 @@ function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageT
   const due = /\b(?:due(?:\s+on)?|submit by)\b/i.test(dueRaw)
     ? parsedDue
     : { ...parsedDue, confidence: 'low' as const };
-  // A content route names reading material — a slide deck, a handout — which is
-  // something to open, not something due. Listing a module's files as undated
-  // deadlines buried the real ones, so a content row has to state a date of its
-  // own to count. Every other route is a piece of work in itself.
-  const hasRouteEvidence = candidate.route !== null && candidate.route.kind !== 'content';
+  // A concrete content topic is trackable coursework even without a deadline.
+  // Empty date evidence stays empty so deadline views can distinguish a lecture
+  // file from a stated deadline that failed to parse.
+  const hasRouteEvidence = candidate.route !== null;
   const hasDateEvidence = due.iso !== null;
   if ((!hasRouteEvidence && !hasDateEvidence) || !title || !resolvedCourseId) return null;
 
@@ -650,6 +678,82 @@ function taskKindForPage(pageType: PageType): TaskKind {
   if (pageType === 'discussion-list' || pageType === 'discussion-topic') return 'discussion';
   if (pageType === 'content-module' || pageType === 'content-topic') return 'content';
   return 'assignment';
+}
+
+function dueEvidenceRank(due: CourseTask['due']): number {
+  return due.iso !== null ? 2 : due.raw.trim() ? 1 : 0;
+}
+
+/** Only an observed course-file endpoint can become a fetch target. */
+export function d2lDocumentResourceForUrl(
+  raw: string,
+  pageUrl: string,
+  hint?: 'pdf' | 'pptx',
+): { sourceUrl: string; format: 'pdf' | 'pptx' } | null {
+  try {
+    const page = new URL(pageUrl);
+    if (page.protocol !== 'https:' || !HOST_PATTERNS.some((pattern) => pattern.test(page.hostname))) return null;
+    const course = courseExternalId(pageUrl);
+    if (!course || !/^\d+$/.test(course)) return null;
+    const courseParams = (url: URL) => Array.from(url.searchParams).filter(([key]) => /^(?:ou|orgunitid)$/i.test(key)).map(([, value]) => value);
+    const pageParams = courseParams(page);
+    if (pageParams.length > 1) return null;
+    const pageIds = [courseIdFromUrl(pageUrl), ...pageParams].filter(Boolean);
+    if (pageIds.some((id) => id !== course)) return null;
+    let resource = new URL(raw, pageUrl);
+    if (resource.origin !== page.origin || resource.protocol !== 'https:' || resource.username || resource.password) return null;
+    // Brightspace's PDF.js wrapper exposes the file in its observed iframe URL.
+    // URLSearchParams decodes the wrapper once; the course-file URL keeps its
+    // own percent escapes, including spaces in lecture filenames.
+    if (/^\/d2l\/common\/assets\/pdfjs-d2l-dist\/web\/viewer\.html$/i.test(resource.pathname)) {
+      const files = resource.searchParams.getAll('file');
+      if (files.length !== 1 || !files[0]) return null;
+      resource = new URL(files[0], pageUrl);
+    }
+    if (resource.origin !== page.origin || resource.protocol !== 'https:' || resource.username || resource.password) return null;
+    const ous = courseParams(resource);
+    if (ous.length > 1 || ous.some((id) => id !== course)) return null;
+    const decodedPath = decodeURIComponent(resource.pathname);
+    if (/%(?:2f|5c|00|0a|0d)/i.test(resource.pathname) || decodedPath.includes('\\')
+      || /%(?:2e|2f|5c)/i.test(decodedPath) || decodedPath.split('/').some((part) => part === '..' || part === '.')) return null;
+    const enforced = resource.pathname.match(/^\/content\/enforced\/(\d+)(?:-[^/]+)?\/[^?#]+$/i);
+    const download = resource.pathname.match(/^\/d2l\/le\/content\/(\d+)\/topics\/files\/download\/\d+\/DirectFileTopicDownload\/?$/i);
+    if ((enforced?.[1] ?? download?.[1]) !== course) return null;
+    const extension = decodedPath.match(/\.(pdf|pptx)$/i)?.[1]?.toLowerCase();
+    const format = extension === 'pdf' || extension === 'pptx' ? extension : download ? hint : undefined;
+    if (!format || (hint && hint !== format)) return null;
+    resource.hash = '';
+    if (resource.href.length > 2_000) return null;
+    return { sourceUrl: resource.href, format };
+  } catch {
+    return null;
+  }
+}
+
+export function d2lDocumentResources(input: AdapterInput): PageContent['resources'] {
+  const detection = d2lAdapter.detectPage(input);
+  const pageType = detection?.pageType ?? 'unsupported';
+  if (!['content-module', 'content-topic', 'assignment'].includes(pageType)
+    || evaluateAssessmentContext({ pageType, url: input.url, pageTitle: input.document.title,
+      visibleText: boundedVisibleText(input.document) }).restricted) return [];
+  const resources: PageContent['resources'] = [];
+  const seen = new Set<string>();
+  for (const element of openShadowMatches(input.document, 'a[href], d2l-link[href], iframe[src], embed[src], object[data]')) {
+    const raw = element.getAttribute('href') ?? element.getAttribute('src') ?? element.getAttribute('data');
+    if (!raw) continue;
+    const label = element.getAttribute('download')?.trim() || element.getAttribute('aria-label')?.trim()
+      || element.getAttribute('title')?.trim() || elementLabelText(element);
+    const type = element.getAttribute('type');
+    const hint = type === 'application/pdf' || /\.pdf(?:\b|$)/i.test(label) ? 'pdf'
+      : type === 'application/vnd.openxmlformats-officedocument.presentationml.presentation' || /\.pptx(?:\b|$)/i.test(label) ? 'pptx' : undefined;
+    const resource = d2lDocumentResourceForUrl(raw, input.url, hint);
+    if (!resource || seen.has(resource.sourceUrl)) continue;
+    seen.add(resource.sourceUrl);
+    const filename = decodeURIComponent(new URL(resource.sourceUrl).pathname.split('/').at(-1) ?? '').trim();
+    resources.push({ ...resource, title: (label || filename || `Lecture ${resource.format.toUpperCase()}`).slice(0, 500) });
+    if (resources.length >= 50) break;
+  }
+  return resources;
 }
 
 export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
@@ -759,16 +863,23 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       return [];
 
     const externalCourseId = courseExternalId(input.url);
-    const tasks: CourseTask[] = [];
-    const seenTaskIds = new Set<string>();
-    for (const candidate of taskCandidates(input.document, input, pageType)) {
+    const tasks = new Map<string, CourseTask>();
+    const candidates = taskCandidates(input.document, input, pageType);
+    const currentContent = currentContentCandidate(input, pageType);
+    if (currentContent && isCoursework(currentContent)) candidates.push(currentContent);
+    for (const candidate of candidates) {
       const task = makeTask(candidate, input, pageType, externalCourseId);
       if (!task) continue;
-      if (seenTaskIds.has(task.id)) continue;
-      seenTaskIds.add(task.id);
-      tasks.push(task);
+      const existing = tasks.get(task.id);
+      if (!existing) {
+        tasks.set(task.id, task);
+      } else if (dueEvidenceRank(task.due) > dueEvidenceRank(existing.due)) {
+        // A shortcut can precede the complete row for the same topic. Preserve
+        // its identity and title without letting empty date evidence hide work.
+        tasks.set(task.id, { ...existing, due: task.due });
+      }
     }
-    return tasks;
+    return [...tasks.values()];
   }
 
   extractPageContent(input: AdapterInput): PageContent {
@@ -781,12 +892,13 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       .slice(0, 100);
     const links: { href: string; label: string }[] = [];
     const seen = new Set<string>();
-    for (const link of input.document.querySelectorAll('main a, [role="main"] a, .d2l-page-main a, body a')) {
-      const href = absoluteUrl(link.getAttribute('href') ?? '', input.url);
-      const label = normalizedText(link);
+    for (const link of openShadowMatches(input.document, 'a[href], d2l-link[href], d2l-card[href], d2l-navigation-link[href]')) {
+      const href = safeTaskHref(link.getAttribute('href') ?? '', input.url);
+      const label = link.getAttribute('aria-label')?.trim() || elementLabelText(link);
       if (!href || !label || seen.has(href)) continue;
       seen.add(href);
       links.push({ href, label });
+      if (links.length >= 200) break;
     }
     return {
       pageType,
@@ -795,6 +907,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       text: readable.text,
       headings,
       links: links.slice(0, 200),
+      resources: d2lDocumentResources(input),
       instructionBlocks: instructionBlocksFor(pageType, input.document),
       capturedAt: input.now.toISOString(),
       warnings: [...(detection?.warnings ?? []), ...readable.warnings],

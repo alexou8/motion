@@ -4,6 +4,7 @@ import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { SessionSecretStore, type StorageArea } from '@/platform/ai/secrets';
 import { aiStatusResultSchema } from '@/core/messaging/sessionContracts';
 import { handleAiMessage } from './aiHandlers';
+import { DOCUMENT_LIFECYCLE_KEY } from './documents';
 
 const CANARY = 'sk-test-CANARY1234567890';
 
@@ -116,12 +117,13 @@ describe('AI/settings handlers', () => {
     });
   });
 
-  it('deletes the database, motion local keys, and all session keys while keeping unrelated local data', async () => {
+  it('deletes all local coursework and session data, retaining only a content-free revocation marker', async () => {
     local.values['motion.preferences'] = DEFAULT_AI_PREFERENCES;
     local.values['motion.other'] = 'synthetic';
     local.values['unrelated'] = 'keep';
     session.values['motion.secret.openai'] = CANARY;
     session.values['other-session'] = 'remove';
+    session.values['motion.documentLocal:synthetic'] = { title: 'Synthetic document receipt' };
     const deleteDb = vi.fn(async () => undefined);
 
     const result = await handleAiMessage(
@@ -132,7 +134,8 @@ describe('AI/settings handlers', () => {
     expect(result).toEqual({ deleted: true });
     expect(deleteDb).toHaveBeenCalledOnce();
     expect(local.values).toEqual({ unrelated: 'keep' });
-    expect(session.values).toEqual({});
+    expect(session.values).toEqual({ [DOCUMENT_LIFECYCLE_KEY]: { epoch: expect.any(String), deleting: false } });
+    expect(JSON.stringify(session.values)).not.toContain(CANARY);
   });
 
   it('preserves storage and the database when an opted-in vault credential cannot be deleted', async () => {

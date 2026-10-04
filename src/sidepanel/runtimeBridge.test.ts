@@ -135,7 +135,52 @@ it('does not let an older state read overwrite a newer streaming snapshot', asyn
   expect(bridge.getState().streaming?.text).toBe('Current reply');
 });
 
+it('refreshes saved coursework when an extraction finishes after its page observation', async () => {
+  let currentState = EMPTY_PANEL_STATE;
+  let storageListener: ((changes: Record<string, chrome.storage.StorageChange>) => void) | undefined;
+  const chromeEvent = { addListener: vi.fn() };
+  vi.stubGlobal('chrome', {
+    runtime: { sendMessage: vi.fn(async () => ({ ok: true, result: currentState })) },
+    tabs: { query: vi.fn(async () => []), onActivated: chromeEvent, onUpdated: chromeEvent },
+    storage: { session: { onChanged: { addListener: vi.fn((listener) => { storageListener = listener; }) } } },
+    permissions: { contains: vi.fn(async () => true) },
+  });
+  const bridge = createRuntimeBridge();
+  let notifications = 0;
+  bridge.subscribe(() => { notifications += 1; });
+  await vi.waitFor(() => expect(notifications).toBe(1));
+  currentState = { ...EMPTY_PANEL_STATE, courses: [{
+    id: 'synthetic-course', platformId: 'd2l', name: 'Synthetic saved course',
+    archived: false, lastVerifiedAt: '2026-10-02T12:00:00Z',
+  }] };
+  storageListener?.({ 'motion.courseworkRevision': { newValue: 'synthetic-revision' } });
+  await vi.waitFor(() => expect(bridge.getState().courses[0]?.name).toBe('Synthetic saved course'));
+  expect(notifications).toBe(2);
+});
+
 describe('worker command outcomes', () => {
+  it('replaces an older worker command-list error with actionable refresh guidance', () => {
+    const parseResult = vi.fn();
+    const result = toUiCommandResult(
+      {
+        ok: false,
+        error: "Malformed message: Invalid discriminator value. Expected 'synthetic-old-command'",
+      },
+      parseResult,
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      code: 'extension-refresh-required',
+      recoverable: true,
+    });
+    if (!result.ok) {
+      expect(result.message).toMatch(/Reload Motion/);
+      expect(result.message).toMatch(/refresh the course page/);
+      expect(result.message).not.toContain('synthetic-old-command');
+    }
+    expect(parseResult).not.toHaveBeenCalled();
+  });
+
   it('keeps a worker refusal distinct from a malformed transport response', () => {
     expect(toUiCommandResult({ ok: false, code: 'restricted-page', error: 'Motion will not act inside this assessment.' }))
       .toEqual({ ok: false, code: 'restricted-page', message: 'Motion will not act inside this assessment.' });

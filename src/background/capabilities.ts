@@ -19,6 +19,7 @@ import { openDatabase } from '@/core/storage/db';
 import { courseLinkRepository, sessionRepository, updateSession as updateStoredSession } from '@/core/storage/repositories';
 import { Repository } from '@/core/storage/repository';
 import { STORE } from '@/core/storage/schema';
+import { isActiveTask, isUndatedMaterial } from '@/core/view/coursework';
 import type { StepCapability, StepContext, StepOutcome } from '@/core/workflows';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { HybridSecretStore } from '@/platform/ai/secrets';
@@ -744,9 +745,10 @@ function deadlinesCapability(): StepCapability {
       const { value: session } = await sessionFor(context);
       const db = await openDatabase();
       const tasks = new Repository(db, STORE.tasks, courseTaskSchema);
-      const found = session.courseId
+      const records = session.courseId
         ? (await tasks.byIndex('byCourse', session.courseId)).records
         : (await tasks.all()).records;
+      const found = records.filter((task) => isActiveTask(task) && !isUndatedMaterial(task));
       return {
         kind: 'done',
         result: `Found ${found.length} deadline${found.length === 1 ? '' : 's'} in this session’s course.`,

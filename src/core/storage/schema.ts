@@ -10,7 +10,7 @@
 export const DB_NAME = 'motion';
 
 /** Bump when adding a migration step. Must equal `MIGRATIONS.length`. */
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORE = {
   courses: 'courses',
@@ -23,6 +23,7 @@ export const STORE = {
   meta: 'meta',
   sessions: 'sessions',
   courseLinks: 'courseLinks',
+  documents: 'documents',
 } as const;
 
 export type StoreName = (typeof STORE)[keyof typeof STORE];
@@ -114,6 +115,16 @@ export const MIGRATIONS: readonly MigrationStep[] = [
     apply(db, transaction) {
       const sessions = ensureStore(db, STORE.sessions, { keyPath: 'id' }, transaction);
       ensureIndex(sessions, 'byTask', 'taskId');
+    },
+  },
+  {
+    version: 4,
+    describe: 'Local lecture document text with course and source indexes.',
+    apply(db, transaction) {
+      const documents = ensureStore(db, STORE.documents, { keyPath: 'id' }, transaction);
+      ensureIndex(documents, 'byCourse', 'courseId');
+      ensureIndex(documents, 'bySource', 'sourceUrl');
+      ensureIndex(documents, 'byCapturedAt', 'capturedAt');
     },
   },
 ];

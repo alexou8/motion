@@ -117,6 +117,22 @@ before capturing, and refuses to trust or store a captured snapshot whose
 the tab navigates between the worker's check and the content script's reply
 (SOL-5). — *Mitigated*
 
+Brightspace controls may live inside nested open shadow roots. Snapshot discovery
+visits at most 50,000 elements and retains the existing descriptor limit; it
+does not traverse closed roots or iframe documents. Labels resolve in the
+control's own root and through rendered slots. Visibility follows the composed
+ancestor chain, including slot wrappers and hosts, so hidden or inert controls
+are excluded. Before acting, a handle must still belong to the same document
+through an open-root chain, remain connected and visible, and retain its captured
+fingerprint. An anchor classified as an assessment attempt is refused even if a
+generic click was approved. Bounded visible shadow text participates in the
+assessment check before observer extraction or actor capture. Worker
+authorization, approval consumption and assessment refusal remain required.
+Synthetic unit and built-extension browser evidence is recorded in
+[coursework verification](verification/coursework-overview.md); authenticated
+installed-extension verification remains pending. — *Implemented with bounded
+open-root coverage*
+
 `externally_connectable` is not declared, so no web page may message the
 extension directly. — *Mitigated (manifest omits it)*
 
@@ -456,3 +472,35 @@ must remove the vault entry and session cache, and
 must not report success if the vault operation fails. A missing/locked companion
 cannot trigger plaintext storage or a silent provider change. OS-account or
 trusted-extension compromise remains an accepted limitation of any local vault.
+
+## T25 — Untrusted lecture files, source forgery and stale imports
+
+**Status: Mitigated in unit and production-browser tests.** Authenticated
+extension downloading still needs a live installed-account check.
+
+Documents may contain hostile PDF data, compressed archives, XML entities,
+external relationships or misleading source links. The worker accepts observed,
+expiring page-bound handles, verifies same-origin HTTPS and exact course identity,
+and rechecks the live assessment/page/source before and after downloading. It
+refuses redirects, HTML/login responses, unexpected signatures and oversized
+streams. Content scripts never receive arbitrary download URLs or parser code.
+
+Bundled disposable workers parse bytes as data, with a 30-second deadline and
+bounded file, archive, XML, text and library limits. PDF decoding disables optional
+network resources and rendering paths. PPTX checks central/local ZIP metadata,
+actual inflation, CRC, internal relationship order and strict XML; DTDs and
+external entities are rejected. Results and library messages are Zod-validated
+and rendered as text. No provider receives the indexed file or text.
+
+The worker owns source metadata. A trusted extension page can submit local
+parsed text, which remains subject to size and storage limits; extension-page
+compromise remains the T3 risk. Local data is not encrypted beyond the profile.
+No parser claims that decoded PDF/PPTX text reproduces every visual diagram,
+equation or layout; missing or partial text is disclosed.
+
+Imports get tickets before parsing. A shared deletion/commit lock and retained
+content-free epoch revoke old tickets so deletion cannot be undone by a stale
+parse reply. Late UI reads are discarded after a library generation changes;
+deleting data cannot restore an old preview. Contexts are capped and valid for
+five minutes; expired metadata is pruned on later issuance. Page-bound metadata
+is also removed on navigation/tab closure.

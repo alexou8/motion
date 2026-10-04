@@ -16,11 +16,22 @@ import {
   deleteLocalDataSchema,
 } from '../core/messaging/sessionContracts';
 import { scanAllCoursesSchema, setDeadlineDiscoveryOptInSchema } from '../core/messaging/contracts';
+import {
+  getDocumentsSchema,
+  getDocumentSchema,
+  deleteDocumentSchema,
+  type IndexedDocument,
+} from '../core/documents/library';
 
 export const motionCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open-settings') }),
   z.object({ type: z.literal('request-permission') }),
   z.object({ type: z.literal('read-page'), url: z.string().url().nullable() }),
+  z.object({ type: z.literal('get-document-sources') }).strict(),
+  z.object({ type: z.literal('index-document-source'), handle: z.string().uuid() }).strict(),
+  getDocumentsSchema,
+  getDocumentSchema,
+  deleteDocumentSchema,
   z.object({ type: z.literal('create-note'), pageUrl: z.string().url().nullable() }),
   z.object({
     type: z.literal('decide-approval'),
@@ -77,8 +88,7 @@ export type MotionCommand = z.infer<typeof motionCommandSchema>;
  * refusals that can be shown beside the control that initiated them.
  */
 export type UiCommandResult<T = undefined> =
-  | { ok: true; data?: T }
-  | { ok: false; code: string; message: string; recoverable?: boolean };
+  { ok: true; data?: T } | { ok: false; code: string; message: string; recoverable?: boolean };
 
 /** The only dependency the panel needs from the extension runtime. */
 export interface MotionBridge {
@@ -92,8 +102,19 @@ export interface MotionBridge {
    * depend on a reply that a closed worker may never deliver.
    */
   request?: <T>(command: MotionCommand) => Promise<UiCommandResult<T>>;
+  /** Local file bytes stay in the extension document; parsing never runs in a view. */
+  importDocument?: (
+    file: File,
+    courseId: string | null,
+  ) => Promise<UiCommandResult<{ document: IndexedDocument }>>;
+  cancelDocumentImport?: () => void;
+  documentImportStatus?: () => 'reading' | 'parsing' | 'saving' | null;
+  subscribeDocuments?: (listener: () => void) => () => void;
 }
 
-export function sendCommand(bridge: MotionBridge, command: MotionCommand): Promise<UiCommandResult> {
+export function sendCommand(
+  bridge: MotionBridge,
+  command: MotionCommand,
+): Promise<UiCommandResult> {
   return bridge.send(motionCommandSchema.parse(command));
 }

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { containsDomGlobals } from './worker-source.mjs';
 
 const dist = process.argv[2] ?? 'dist';
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
@@ -34,7 +35,7 @@ if (!workerEntry) {
   throw new Error('The service worker loader does not resolve to a distinct service-worker entry.');
 }
 
-if (/\b(?:window|document)\s*[.[]/.test(workerEntry.source)) {
+if (containsDomGlobals(workerEntry.source)) {
   throw new Error('The service worker bundle contains DOM globals and will fail to register.');
 }
 

@@ -1,0 +1,128 @@
+name: Validate extension
+
+on:
+  workflow_call:
+    inputs:
+      release-tag:
+        type: string
+        default: ''
+    outputs:
+      release-artifact:
+        description: Verified ZIPs, provenance and checksums from this run
+        value: ${{ jobs.validate.outputs.release-artifact }}
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      release-artifact: motion-release-${{ github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Release integrity tests
+        run: npm run test:release
+
+      - name: Native keychain protocol and installer tests
+        run: npm run test:keychain
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build production extension
+        run: npm run build
+
+      - name: Install test browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Verify extension, agent and launcher in Chromium
+        run: |
+          npm run test:extension
+          npm run test:agent
+          npm run test:popup-presence
+          npm run test:coursework
+          npm run test:documents
+
+      - name: Verify provider streaming, cancellation and recovery
+        run: |
+          npm run build:e2e-provider-hosts
+          npm run test:provider-stream
+
+      - name: Package production assets
+        run: |
+          npm run package
+          npm run package:keychain
+
+      - name: Validate versions, manifest references and packaged build
+        env:
+          MOTION_RELEASE_TAG: ${{ inputs.release-tag }}
+        run: |
+          node scripts/release.mjs
+          python3 - <<'PYTHON'
+          import glob, zipfile
+          paths = glob.glob('.motion-release/*.zip')
+          assert len(paths) == 2, 'Expected extension and companion archives'
+          for path in paths:
+              with zipfile.ZipFile(path) as archive:
+                  assert archive.testzip() is None, f'Corrupt archive: {path}'
+          PYTHON
+          (cd .motion-release && sha256sum -c SHA256SUMS)
+
+      # This artifact is the unpacked extension: GitHub adds its own ZIP wrapper.
+      - name: Upload loadable extension
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: motion-extension-${{ github.sha }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload optional keychain companion
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: motion-keychain-companion-${{ github.sha }}
+          path: motion-keychain-companion-*.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # Publishing downloads these exact bytes; it never rebuilds with write access.
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: motion-release-${{ github.sha }}
+          path: .motion-release/*
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Add download instructions
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo '### Motion build verified'
+            echo
+            echo "Download **motion-extension-${SOURCE_SHA}** from this run's Artifacts section."
+            echo 'Unzip it, open `chrome://extensions`, enable **Developer mode**, and choose **Load unpacked**.'
+            echo
+            echo 'The release bundle contains the tested ZIPs, source commit metadata and SHA-256 checksums.'
+          } >> "$GITHUB_STEP_SUMMARY"

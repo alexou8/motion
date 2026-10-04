@@ -96,11 +96,23 @@ not opened on a real account and is covered only by `npm run test:extension`
 against a synthetic attempt page. Extraction still runs only when the student
 asks the panel to read the page.
 
+The 2026-10-03 coursework change adds bounded open-shadow discovery for course
+links and native actor controls. Authenticated dashboard/module structure was
+inspected separately from synthetic built-extension execution; see
+[coursework verification](verification/coursework-overview.md) for that scope.
+In a dedicated extension profile, also check that reading a module immediately
+refreshes Coursework, that undated slides say **No deadline**, and that search,
+course/type/status filters and source links work after switching to another tab.
+Check keyboard skip navigation, light/dark appearance and narrow-panel reflow.
+
 ## Setup
 
 1. `npm ci && npm run build` — the unpacked extension is `dist/`.
 2. Open `chrome://extensions` in Chrome 116 or newer, enable Developer mode,
    and *Load unpacked* → `dist/`. Use a dedicated test profile.
+   For an existing installation, click Motion's **Reload** control after replacing
+   the build and refresh already-open LMS pages. Reopening the panel alone does
+   not refresh its worker or content scripts.
 3. Confirm the extension loads with no manifest or runtime error, and that the
    service worker, side panel and options page each open without console errors.
 4. Sign in to your institution's D2L deployment in the browser yourself. Never
@@ -181,3 +193,32 @@ names or query values. If a defect needs a fixture, hand-build a synthetic one
 under `src/test/fixtures/d2l/` with invented values (`CS101`, `999999`,
 `Example Assignment`) and the banner comment the other fixtures carry. Never
 commit a raw DOM dump, HAR, screenshot, console log or browser profile.
+
+
+## Local document library
+
+Use the current `dist/` build in Chromium 125+ for PDF indexing.
+
+1. On an authenticated MyLearningSpace lecture topic, open Motion's Library
+   and select **Find files on this page**. Confirm that the PDF viewer's file
+   appears as a choice. Index it and verify its title, course, page count and
+   source topic against the original file. Repeat for a PPTX if the course has one.
+2. Search a phrase from a later page/slide. Confirm the result's page/slide
+   number and the text preview's initially selected unit. Switch units with
+   the keyboard. Index the same LMS source twice and confirm one saved index.
+3. On an unrelated tab, import a downloaded PDF and PPTX. Confirm local storage,
+   course selection and reload persistence. An image-only PDF must disclose
+   the missing selectable text; a corrupt file must show an error and save nothing.
+4. Cancel a parse before saving and confirm that no index appears. While an
+   import is running, delete all local data in Settings; its old result must
+   not recreate the library. Confirm previews and search snippets disappear.
+5. Remove one local index and confirm the others remain. At 360 px and 200%
+   zoom, verify readable controls, visible focus and no horizontal scrolling.
+6. Use the **synthetic** attempt fixture for restrictions. Do not start a real
+   graded, timed or proctored attempt for testing. The library, import controls
+   and existing document text must disappear in restricted mode.
+
+Automated production-extension coverage: `npm run test:documents`. Committed
+fixtures and screenshots are synthetic. The optional local private-PDF probe
+uses `MOTION_REAL_DOCUMENT_PATH`, prints counts only and removes its temporary
+browser profile afterward. See [document verification](verification/document-indexing.md).
