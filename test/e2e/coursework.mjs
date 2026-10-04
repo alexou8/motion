@@ -128,11 +128,19 @@ try {
         (id) => !materials.filter((task) => task.due.iso === null).some((task) => task.id === id),
       ),
   );
+  check(
+    'workspace keeps its page reader after saving materials',
+    await panel.getByRole('button', { name: 'Read this page', exact: true }).isVisible(),
+  );
   await panel.getByRole('button', { name: /Coursework \d+/ }).click();
   await panel.getByRole('heading', { name: 'Your coursework' }).waitFor();
   check(
     'navigation moves keyboard focus to the new content',
     await panel.getByRole('main').evaluate((element) => element === document.activeElement),
+  );
+  check(
+    'coursework keeps its page reader after saving materials',
+    await panel.getByRole('button', { name: 'Read this page', exact: true }).isVisible(),
   );
   await panel.getByRole('button', { name: 'Materials', exact: true }).click();
   await until(
@@ -168,13 +176,6 @@ try {
     await panel.getByRole('heading', { name: 'SQL Concepts Check' }).isVisible(),
   );
   await panel.getByRole('button', { name: 'Materials', exact: true }).click();
-  await page.goto('https://example.test/blank');
-  await page.bringToFront();
-  await panel.getByText(/Showing saved coursework/).waitFor();
-  check(
-    'saved resources remain usable away from the LMS',
-    await panel.getByRole('heading', { name: 'Example Slides One' }).isVisible(),
-  );
 
   if (screenshots) {
     await mkdir(screenshots, { recursive: true });
@@ -206,6 +207,13 @@ try {
       );
     }
   }
+  await page.goto('https://example.test/blank');
+  await page.bringToFront();
+  await panel.getByText(/Showing saved coursework/).waitFor();
+  check(
+    'saved resources remain usable away from the LMS',
+    await panel.getByRole('heading', { name: 'Example Slides One' }).isVisible(),
+  );
   for (const width of [360, 180]) {
     await panel.setViewportSize({ width, height: 900 });
     check(

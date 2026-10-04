@@ -476,7 +476,8 @@ trusted-extension compromise remains an accepted limitation of any local vault.
 ## T25 — Untrusted lecture files, source forgery and stale imports
 
 **Status: Mitigated in unit and production-browser tests.** Authenticated
-extension downloading still needs a live installed-account check.
+observed-PDF downloading also passed in one installed signed-in course.
+Broader deployment coverage and live PowerPoint fetching remain unverified.
 
 Documents may contain hostile PDF data, compressed archives, XML entities,
 external relationships or misleading source links. The worker accepts observed,

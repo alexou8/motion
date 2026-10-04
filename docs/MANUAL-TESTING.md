@@ -199,10 +199,13 @@ commit a raw DOM dump, HAR, screenshot, console log or browser profile.
 
 Use the current `dist/` build in Chromium 125+ for PDF indexing.
 
-1. On an authenticated MyLearningSpace lecture topic, open Motion's Library
+1. On an authenticated MyLearningSpace lecture topic, choose **Read this page**
+   in Workspace or Coursework to save its course. The control must remain
+   available after the first material is saved. Then open Motion's Library
    and select **Find files on this page**. Confirm that the PDF viewer's file
    appears as a choice. Index it and verify its title, course, page count and
-   source topic against the original file. Repeat for a PPTX if the course has one.
+   source topic against the original file. If an earlier index has no course,
+   reindex its observed source after saving the course. Repeat for a PPTX if the course has one.
 2. Search a phrase from a later page/slide. Confirm the result's page/slide
    number and the text preview's initially selected unit. Switch units with
    the keyboard. Index the same LMS source twice and confirm one saved index.

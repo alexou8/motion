@@ -572,6 +572,15 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
       <div className="grid gap-1">
         <h1 className="font-serif text-xl font-semibold">Your workspace</h1>
         <PageContextLine state={state} now={now} />
+        {state.sessions.length > 0 || state.tasks.length > 0 ? (
+          <Button
+            variant="secondary"
+            disabled={state.busy}
+            onClick={() => send({ type: 'read-page', url: state.page.url })}
+          >
+            {state.busy ? 'Reading page…' : 'Read this page'}
+          </Button>
+        ) : null}
       </div>
       <HomeComposer onStart={start} disabled={false} />
       <DiscoveryControls state={state} send={send} now={now} />

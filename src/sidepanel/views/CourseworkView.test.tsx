@@ -57,6 +57,27 @@ function bridge(state: PanelState, commands: MotionCommand[] = []): MotionBridge
   };
 }
 
+it('reads the current course page while saved coursework is already present', async () => {
+  const user = userEvent.setup();
+  const commands: MotionCommand[] = [];
+  const saved: PanelState = {
+    ...panelState,
+    connection: 'supported',
+    page: {
+      ...panelState.page,
+      url: 'https://lms.example.test/new-module',
+      pageType: 'content-module',
+    },
+  };
+  render(<App bridge={bridge(saved, commands)} now={NOW} />);
+  await user.click(screen.getByRole('button', { name: /Coursework/ }));
+  const read = screen.getByRole('button', { name: 'Read this page' });
+  read.focus();
+  await user.keyboard('{Enter}');
+  expect(commands).toEqual([{ type: 'read-page', url: saved.page.url }]);
+  expect(screen.getByRole('heading', { name: material.title })).toBeInTheDocument();
+});
+
 it('browses saved coursework away from the LMS using keyboard-accessible filters', async () => {
   const user = userEvent.setup();
   const commands: MotionCommand[] = [];

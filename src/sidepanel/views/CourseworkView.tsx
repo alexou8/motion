@@ -99,6 +99,15 @@ export function CourseworkView({
       <div className="grid gap-1">
         <h1 className="font-serif text-xl font-semibold">Your coursework</h1>
         <p className="text-sm text-ink-muted">Assignments, quizzes and materials, together.</p>
+        {tasks.length > 0 && state.connection === 'supported' ? (
+          <Button
+            variant="secondary"
+            disabled={state.busy}
+            onClick={() => send({ type: 'read-page', url: state.page.url })}
+          >
+            {state.busy ? 'Reading page…' : 'Read this page'}
+          </Button>
+        ) : null}
       </div>
       <dl className="motion-coursework-summary">
         <div>

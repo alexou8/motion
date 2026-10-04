@@ -201,6 +201,27 @@ it('keeps restricted mode read-only and free of automation controls', () => {
 });
 
 describe('Home', () => {
+  it('keeps the current-page reader available after saving an undated material', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    const saved = state({
+      tasks: [
+        {
+          ...task,
+          kind: 'content',
+          due: { ...task.due, iso: null, raw: '', zoneEvidence: 'none' },
+        },
+      ],
+    });
+    const { rerender } = render(<App bridge={bridgeFor(saved, commands)} now={NOW} />);
+    const read = screen.getByRole('button', { name: 'Read this page' });
+    read.focus();
+    await user.keyboard('{Enter}');
+    expect(commands).toEqual([{ type: 'read-page', url: saved.page.url }]);
+    rerender(<App bridge={bridgeFor({ ...saved, busy: true }, commands)} now={NOW} />);
+    expect(screen.getByRole('button', { name: 'Reading page…' })).toBeDisabled();
+  });
+
   it('hides an active session, conversation and sources beside a restricted attempt', () => {
     render(
       <App

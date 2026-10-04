@@ -52,5 +52,8 @@ Synthetic unit and production-extension tests cover malformed input, worker
 cleanup, limits, ordered Unicode slide text, search, provenance, deletion and
 assessment boundaries. A private lecture downloaded through the authenticated
 LMS was indexed in an isolated extension profile; only counts were retained.
-Authenticated extension fetching and the complete installed live-account flow
-remain unverified. See [document verification](../verification/document-indexing.md).
+The installed extension subsequently downloaded an observed PDF from one
+signed-in course and indexed all 22 pages. Search, course association,
+reindexing, persistence and read-only list tracking passed. Broader deployment
+coverage and real PowerPoint fetching remain unverified. See
+[document verification](../verification/document-indexing.md).

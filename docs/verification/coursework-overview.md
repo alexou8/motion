@@ -35,7 +35,10 @@ were recorded. No quiz attempt was opened and no coursework was submitted.
 The in-app browser used for authenticated inspection cannot load Motion's MV3
 extension. Live markup was inspected there; extension execution was verified
 separately in isolated Chromium against synthetic pages. A complete installed
-extension run against the authenticated account remains unverified.
+extension run against the authenticated account remained unverified in this
+initial run. The [2026-10-04 follow-up](document-indexing.md#private-lecture-and-authenticated-account-checks)
+verified the installed extension's lecture indexing, content, assignment list,
+quiz list and dashboard reads in one signed-in course.
 
 ## Automated evidence
 
