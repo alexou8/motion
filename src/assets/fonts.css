@@ -2,7 +2,7 @@
    Bundled locally so the extension never contacts a font CDN at runtime — a CDN
    request would leak the fact and timing of Motion's use to a third party, and
    remote assets are disallowed by the extension CSP.
-   Source: Google Fonts. Licence: SIL Open Font License 1.1 (see LICENSES.md).
+   Source: Google Fonts. Licence: SIL Open Font License 1.1 (see fonts/OFL-ibm-plex.txt and LICENSES.md).
    Sans ships as a single variable file covering 400-600.
 
    Source Serif 4 (Adobe, via @fontsource-variable/source-serif-4 5.3.0), latin

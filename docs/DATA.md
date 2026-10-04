@@ -20,6 +20,14 @@ credentialed same-origin **GET** requests to Learn's documented enrollment and
 calendar endpoints. Responses become local course/task records through the
 normal merge path; no response, cookie, token, or deadline data is uploaded.
 
+The deadline panel displays saved records when the active page is signed out,
+unsupported, awaiting permission, or idle. It labels those records as saved
+and displays the latest deadline observation time. No scan is initiated by
+viewing these cached records. Restricted assessment mode still shows only its
+boundary screen. List and week views share course filtering and retain uncertain
+dates in Needs review. Exact known times use the browser's displayed time zone;
+assumed times are not presented as certain clock times.
+
 ## Stores
 
 | Store | Holds | Key | Indexes |
@@ -68,7 +76,7 @@ A due date is not just an instant. Motion stores:
 - `timeAssumed` — true when the page gave a date but no clock time
 - `confidence` — `confirmed` / `high` / `medium` / `low`
 
-LMS pages rarely state a timezone. Recording that the zone was *assumed* rather
+LMS pages rarely state a timezone. Recording that the zone was _assumed_ rather
 than quietly resolving against the browser's zone is the difference between a
 time a student can trust and one that is wrong twice a year — and around a DST
 boundary, a "11:59 PM" deadline can land an hour off.

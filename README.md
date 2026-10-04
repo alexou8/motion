@@ -8,9 +8,9 @@ pages you are already authorized to see, pulls out what is due and what is asked
 of you, keeps notes linked back to their source, and runs longer jobs in the
 background while showing you every step it takes.
 
-Its terracotta M is one continuous path from the first coursework step to
-completion. The same mark appears in the toolbar, side panel, settings page and
-browser tabs; the workflow track inside the panel carries the detailed state.
+Its purple-and-gold rising M joins an open-book fold with an upward arrow,
+moving from coursework toward completion. The same mark appears in the toolbar,
+side panel, settings page and browser tabs; the workflow track inside the panel carries the detailed state.
 
 > Motion can prepare coursework and perform supported consequential actions only
 > after a fresh, target-specific confirmation each time. It never acts inside a
@@ -182,6 +182,15 @@ Details and threat model: [`docs/SECURITY.md`](docs/SECURITY.md),
 | [`docs/adr/`](docs/adr/) | Architecture decision records |
 | [`SKILLS.md`](SKILLS.md) | Installed agent skills and when they apply |
 | [`docs/development/vscode.md`](docs/development/vscode.md) | VS Code workspace, tasks, and extension debugging |
+
+## Chrome Web Store submission
+
+Run `npm run dist` to build and package the production extension. The package
+gate rejects test permissions, missing icons, development files, and missing
+bundled licenses. Listing copy, screenshots, permission explanations, and the
+remaining dashboard steps are in [CHROMEWEBSTORE.md](CHROMEWEBSTORE.md); the
+privacy policy source is [docs/PRIVACY.md](docs/PRIVACY.md). Preparing a ZIP does
+not publish the extension or its policy.
 
 ## Licence
 

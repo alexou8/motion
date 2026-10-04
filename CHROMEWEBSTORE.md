@@ -1,148 +1,134 @@
 # Chrome Web Store Listing — Motion
 
-> Last Updated: 2026-09-17
+> Last updated: 2026-10-04. Local submission materials prepared; not submitted or approved.
 
-## Store Listing
+## Store listing
 
-**Extension Name**
+**Extension name:** Motion — From Coursework to Completion
 
-Motion — From Coursework to Completion
+**Short description** (matches the manifest; 110 characters):
 
-**Short Description**
+Organize Brightspace coursework with source-linked deadlines, reminders, and guided work sessions you control.
 
-Organizes LMS coursework into source-linked deadlines, notes, checklists, and drafts that stay on your device.
+**Detailed description** (paste the text below into the dashboard):
 
-**Detailed Description**
+Motion organizes Brightspace coursework into a student-controlled workspace beside your course page.
 
-Motion turns scattered LMS course pages into one visible, student-controlled coursework workspace.
+See source-linked deadlines across your courses. Filter by course, switch between list and week views, and see exact due times in your local time zone. Distant deadlines remain visible, uncertain dates are flagged for review, and recently moved dates show their previous date. Saved deadlines stay visible when you are signed out or viewing another page.
 
-FEATURES
-• Finds coursework and deadlines on supported D2L Brightspace pages.
-• Keeps each extracted item linked to the page and text it came from.
-• Creates source-linked notes and assignment checklists.
-• Helps draft and review coursework using Chrome's on-device model or a provider the student selects.
-• Offers opt-in local deadline reminders for assignments, quizzes, discussions, and other coursework, with quiet hours and automatic suppression after submission.
-• Shows progress and asks for a fresh, target-specific confirmation before each consequential browser action.
-• Never acts inside detected graded, timed or proctored attempts.
+Enable scanning on a supported course site to find deadlines across your courses. Turn on local reminders with separate lead times for assignments, quizzes, discussions, and other coursework. Reminders respect quiet hours and stop for tasks recorded as submitted or archived. Check Learn for the current submission status and deadline before handing in work.
 
-HOW TO USE
-1. Open a supported D2L Brightspace or MyLearningSpace course page.
-2. Click the Motion toolbar icon to open the launcher popup.
-3. Choose Start workspace or Continue workspace. The popup opens the side
-   panel and sends the validated intent; grouping is explicit, not automatic
-   on a toolbar click.
-4. Choose what to read, organize, or review in the side panel.
+Use Coursework to search and filter saved tasks and materials. Library can index selectable PDF text and PowerPoint slide text locally, keeping page or slide numbers and source links. No AI provider receives documents during indexing. Local document parsing requires Chromium 125 or newer.
 
-PRIVACY
-Local mode keeps model turns on the device. In BYOK cloud mode, after disclosure acceptance and just-in-time permission, Motion sends the student's message, session plan/state labels, relevant notes, and bounded page excerpts directly to the selected provider only. Each source excerpt is at most 8,000 characters and each request is at most 24,000 characters; excluded sources are omitted. Motion has no server or telemetry; provider keys stay in trusted session storage by default. With explicit opt-in and a separately installed local companion, keys can be remembered in the operating system’s credential vault; they are never saved in browser local/sync storage.
+Start a guided work session to build a checklist, prepare a draft, or review coursework with Chrome's on-device model when available, or OpenAI or Anthropic if you choose and configure one. Follow progress, pause work, and review consequential actions before approving them. Motion does not act inside detected graded, timed, or proctored attempts.
 
-SUPPORT
-Report bugs or request features at https://github.com/alexou8/motion/issues.
+Open a supported D2L Brightspace or MyLearningSpace page, click the Motion toolbar icon, and choose an action in the launcher to open the side panel. AI setup and reminder preferences live in Settings. Chrome 116 or newer is required; on-device AI additionally depends on browser and device support.
 
-**Category**
+Coursework records stay in your browser profile. Motion has no server, ads, or telemetry. Cloud AI is optional: after disclosure and permission, relevant messages and excerpts go directly to your selected provider. API keys last for the browser session by default. Remembering a key requires explicit opt-in and a separately installed OS credential-vault companion. Supported submissions, uploads, posts, and sends require fresh approval for each specific action.
 
-Productivity
+Motion is independent and is not affiliated with or endorsed by Wilfrid Laurier University or D2L.
 
-**Single Purpose**
+Support: alexoudev8@gmail.com
+Bug reports: https://github.com/alexou8/motion/issues
 
-Organizes coursework from supported LMS pages into a local, source-linked student workspace.
+**Category:** Productivity
 
-**Primary Language**
+**Single purpose:** Help students organize and complete coursework from supported Brightspace pages in a source-linked workspace they control.
 
-English
+**Primary language:** English
 
-## Graphics & Assets
+## Graphics and assets
 
-| Asset | Dimensions | Status | Filename |
-|-------|-----------|--------|----------|
-| Store Icon | 128×128 PNG | ✅ Ready | `src/assets/icons/icon-128.png` |
-| Product mark | SVG source; PNG outputs generated for extension surfaces | ✅ In source and consumed by UI | `src/assets/brand/motion-mark.svg` |
-| Screenshot 1 | 1280×800 or 640×400 | ⬜ Not created | |
-| Screenshot 2 | 1280×800 or 640×400 | ⬜ Not created | |
-| Small Promo Tile | 440×280 | ⬜ Not created | |
+| Asset                  | Dimensions     | File                                     | Status                                                       |
+| ---------------------- | -------------- | ---------------------------------------- | ------------------------------------------------------------ |
+| Store icon             | 128×128 PNG    | `src/assets/icons/icon-128.png`          | Generated; padded purple-and-gold artwork                    |
+| Toolbar icons          | 16, 32, 48 PNG | `src/assets/icons/`                      | Generated from the canonical SVG                             |
+| Light screenshot       | 1280×800 PNG   | `docs/store-assets/screenshot-light.png` | Capture from production extension using synthetic coursework |
+| Dark screenshot        | 1280×800 PNG   | `docs/store-assets/screenshot-dark.png`  | Capture from production extension using synthetic coursework |
+| Small promotional tile | 440×280 PNG    | `docs/store-assets/promo-440x280.png`    | Required; generated from canonical branding                  |
 
-### Screenshot Notes
+Screenshots combine an actual 400px-wide production side-panel capture with listing copy. They explicitly label the coursework as synthetic. The isolated browser harness contacts no live LMS or AI provider. Regenerate after a UI change with `MOTION_CAPTURE_STORE=1 npm run test:extension` following `npm run build`. Raw panel captures are included for inspection, not store upload. No store graphics or fixtures enter the extension ZIP.
 
-Show the side panel beside a synthetic course page with extracted work and source links visible. Do not include real student names, course identifiers, grades, or coursework.
+## Permissions justification
 
-Refresh listing screenshots before publishing: Motion now uses its continuous
-M path in the panel, Settings and extension icons. Settings also includes
-named model choices and account model refresh for both cloud providers.
+| Permission                         | Declaration   | Dashboard justification                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------- | ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `storage`                          | required      | Stores local coursework preferences, consent, scanning summaries, reminder state, and workflow metadata. Provider keys default to trusted session storage.                                                                                                                                                                                          |
+| `sidePanel`                        | required      | Keeps the student's coursework workspace visible beside a supported course page.                                                                                                                                                                                                                                                                    |
+| `tabs`                             | required      | Identifies the active course tab by URL/title, routes reads to its observer, and manages tabs for the student's explicit workspace actions. Unrelated browsing history is not retained.                                                                                                                                                             |
+| `tabGroups`                        | required      | Organizes explicitly prepared workspace tabs and lets the student resume or close Motion-owned tabs without closing student-owned tabs.                                                                                                                                                                                                             |
+| `alarms`                           | required      | Runs opted-in reminder checks and durable workflow retries when Chrome suspends the background worker.                                                                                                                                                                                                                                              |
+| `notifications`                    | required      | Delivers opted-in local deadline reminders using stored coursework and quiet-hour preferences.                                                                                                                                                                                                                                                      |
+| `nativeMessaging`                  | optional      | Connects to the separately installed local OS credential-vault companion only when the student explicitly enables remembered provider keys or checks the companion.                                                                                                                                                                                 |
+| `https://*.brightspace.com/*`      | required host | Reads supported Brightspace coursework pages and course deadline data.                                                                                                                                                                                                                                                                              |
+| `https://*.desire2learn.com/*`     | required host | Reads supported legacy D2L coursework pages and course deadline data.                                                                                                                                                                                                                                                                               |
+| `https://mylearningspace.wlu.ca/*` | required host | Reads supported Laurier MyLearningSpace coursework pages and course deadline data.                                                                                                                                                                                                                                                                  |
+| `https://*/*`                      | optional host | Enables just-in-time requests for a specific HTTPS provider endpoint or a student-selected institution host. Each request is narrowed to one origin; the wildcard is never requested as a whole. Cloud requests use only the selected fixed provider endpoint. Custom institution support beyond the built-in hosts needs separate live validation. |
 
-## Permissions Justification
+OpenAI (`https://api.openai.com/*`) and Anthropic (`https://api.anthropic.com/*`) are runtime origin requests covered by the optional HTTPS pattern, not additional manifest declarations. The unused `scripting` permission was removed. No permission was added.
 
-| Permission | Type | Justification |
-|------------|------|---------------|
-| `nativeMessaging` | optional_permissions | Connects to the separately installed OS keychain companion only when the student chooses remembered keys or checks the companion. |
-| `storage` | permissions | Keeps the student's courses, tasks, notes, checklists, workflow progress, and approvals in the local browser profile. |
-| `sidePanel` | permissions | Provides the persistent coursework workspace beside the LMS page the student is reading. |
-| `tabs` | permissions | Identifies the active supported LMS page, reads its title and URL, and communicates with Motion's reader on that tab. |
-| `tabGroups` | permissions | Groups tabs opened for an approved coursework workflow so the student can find and control them. |
-| `scripting` | permissions | Currently unused. Remove this permission before Web Store submission unless a user-facing feature is implemented that requires it. |
-| `alarms` | permissions | Resumes or retries opted-in background workflows after the extension has been suspended. |
-| `notifications` | permissions | Delivers deadline reminders only after the student enables them; reminders are planned from locally stored tasks and respect quiet hours and submission status. |
-| `https://*.brightspace.com/*` | host_permissions | Reads supported D2L Brightspace course pages to extract user-requested coursework information. |
-| `https://*.desire2learn.com/*` | host_permissions | Reads supported legacy D2L course pages to extract user-requested coursework information. |
-| `https://mylearningspace.wlu.ca/*` | host_permissions | Reads Wilfrid Laurier University MyLearningSpace course pages to extract user-requested coursework information. |
-| `https://*/*` | optional_host_permissions | Lets a student explicitly grant access to one additional HTTPS institution host when its D2L deployment uses a custom domain. |
-| `https://api.openai.com/*` | optional_host_permissions | Lets a student grant OpenAI API access just-in-time for the explicitly selected BYOK provider. |
-| `https://api.anthropic.com/*` | optional_host_permissions | Lets a student grant Anthropic API access just-in-time for the explicitly selected BYOK provider. |
+## Privacy and data use
 
-## Privacy & Data Use
+**Does Motion handle user data?** Yes. Do not claim that all data always stays on-device: cloud AI and approved course actions can transmit content.
 
-### Data Collection
+The dashboard disclosures must cover optional features as well as the default local mode. These are conservative declarations based on the data Motion can process; there is no advertising or developer telemetry.
 
-**Does the extension collect user data?** Yes — website content and user-created coursework records are processed locally. In BYOK cloud mode, the bounded model-turn payload described above is transmitted directly to the student's selected provider after disclosure. Supported submission, posting, uploading and sending actions require a fresh target-specific confirmation each time; graded, timed and proctored attempts are never acted in.
+| Data category                       | Handled                                                               | Off-device transmission and purpose                                                                                   |
+| ----------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| Personally identifiable information | Can occur in coursework or student-entered text                       | Relevant included content may reach the selected AI provider or an approved course destination; no identity profiling |
+| Health information                  | No dedicated collection                                               | Not requested for any Motion feature                                                                                  |
+| Financial/payment information       | No dedicated collection                                               | No billing integration or payment-data collection                                                                     |
+| Authentication information          | Yes: provider API keys                                                | Sent only to the selected provider for authentication; LMS passwords and copied session tokens are not collected      |
+| Personal communications             | Can occur in student-entered messages/drafts and course material      | Relevant included content may reach the selected provider or approved course destination                              |
+| Web history                         | Limited course/source URLs                                            | Relevant source references may be included in a provider turn; no unrelated browsing-history log                      |
+| User activity                       | Coursework sessions, approval decisions, workspace and reminder state | Relevant session state may reach the selected provider; no usage analytics                                            |
+| Location                            | No geographic location                                                | Browser time zone is used locally to display dates and plan quiet hours                                               |
+| Website content                     | Yes: supported coursework and bounded excerpts                        | Read from the LMS; optionally sent to selected AI provider or approved course destination                             |
 
-| Data Type | Collected? | Transmitted Off-Device? | Purpose | Shared with Third Parties? |
-|-----------|-----------|------------------------|---------|---------------------------|
-| Authentication info | No | No | Not accessed or stored | No |
-| Personal communications | No | No | Not accessed or stored | No |
-| Web history | Limited | No | Stores source URLs only for supported course content the student asks Motion to organize | No |
-| User activity | Limited | No | Stores workflow state, approval decisions, and opt-in reminder state inside the browser profile | No |
-| Website content | Yes | Yes, BYOK only | Extracts course names, instructions, tasks, deadlines, and relevant excerpts for the selected model turn | Selected AI provider only, after disclosure |
-| User-provided AI provider credentials | Yes | No | Held in session memory for the selected provider | Selected AI provider only when used |
+**Data use certifications:** data is not sold, used for unrelated purposes, or used for creditworthiness/lending. Use and transfer complies with the Chrome Web Store User Data Policy, including Limited Use requirements.
 
-### Data Use Certification
+**Remote code:** none. Executable code and fonts are bundled. Cloud models return data, not executable scripts; the actor accepts only validated typed operations.
 
-- [x] Data is NOT sold to third parties
-- [x] Data is NOT used for purposes unrelated to the extension's core functionality
-- [x] Data is NOT used for creditworthiness or lending purposes
+## Privacy policy
 
-## Privacy Policy
+Policy source: `docs/PRIVACY.md`. It includes provider authentication, local retention, the optional OS vault, deletion failure behavior, and approved LMS actions.
 
-**Privacy Policy URL:** TBD before submission. Publish a policy matching `docs/DATA.md`, `docs/SECURITY.md`, and `docs/adr/0002-local-first-no-backend.md` at a stable public URL.
+**Public privacy policy URL: still required.** Publish this exact policy to a stable public HTTPS page, verify it is accessible while signed out, and enter that URL in the dashboard. The policy has not been publicly hosted.
 
-## Distribution
+## Distribution and developer information
 
 **Visibility:** Public
 
 **Regions:** All regions
 
-## Developer Info
+**Publisher name:** Alex Ou
 
-**Publisher Name:** TBD before submission
+**Contact email:** alexoudev8@gmail.com
 
-**Contact Email:** TBD before submission
+**Support:** https://github.com/alexou8/motion/issues
 
-**Support URL:** https://github.com/alexou8/motion/issues
+**Homepage:** https://github.com/alexou8/motion
 
-**Homepage URL:** https://github.com/alexou8/motion
+## Version history
 
-## Version History
+| Version | Date       | Changes                                                                                                                                                                              | Status                     |
+| ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
+| 0.1.1   | 2026-10-04 | Rising M mark; Laurier-inspired purple/gold branding; complete and filterable deadline list; exact times and calendar fixes; cached deadlines; package validation and listing assets | Local draft; not submitted |
+| 0.1.0   | 2026-09-07 | Initial draft listing and service-worker packaging                                                                                                                                   | Draft                      |
 
-| Version | Date | Changes | Status |
-|---------|------|---------|--------|
-| 0.1.0 | 2026-09-07 | Initial draft listing; corrected service-worker packaging and toolbar side-panel opening. | Draft |
+## Validation and submission checklist
 
-## Review Notes
+Required local checks: `npm run typecheck`, `npm test`, `npm run lint`, `npm run build`, `npm run test:package`, `npm run test:extension`. `npm run package` refuses development/test permission sets, missing or wrongly sized icons, source maps, fixture files, unsafe code patterns, web-accessible extension UI, and missing bundled licenses. Static checks supplement browser testing and do not guarantee store approval.
 
-### Known Issues / Limitations
+Upload `motion-extension-0.1.1.zip` as-is; `manifest.json` is at the archive root. Upload the two 1280×800 screenshots, 128px icon, and 440×280 promotional tile separately. Store graphics and policy source are excluded from the extension package.
 
-- Chrome 116 or newer is required.
-- The launcher popup, side-panel presence cue, and product-mark integration are
-  implemented; browser verification of the current build is still pending.
-- The manifest currently declares the unused `scripting` permission; remove it before submission unless an implemented feature requires it.
-- Local draft assistance requires Chrome's on-device model; BYOK assistance requires the selected provider, disclosure, and just-in-time host permission.
-- Remote code: none. All executable code ships in the extension package.
-- The privacy policy URL, publisher name, contact email, and at least one synthetic-data screenshot must be supplied before submission.
+Before submission:
+
+- Publish and verify the public privacy-policy URL.
+- Complete Chrome Web Store developer account registration/verification and any required dashboard contact/distribution fields.
+- Confirm 0.1.1 exceeds any version already uploaded for the same store item; no version was changed in this task.
+- Complete the disclosure and permission fields using the text above, including optional cloud behavior.
+- Provide reviewer instructions for the authenticated LMS if the dashboard requests them. Never share a student's password; arrange permitted reviewer access or supply a current demonstration recording.
+- Run the current live MyLearningSpace checklist in `docs/MANUAL-TESTING.md`. Synthetic browser tests prove package integration, not current institution markup or all remote course-action flows.
+
+Local-model availability varies. Custom institutions outside the built-in content-script matches and production OS-vault installation need separate validation. No remote submission, account change, policy publication, or store approval is claimed.

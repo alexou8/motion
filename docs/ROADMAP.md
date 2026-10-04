@@ -65,18 +65,34 @@ companion backed by the OS credential vault; session keys remain the default.
 Native transport, installer and restart evidence are tracked in
 [browser verification](verification/browser-verification.md).
 
-## Deadline usability follow-ups
+## Deadline usability and store preparation — October 4, 2026
 
-[WATnow’s public listing](https://chromewebstore.google.com/detail/watnow/iikileknbmejmkaonlhkjkpbfnkidibh)
-provides useful comparison points for Motion’s deadline experience. These are
-planned follow-ups, not verified Motion behavior:
+[WATnow's public repository](https://github.com/EricJujianZou/watnow) provided
+comparison points: course filtering, full future lists, exact times, moved dates,
+and cached coursework. Motion keeps its existing workspace design, opt-in
+scanning, and assessment/approval boundaries.
 
-- Surface a moved deadline beside its previous date using Motion’s existing
-  correction history.
-- Keep the last successful scan visible during an offline or signed-out retry,
-  with a clear freshness indicator.
-- Recheck submission state before a reminder when the readable LMS page allows
-  it, while preserving the assessment boundary and current permission scope.
+- **Implemented and unit-tested:** course filtering shared by List/Week, a Later
+  section in List, exact known times in the displayed browser zone, uncertainty
+  warnings in Week, elapsed same-day deadlines marked overdue, DST-safe calendar
+  grouping, and cached deadlines on signed-out/idle/unsupported/permission screens.
+- **Browser verified with synthetic coursework:** course discovery, both view
+  groups, signed-out caching, uncertainty warnings, narrow light/dark layouts,
+  restricted-mode refusal, and popup artwork loading. See
+  [current verification](verification/store-readiness-2026-10-04.md).
+- **Branding:** original rising M with purple/gold artwork, purple/lavender action
+  accents, preserved warm backgrounds and typography; contrast checks pass.
+- **Local store materials:** production ZIP, full bundled licenses, icon sizes,
+  listing screenshots and promo tile, publisher/contact details, permission
+  justifications, and privacy policy source. Removed unused scripting permission.
+  Packaging now rejects test permissions, missing/wrong icons, development files,
+  unsafe execution patterns, and absent license notices.
+- **Submission still requires:** a verified public policy URL, developer-dashboard
+  registration/verification and disclosures, any reviewer access requirements,
+  and current live-LMS checks. No publication or store approval is claimed.
+- **Remaining improvement:** verify submission state from a readable LMS page
+  before a reminder, preserving assessment boundaries and existing permissions.
+  Current reminders suppress tasks whose stored status is submitted/archived.
 
 ## Phase A — Foundation
 

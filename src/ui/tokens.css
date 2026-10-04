@@ -24,11 +24,11 @@
   --stone-d-muted: #b5afa3;
   --stone-d-ink: #f1eee7;
 
-  /* Terracotta: the one accent, for primary actions and focus. */
-  --terracotta-700: #a8431f;
-  --terracotta-300: #e58c68;
+  /* Laurier-inspired purple; lavender keeps dark-mode controls readable. */
+  --purple-700: #330072;
+  --purple-300: #c7b2ed;
   /* Amber means exactly one thing in this product: Motion needs the student.
-     Pushed toward ochre so it stays distinct from the terracotta accent; the
+     Pushed toward ochre so it stays distinct from the purple accent; the
      square "blocked" marker carries the meaning without colour. */
   --ochre-800: #7d5200;
   --ochre-300: #e8b75c;
@@ -80,13 +80,13 @@
   --color-rule: var(--stone-200);
   --color-edge: var(--stone-500);
 
-  --color-signal: var(--terracotta-700);
+  --color-signal: var(--purple-700);
   --color-on-signal: #ffffff;
   --color-attention: var(--ochre-800);
   --color-danger: var(--red-800);
   --color-done: var(--green-800);
 
-  --color-focus: var(--terracotta-700);
+  --color-focus: var(--purple-700);
   --font-sans: 'IBM Plex Sans', ui-sans-serif, system-ui, sans-serif;
   /* Headings only. A bundled open-licence serif; see src/assets/fonts.css. */
   --font-serif: 'Source Serif 4', ui-serif, Georgia, serif;
@@ -104,12 +104,12 @@
     --color-ink-muted: var(--stone-d-muted);
     --color-rule: var(--stone-d-rule);
     --color-edge: var(--stone-d-edge);
-    --color-signal: var(--terracotta-300);
+    --color-signal: var(--purple-300);
     --color-on-signal: #1f1e1c;
     --color-attention: var(--ochre-300);
     --color-danger: var(--red-300);
     --color-done: var(--green-300);
-    --color-focus: var(--terracotta-300);
+    --color-focus: var(--purple-300);
   }
 }
 
@@ -121,10 +121,10 @@
   --color-ink-muted: var(--stone-d-muted);
   --color-rule: var(--stone-d-rule);
   --color-edge: var(--stone-d-edge);
-  --color-signal: var(--terracotta-300);
+  --color-signal: var(--purple-300);
   --color-on-signal: #1f1e1c;
   --color-attention: var(--ochre-300);
   --color-danger: var(--red-300);
   --color-done: var(--green-300);
-  --color-focus: var(--terracotta-300);
+  --color-focus: var(--purple-300);
 }

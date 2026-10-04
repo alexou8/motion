@@ -19,7 +19,9 @@ import type { ManifestV3Export } from '@crxjs/vite-plugin';
  */
 const E2E_PROVIDER_BASE_URL = process.env.MOTION_E2E_PROVIDER_BASE_URL ?? 'http://127.0.0.1:8934';
 const E2E_PROVIDER_HOST_PERMISSIONS =
-  process.env.MOTION_E2E_PROVIDER_HOSTS === '1' ? ([`${E2E_PROVIDER_BASE_URL}/*`] as const) : ([] as const);
+  process.env.MOTION_E2E_PROVIDER_HOSTS === '1'
+    ? ([`${E2E_PROVIDER_BASE_URL}/*`] as const)
+    : ([] as const);
 const E2E_KEYCHAIN = process.env.MOTION_E2E_KEYCHAIN === '1';
 
 const manifest: ManifestV3Export = {
@@ -28,7 +30,7 @@ const manifest: ManifestV3Export = {
   short_name: 'Motion',
   version: '0.1.1',
   description:
-    'Organizes your LMS coursework: deadlines with sources, notes linked to the page they came from, and background work you can watch and control.',
+    'Organize Brightspace coursework with source-linked deadlines, reminders, and guided work sessions you control.',
   // chrome.sidePanel requires 114+; opening it from an action requires 116.
   minimum_chrome_version: '116',
 
@@ -57,7 +59,12 @@ const manifest: ManifestV3Export = {
    * would be a defect wearing a permission's clothes.
    */
   permissions: [
-    'storage', 'sidePanel', 'tabs', 'tabGroups', 'scripting', 'alarms', 'notifications',
+    'storage',
+    'sidePanel',
+    'tabs',
+    'tabGroups',
+    'alarms',
+    'notifications',
     ...(E2E_KEYCHAIN ? ['nativeMessaging' as const] : []),
   ],
 

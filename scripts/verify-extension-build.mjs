@@ -1,9 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { containsDomGlobals } from './worker-source.mjs';
+import { verifyStorePackage } from './store-package.mjs';
 
 const dist = process.argv[2] ?? 'dist';
 const manifest = JSON.parse(readFileSync(join(dist, 'manifest.json'), 'utf8'));
+verifyStorePackage(dist, JSON.parse(readFileSync('package.json', 'utf8')).version);
+console.log('Verified store metadata, permissions, assets, licenses, and production-only files.');
 const workerPath = join(dist, manifest.background.service_worker);
 const visited = new Set();
 const workerModules = [];

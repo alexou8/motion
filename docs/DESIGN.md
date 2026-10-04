@@ -58,30 +58,28 @@ every colour and no state became ambiguous.
 
 ## The mark
 
-Motion's mark is a continuous **M** drawn as one path: it rises, guides through
-the two inner turns, and finishes at the same baseline. It represents moving
-coursework from its first step to completion without borrowing an LMS symbol or
-an assistant's face. The path is deliberately broad, round-capped and simple
-enough to remain legible at Chrome's 16px toolbar size.
+Motion's mark is a rising **M**: a lavender book-fold joins a gold upward
+arrow on a purple tile. It connects coursework with progress and remains
+recognizable at toolbar size. This original artwork uses Laurier-inspired
+purple and gold without university crests, wordmarks, or claims of endorsement.
+The colours `#330072` and `#f2a900` also appear in [Laurier's public site stylesheet](https://www.wlu.ca/_ato/dist/css/ato.min.css?v=3), checked October 4, 2026.
 
-`src/assets/brand/motion-mark.svg` is the canonical artwork. Panel, popup and options UI use
-it as a semantic-colour mask, so it follows the light and dark terracotta
-tokens. All three extension documents use it as their favicon, and
-`scripts/make-icons.mjs` rasterizes the 16, 32, 48 and 128px manifest PNGs
-from that same source. Do not redraw the mark inside a component or create a
-surface-specific variant.
+`src/assets/brand/motion-mark.svg` is the canonical artwork. Panel, popup and
+options use the full-colour image; all three documents use it as a favicon.
+`scripts/make-icons.mjs` generates the 16, 32, 48 and 128px PNGs from that source.
+The 128px icon has a 96px tile and 16px transparent padding on each side.
+Do not redraw the mark inside a component or create surface-specific variants.
 
 ## Colour
 
-Warm paper-and-ink neutrals in both themes, one accent.
+On October 4, 2026 the owner requested purple-and-gold branding while retaining
+the current light/dark UI and interaction design. Warm paper-and-ink neutrals,
+fonts, spacing, tracks, and shape-based status markers remain unchanged.
 
-**Terracotta** is the accent: primary actions and the focus ring. It does not
-carry status.
-
-**Ochre** (the old amber, pushed darker and yellower so it cannot be mistaken for
-terracotta) still means exactly one thing: **Motion needs you.** Beside a warm
-accent, colour alone would not keep the two apart; the square *blocked* marker
-does, which is the shape-first rule earning its place.
+**Purple** is the light-mode accent for primary actions and focus; a readable
+**lavender** serves the same role in dark mode. **Gold** is the brand arrow.
+The accent does not carry task status. **Ochre** continues to mean **Motion
+needs you**, reinforced by the existing square blocked marker.
 
 Both palettes are verified against WCAG 2.2 AA by
 `src/ui/tokens.contrast.test.ts`: body and muted text on paper, surface and the

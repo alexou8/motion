@@ -340,6 +340,7 @@ describe('Home', () => {
         iso: '2026-10-20T12:00:00.000Z',
         confidence: 'high' as const,
         zoneEvidence: 'explicit' as const,
+        timeAssumed: false,
       },
     };
     render(
@@ -356,6 +357,78 @@ describe('Home', () => {
     await user.click(screen.getByRole('button', { name: 'Week' }));
     expect(screen.getByText(/Later/)).toBeInTheDocument();
     expect(screen.queryByText('Motion is not confident in this date.')).not.toBeInTheDocument();
+    expect(screen.queryByText('Needs review')).not.toBeInTheDocument();
+  });
+
+  it('shows distant deadlines in List and filters both views by course', async () => {
+    const user = userEvent.setup();
+    const otherCourse = { ...course, id: 'synthetic-course-2', code: 'TEST 202' };
+    const distant = {
+      ...task,
+      id: 'synthetic-later',
+      title: 'Synthetic final project',
+      courseId: otherCourse.id,
+      due: {
+        ...task.due,
+        iso: '2026-12-20T16:00:00.000Z',
+        timeAssumed: false,
+        zoneEvidence: 'explicit' as const,
+        confidence: 'high' as const,
+      },
+    };
+    render(
+      <App
+        bridge={bridgeFor(state({ courses: [course, otherCourse], tasks: [task, distant] }))}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText('Synthetic final project')).toBeInTheDocument();
+    expect(screen.getByRole('list', { name: 'Later' })).toHaveTextContent(
+      'Synthetic final project',
+    );
+    await user.selectOptions(screen.getByLabelText('Filter by course'), otherCourse.id);
+    expect(screen.queryByText(task.title)).not.toBeInTheDocument();
+    expect(screen.getByText('1 deadline across 1 course')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Week$/ }));
+    expect(screen.getByText('Synthetic final project')).toBeInTheDocument();
+    expect(screen.queryByText(task.title)).not.toBeInTheDocument();
+    await user.selectOptions(screen.getByLabelText('Filter by course'), '');
+    expect(screen.getByText(task.title)).toBeInTheDocument();
+    expect(screen.getByText('Synthetic final project')).toBeInTheDocument();
+  });
+
+  it('keeps uncertain dates in Needs review when switching to Week', async () => {
+    const user = userEvent.setup();
+    render(<App bridge={bridgeFor(state({ tasks: [task] }))} now={NOW} />);
+    await user.click(screen.getByRole('button', { name: /^Week$/ }));
+    expect(screen.getByRole('list', { name: 'Needs review' })).toHaveTextContent(task.title);
+    expect(
+      screen.getByText('A time was assumed; the page only stated a date.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('list', { name: /Next week/ })).not.toBeInTheDocument();
+  });
+
+  it.each(['idle', 'unsupported', 'permission-needed', 'signed-out'] as const)(
+    'keeps saved deadlines visible while %s without starting a scan',
+    (connection) => {
+      const commands: MotionCommand[] = [];
+      render(<App bridge={bridgeFor(state({ connection, tasks: [task] }), commands)} now={NOW} />);
+      expect(screen.getByText(task.title)).toBeInTheDocument();
+      expect(screen.getByText(/Saved deadlines/)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Scan all courses' })).not.toBeInTheDocument();
+      expect(commands).toEqual([]);
+    },
+  );
+
+  it('keeps restricted mode free of cached coursework or course actions', () => {
+    render(
+      <App bridge={bridgeFor(state({ connection: 'restricted', tasks: [task] }))} now={NOW} />,
+    );
+    expect(screen.queryByText(task.title)).not.toBeInTheDocument();
+    expect(
+      screen.queryAllByRole('link').filter((link) => link.getAttribute('href') !== '#main-content'),
+    ).toHaveLength(0);
+    expect(screen.queryByRole('button', { name: 'Week' })).not.toBeInTheDocument();
   });
 
   it('sends session-create from the composer', async () => {

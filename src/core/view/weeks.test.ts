@@ -10,31 +10,76 @@ function task(id: string, iso: string | null): CourseTask {
     courseId: 'synthetic-course',
     title: id,
     kind: 'assignment',
-    due: { iso, raw: iso ?? 'No parsed date', zoneEvidence: 'explicit', timeAssumed: false, confidence: 'high' },
+    due: {
+      iso,
+      raw: iso ?? 'No parsed date',
+      zoneEvidence: 'explicit',
+      timeAssumed: false,
+      confidence: 'high',
+    },
     status: 'todo',
     weight: null,
-    provenance: { sourceUrl: 'https://lms.example.test/tasks', pageTitle: 'Synthetic tasks', platformId: 'd2l', pageType: 'assignment-list', capturedAt: '2026-03-08T15:00:00.000Z', extractionVersion: 1 },
-    corrections: [], studentEdited: false, manual: false, archived: false,
-    createdAt: '2026-03-08T15:00:00.000Z', updatedAt: '2026-03-08T15:00:00.000Z',
+    provenance: {
+      sourceUrl: 'https://lms.example.test/tasks',
+      pageTitle: 'Synthetic tasks',
+      platformId: 'd2l',
+      pageType: 'assignment-list',
+      capturedAt: '2026-03-08T15:00:00.000Z',
+      extractionVersion: 1,
+    },
+    corrections: [],
+    studentEdited: false,
+    manual: false,
+    archived: false,
+    createdAt: '2026-03-08T15:00:00.000Z',
+    updatedAt: '2026-03-08T15:00:00.000Z',
   });
 }
 
 describe('groupByWeek', () => {
+  it('marks elapsed same-day deadlines overdue and labels weeks correctly in UTC+14', () => {
+    const groups = groupByWeek(
+      [
+        task('synthetic-past', '2026-09-20T20:00:00.000Z'),
+        task('synthetic-future', '2026-09-21T02:00:00.000Z'),
+      ],
+      new Date('2026-09-21T00:00:00.000Z'),
+      'Pacific/Kiritimati',
+    );
+    expect(groups.find((group) => group.key === 'overdue')?.tasks.map((item) => item.id)).toEqual([
+      'synthetic-past',
+    ]);
+    expect(groups.find((group) => group.key === 'thisWeek')?.label).toBe(
+      'This week · Sep 21 to Sep 27',
+    );
+  });
   it('uses local calendar days across the spring DST boundary', () => {
     // Mar 8 is the 23-hour DST change day in Toronto. Mar 9 remains in the
     // same Monday-start week, not a week later because a day was 23 hours.
     const now = new Date('2026-03-08T15:00:00.000Z');
-    const groups = groupByWeek([
-      task('overdue', '2026-03-07T17:00:00.000Z'),
-      task('sunday', '2026-03-08T20:00:00.000Z'),
-      task('monday', '2026-03-09T14:00:00.000Z'),
-      task('following-monday', '2026-03-16T14:00:00.000Z'),
-    ], now, TZ);
+    const groups = groupByWeek(
+      [
+        task('overdue', '2026-03-07T17:00:00.000Z'),
+        task('sunday', '2026-03-08T20:00:00.000Z'),
+        task('monday', '2026-03-09T14:00:00.000Z'),
+        task('following-monday', '2026-03-16T14:00:00.000Z'),
+      ],
+      now,
+      TZ,
+    );
 
-    expect(groups.find((group) => group.key === 'overdue')?.tasks.map((item) => item.id)).toEqual(['overdue']);
-    expect(groups.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id)).toEqual(['sunday']);
-    expect(groups.find((group) => group.key === 'nextWeek')?.tasks.map((item) => item.id)).toEqual(['monday']);
-    expect(groups.find((group) => group.key === 'later')?.tasks.map((item) => item.id)).toEqual(['following-monday']);
+    expect(groups.find((group) => group.key === 'overdue')?.tasks.map((item) => item.id)).toEqual([
+      'overdue',
+    ]);
+    expect(groups.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id)).toEqual([
+      'sunday',
+    ]);
+    expect(groups.find((group) => group.key === 'nextWeek')?.tasks.map((item) => item.id)).toEqual([
+      'monday',
+    ]);
+    expect(groups.find((group) => group.key === 'later')?.tasks.map((item) => item.id)).toEqual([
+      'following-monday',
+    ]);
   });
 
   it('treats Sunday consistently at the Monday/Sunday week-start edge', () => {
@@ -43,10 +88,16 @@ describe('groupByWeek', () => {
     const monday = task('monday', '2026-09-21T14:00:00.000Z');
 
     const mondayStart = groupByWeek([sunday, monday], now, TZ, 'monday');
-    expect(mondayStart.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id)).toEqual(['sunday']);
-    expect(mondayStart.find((group) => group.key === 'nextWeek')?.tasks.map((item) => item.id)).toEqual(['monday']);
+    expect(
+      mondayStart.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id),
+    ).toEqual(['sunday']);
+    expect(
+      mondayStart.find((group) => group.key === 'nextWeek')?.tasks.map((item) => item.id),
+    ).toEqual(['monday']);
 
     const sundayStart = groupByWeek([sunday, monday], now, TZ, 'sunday');
-    expect(sundayStart.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id)).toEqual(['sunday', 'monday']);
+    expect(
+      sundayStart.find((group) => group.key === 'thisWeek')?.tasks.map((item) => item.id),
+    ).toEqual(['sunday', 'monday']);
   });
 });

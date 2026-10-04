@@ -5,7 +5,8 @@
 `src/assets/fonts/` contains a latin subset of **IBM Plex Sans** and **IBM Plex Mono**,
 copyright IBM Corp., licensed under the **SIL Open Font License, Version 1.1**.
 
-Full licence: <https://github.com/IBM/plex/blob/master/LICENSE.txt>
+Full licence: `src/assets/fonts/OFL-ibm-plex.txt` (source:
+<https://github.com/IBM/plex/blob/master/LICENSE.txt>).
 
 `src/assets/fonts/source-serif-4-var.woff2` is a latin subset of **Source Serif 4**
 (variable weight), copyright Adobe, taken from `@fontsource-variable/source-serif-4`
@@ -26,3 +27,6 @@ Its full license ships in `public/licenses/fflate.txt`.
 
 These parsers execute bundled local code and do not download decoder scripts
 at runtime. The release ZIP includes the license texts.
+
+Production packages include the full bundled font and runtime-library licenses
+in `THIRD_PARTY_NOTICES.txt`.

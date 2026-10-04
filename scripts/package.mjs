@@ -3,6 +3,7 @@ import { deflateRawSync } from 'node:zlib';
 import { lstatSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { verifyStorePackage } from './store-package.mjs';
 
 let crcTable;
 function crc32(buffer) {
@@ -116,6 +117,8 @@ export function packageExtension(root = '.') {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
+    const version = JSON.parse(readFileSync('package.json', 'utf8')).version;
+    verifyStorePackage('dist', version);
     const result = packageExtension();
     console.log(`${result.outputName} (${(result.bytes / 1024).toFixed(1)} kB)`);
     console.log('Unzip it, then load the folder at chrome://extensions with "Load unpacked".');

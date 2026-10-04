@@ -33,20 +33,26 @@ function dateFromDayIndex(index: number): { year: number; month: number; day: nu
   return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
 }
 
-function formatRange(start: number, end: number, timeZone: string): string {
+function formatRange(start: number, end: number): string {
   const first = dateFromDayIndex(start);
   const last = dateFromDayIndex(end);
-  const formatter = new Intl.DateTimeFormat('en-US', { timeZone, month: 'short', day: 'numeric' });
+  // These are calendar dates, not instants in the student's zone. Formatting
+  // at UTC noon avoids moving the label a day in UTC+14 or UTC-12.
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'UTC',
+    month: 'short',
+    day: 'numeric',
+  });
   const firstDate = new Date(Date.UTC(first.year, first.month - 1, first.day, 12));
   const lastDate = new Date(Date.UTC(last.year, last.month - 1, last.day, 12));
   return `${formatter.format(firstDate)} to ${formatter.format(lastDate)}`;
 }
 
-function groupLabel(key: DeadlineWeekKey, start: number, timeZone: string): string {
+function groupLabel(key: DeadlineWeekKey, start: number): string {
   if (key === 'overdue') return 'Overdue';
   if (key === 'later') return 'Later';
   const prefix = key === 'thisWeek' ? 'This week' : 'Next week';
-  return `${prefix} · ${formatRange(start, start + 6, timeZone)}`;
+  return `${prefix} · ${formatRange(start, start + 6)}`;
 }
 
 /**
@@ -78,7 +84,7 @@ export function groupByWeek(
       continue;
     }
     const dueDay = dayIndex(zonedDate(new Date(task.due.iso), timeZone));
-    if (dueDay < today) groups.overdue.push(task);
+    if (new Date(task.due.iso).getTime() < now.getTime()) groups.overdue.push(task);
     else if (dueDay < thisWeekStart + 7) groups.thisWeek.push(task);
     else if (dueDay < thisWeekStart + 14) groups.nextWeek.push(task);
     else groups.later.push(task);
@@ -93,7 +99,7 @@ export function groupByWeek(
   return (['overdue', 'thisWeek', 'nextWeek', 'later'] as const)
     .map((key) => ({
       key,
-      label: groupLabel(key, starts[key], timeZone),
+      label: groupLabel(key, starts[key]),
       tasks: groups[key].sort(
         (a, b) =>
           (a.due.iso ?? '').localeCompare(b.due.iso ?? '') || a.title.localeCompare(b.title),
