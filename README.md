@@ -119,7 +119,11 @@ see [`docs/development/vscode.md`](docs/development/vscode.md).
 
 ### Install it in Chrome
 
-**Download the latest main build:** [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/download/main-build/motion-extension-latest.zip)
+**From the Chrome Web Store (recommended):** install Motion from its store
+listing. Chrome keeps it updated automatically. After installing, open a
+Brightspace course page and click the Motion toolbar icon.
+
+**Developer builds.** To try unreleased changes, download the latest main build: [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/download/main-build/motion-extension-latest.zip)
 
 This development prerelease refreshes after a passing `main` build, including
 merged pull requests. All release paths use the same type, unit, lint, browser

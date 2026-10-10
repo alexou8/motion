@@ -17,12 +17,27 @@ export interface CuratedModel {
 export const CHROME_LOCAL_MODELS: CuratedModel[] = [{ id: 'chrome-on-device', label: 'On-device (Chrome)' }];
 
 export const ANTHROPIC_MODELS: CuratedModel[] = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 — routine summaries and checklists' },
-  { id: 'claude-sonnet-5', label: 'Claude Sonnet 5 — writing and planning' },
+  { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 — routine summaries and checklists' },
+  { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 — writing and planning' },
   { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 — complex requests' },
+  { id: 'claude-fable-5-1', label: 'Claude Fable 5.1 — most demanding requests' },
 ];
 
-export const ANTHROPIC_RECOMMENDED = 'claude-haiku-4-5-20251001';
+/**
+ * Earlier curated ids. They are no longer offered, but a saved preference for
+ * one still resolves while the account listing is unavailable, so an update
+ * does not turn into a "model unavailable" blocker.
+ */
+const ANTHROPIC_LEGACY_MODEL_IDS = ['claude-haiku-4-5-20251001', 'claude-haiku-4-5', 'claude-sonnet-5'];
+
+/**
+ * Preference order for resolving Anthropic's "recommended" model. Haiku 5.5 is
+ * the default because Motion's routine work (summaries, checklists, short
+ * drafts) does not need a larger model and it is the lowest-cost current
+ * option; Sonnet 5.5 is the next step up if Haiku is not on the account.
+ */
+export const ANTHROPIC_RECOMMENDED_PREFERENCE = ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-haiku-4-5', 'claude-sonnet-5'];
+export const ANTHROPIC_RECOMMENDED = ANTHROPIC_RECOMMENDED_PREFERENCE[0]!;
 
 /** Preference order for resolving OpenAI's "recommended" from `/v1/models`. */
 export const OPENAI_RECOMMENDED_PREFERENCE = ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'gpt-5.4-mini', 'gpt-5.4-nano', 'gpt-5'];
@@ -82,6 +97,30 @@ export function resolveOpenAIRecommended(listedIds?: string[]): string {
   return OPENAI_RECOMMENDED_FALLBACK;
 }
 
+/**
+ * Picks the exact id to use for a `recommended` Anthropic request: the first
+ * `ANTHROPIC_RECOMMENDED_PREFERENCE` family the account lists (exact id, then
+ * a dated snapshot of it). Only when none is listed does it take another
+ * supported model, preferring the cheaper Haiku and Sonnet lines over the
+ * first-listed (usually newest and costliest) one.
+ */
+export function resolveAnthropicRecommended(listedIds?: string[]): string {
+  if (!listedIds || listedIds.length === 0) return ANTHROPIC_RECOMMENDED;
+  for (const family of ANTHROPIC_RECOMMENDED_PREFERENCE) {
+    if (listedIds.includes(family)) return family;
+  }
+  for (const family of ANTHROPIC_RECOMMENDED_PREFERENCE) {
+    const snapshot = listedIds.find((id) =>
+      id.startsWith(`${family}-`) && /^\d{8}$/.test(id.slice(family.length + 1)) && isSupportedTextModel('anthropic', id));
+    if (snapshot) return snapshot;
+  }
+  const supported = listedIds.filter((id) => isSupportedTextModel('anthropic', id));
+  return supported.find((id) => id.includes('haiku'))
+    ?? supported.find((id) => id.includes('sonnet'))
+    ?? supported[0]
+    ?? ANTHROPIC_RECOMMENDED;
+}
+
 export interface ResolvedModel {
   id: string;
   /** Explains why a requested model or account catalogue is unavailable. */
@@ -110,7 +149,9 @@ function isAccessibleGeneralPurposeOpenAIModel(id: string): boolean {
 export function resolveModel(providerId: ProviderId, preference: string, listedIds?: string[]): ResolvedModel {
   const recommended = providerId === 'openai'
     ? resolveOpenAIRecommended(listedIds)
-    : listedIds?.find((id) => id === recommendedFor(providerId)) ?? listedIds?.find((id) => isSupportedTextModel(providerId, id)) ?? recommendedFor(providerId);
+    : providerId === 'anthropic'
+      ? resolveAnthropicRecommended(listedIds)
+      : listedIds?.find((id) => id === recommendedFor(providerId)) ?? listedIds?.find((id) => isSupportedTextModel(providerId, id)) ?? recommendedFor(providerId);
 
   const curated = curatedModelsFor(providerId);
   // When `/v1/models` was available, treat it as the account's source of
@@ -118,7 +159,7 @@ export function resolveModel(providerId: ProviderId, preference: string, listedI
   // being sent merely because it remains in the UI catalogue.
   const known = listedIds !== undefined
     ? listedIds.includes(preference) && isSupportedTextModel(providerId, preference)
-    : curated.some((m) => m.id === preference);
+    : curated.some((m) => m.id === preference) || (providerId === 'anthropic' && ANTHROPIC_LEGACY_MODEL_IDS.includes(preference));
   if (known) return { id: preference };
 
   if (preference === 'recommended') {

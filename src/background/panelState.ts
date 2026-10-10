@@ -1,6 +1,7 @@
 import {
   courseSchema,
   courseTaskSchema,
+  type Course,
 } from '@/core/domain';
 import { z } from 'zod';
 import { deadlineBuckets, EMPTY_PANEL_STATE, type PanelState, type WorkspaceTabSummary } from '@/core/view';
@@ -19,6 +20,9 @@ import { recoverWorkflows } from './recovery';
 
 const ACTIVE_SESSION_KEY = 'motion.activeSessionId';
 const STREAMING_KEY = 'motion.streaming';
+const RECOVERY_CHECKED_KEY = 'motion.panelRecoveryCheckedAt';
+/** The panel refreshes every ~150ms while streaming; recovery need not. */
+export const PANEL_RECOVERY_INTERVAL_MS = 30_000;
 const storedStreamingSchema = z.object({
   sessionId: z.string().min(1),
   requestKey: z.string().min(1),
@@ -39,12 +43,37 @@ function connectionFor(observation: StoredObservation | undefined): PanelState['
   return 'supported';
 }
 
-async function courseForUrl(url: string | null | undefined) {
+/**
+ * A scan lease counts only until it expires. A worker that dies mid-scan never
+ * clears `busy`, and trusting the flag alone left "Scanning courses…" stuck.
+ */
+export function discoveryBusy(
+  settings: { busy?: unknown; busyUntil?: unknown } | undefined,
+  now: Date,
+): boolean {
+  return settings?.busy === true && typeof settings.busyUntil === 'string' && new Date(settings.busyUntil).getTime() > now.getTime();
+}
+
+/**
+ * Whether this panel refresh should also run workflow recovery. The last
+ * check is kept in session storage because module state dies with the worker.
+ * If storage is unavailable, recovery runs rather than being skipped.
+ */
+async function panelRecoveryDue(now: number): Promise<boolean> {
+  try {
+    const last = (await chrome.storage.session.get(RECOVERY_CHECKED_KEY))[RECOVERY_CHECKED_KEY];
+    if (typeof last === 'number' && now >= last && now - last < PANEL_RECOVERY_INTERVAL_MS) return false;
+    await chrome.storage.session.set({ [RECOVERY_CHECKED_KEY]: now });
+  } catch {
+    // Fall through: an unthrottled recovery is safe, a skipped one may not be.
+  }
+  return true;
+}
+
+function courseForUrl(courses: Course[], url: string | null | undefined) {
   const externalId = url ? resolveAdapter(url)?.courseIdForUrl(url) : null;
   if (!externalId) return null;
-  const db = await openDatabase();
-  const courses = await new Repository(db, STORE.courses, courseSchema).all();
-  return courses.records.find((course) => course.externalId === externalId) ?? null;
+  return courses.find((course) => course.externalId === externalId) ?? null;
 }
 
 async function workspaceTabsFor(
@@ -76,8 +105,18 @@ async function workspaceTabsFor(
 export async function buildPanelState(): Promise<PanelState> {
   // Opening or waking the panel is a recovery trigger: a lease may have
   // expired while the service worker was suspended and no alarm was delivered.
-  await recoverWorkflows();
+  if (await panelRecoveryDue(Date.now())) await recoverWorkflows();
   const db = await openDatabase();
+  // One connection per refresh, always closed: an open handle with an
+  // `onversionchange` listener is never collected.
+  try {
+    return await buildPanelStateFrom(db);
+  } finally {
+    db.close();
+  }
+}
+
+async function buildPanelStateFrom(db: IDBDatabase): Promise<PanelState> {
   const taskRepo = new Repository(db, STORE.tasks, courseTaskSchema);
   const approvalRepo = new Repository(db, STORE.approvals, approvalRequestSchema);
   const courses = new Repository(db, STORE.courses, courseSchema);
@@ -106,7 +145,7 @@ export async function buildPanelState(): Promise<PanelState> {
   const origin = observation?.url ? new URL(observation.url).origin : null;
   const discoveryKey = origin ? `motion.discovery:${origin}` : null;
   const discoveryStored = discoveryKey ? (await chrome.storage.local.get(discoveryKey))[discoveryKey] : null;
-  const discovery = typeof discoveryStored === 'object' && discoveryStored !== null ? discoveryStored as { optedIn?: unknown; busy?: unknown; result?: unknown; blocker?: unknown } : {};
+  const discovery = typeof discoveryStored === 'object' && discoveryStored !== null ? discoveryStored as { optedIn?: unknown; busy?: unknown; busyUntil?: unknown; result?: unknown; blocker?: unknown } : {};
   const buckets = deadlineBuckets(tasks.records, new Date(), timeZone);
   // This path runs for every panel state refresh, including each streaming
   // preview update. Readiness needs no model catalogue request; model turns
@@ -131,7 +170,7 @@ export async function buildPanelState(): Promise<PanelState> {
     page: observation
       ? (({ restricted: _restricted, ...page }) => page)(observation)
       : EMPTY_PANEL_STATE.page,
-    course: await courseForUrl(observation?.url),
+    course: courseForUrl(allCourses.records, observation?.url),
     courses: allCourses.records.filter((course) => !course.archived),
     tasks: tasks.records.filter((task) => !task.archived).sort((a, b) => {
       if (a.due.iso && b.due.iso) return a.due.iso.localeCompare(b.due.iso);
@@ -170,6 +209,6 @@ export async function buildPanelState(): Promise<PanelState> {
       message: provider ? `${provider.displayName} is ready.` : resolution?.kind === 'blocked' ? resolution.blocker.message : '',
     },
     streaming,
-    discovery: { host: origin, optedIn: typeof discovery.optedIn === 'boolean' ? discovery.optedIn : null, busy: discovery.busy === true, result: discovery.result as PanelState['discovery']['result'], blocker: typeof discovery.blocker === 'string' ? discovery.blocker : null },
+    discovery: { host: origin, optedIn: typeof discovery.optedIn === 'boolean' ? discovery.optedIn : null, busy: discoveryBusy(discovery, new Date()), result: discovery.result as PanelState['discovery']['result'], blocker: typeof discovery.blocker === 'string' ? discovery.blocker : null },
   };
 }

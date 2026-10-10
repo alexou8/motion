@@ -31,7 +31,42 @@ export type ProviderStatus =
   | 'network-error'
   | 'model-unavailable';
 
-export type ProviderErrorKind = ProviderStatus | 'cancelled' | 'bad-response' | 'outcome-unknown';
+/**
+ * Error-only kinds never appear as a persisted/transported availability
+ * status: `providerStatusForErrorKind` collapses them to `network-error` (with
+ * their specific message) wherever a `ProviderStatus` is required.
+ */
+export type ProviderErrorKind =
+  | ProviderStatus
+  | 'cancelled'
+  | 'bad-response'
+  | 'outcome-unknown'
+  /** No response bytes arrived within the connect or idle window. */
+  | 'timeout'
+  /** The provider rejected the request itself (HTTP 400/413/422). */
+  | 'bad-request'
+  /** The key is valid but not permitted to use the model (HTTP 403). */
+  | 'forbidden'
+  /** The provider failed on its side (HTTP 5xx other than overload). */
+  | 'server-error';
+
+export function providerStatusForErrorKind(kind: ProviderErrorKind): ProviderStatus {
+  switch (kind) {
+    case 'cancelled':
+    case 'bad-response':
+    case 'outcome-unknown':
+    case 'timeout':
+    case 'bad-request':
+    case 'forbidden':
+    case 'server-error':
+      return 'network-error';
+    default:
+      return kind;
+  }
+}
+
+/** Why a response ended before the model finished on its own. */
+export type TruncationReason = 'max-tokens' | 'refusal' | 'incomplete';
 
 export interface ProviderAvailability {
   status: ProviderStatus;
@@ -48,6 +83,12 @@ export interface GenerateRequest {
   /** Resolved model id — callers must run this through `resolveModel` first. */
   model?: string;
   json?: boolean;
+  /**
+   * Called when the provider returned usable text but stopped early (token
+   * limit, refusal, incomplete response). The text is still returned; callers
+   * that care can show a short note.
+   */
+  onTruncated?: (reason: TruncationReason) => void;
 }
 
 export interface AIProvider {

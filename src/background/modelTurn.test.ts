@@ -53,7 +53,23 @@ describe('model request recovery', () => {
     const stored = await repo.get('session-1');
     expect(stored?.pendingModelRequest).toBeNull();
     expect(stored?.blockers).toEqual([
-      expect.objectContaining({ kind: 'provider', message: 'Motion was interrupted while waiting for openai. Retry?' }),
+      expect.objectContaining({ kind: 'provider', message: 'Motion was interrupted while waiting for openai. Retry?', action: 'retry-model' }),
+    ]);
+  });
+
+  it('keeps a message sent to a paused session and says the session can be resumed', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'paused', pendingModelRequest: null }));
+    db.close();
+    const resolveProvider = vi.fn();
+
+    const result = await runModelTurn('session-1', 'Add the rubric to my notes.', { resolveProvider });
+
+    expect(resolveProvider).not.toHaveBeenCalled();
+    expect(result?.status).toBe('paused');
+    expect(result?.conversation.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'student', text: 'Add the rubric to my notes.' },
+      { role: 'motion', text: 'This session is paused. Resume it when you want Motion to continue.' },
     ]);
   });
 
@@ -340,6 +356,34 @@ describe('model turn single flight', () => {
     expect(signal?.aborted).toBe(true);
     releaseStream();
     await turn;
+  });
+
+  it('tells the student when a reply was cut short by the length limit instead of "try again"', async () => {
+    const db = await openDatabase();
+    await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
+    db.close();
+    const provider = {
+      id: 'openai' as const,
+      displayName: 'OpenAI',
+      capabilities: async () => ({ streaming: true, cancellation: true, backgroundExecution: true, cloud: true, requiresKey: true, structuredOutput: true }),
+      availability: async () => ({ status: 'available' as const, message: '' }),
+      generate: async () => '',
+      stream: async function* (request: { onTruncated?: (reason: 'max-tokens') => void }) {
+        yield '{"reply":"This answer never clo';
+        request.onTruncated?.('max-tokens');
+      },
+    };
+
+    await runModelTurn('session-1', 'Explain everything.', {
+      tabs: new FakeTabs(),
+      resolveProvider: async () => ({ kind: 'ready' as const, provider, providerId: 'openai' as const, model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true }),
+    });
+
+    const stored = await sessionRepository(await openDatabase()).get('session-1');
+    const texts = stored?.conversation.map((entry) => entry.text) ?? [];
+    expect(texts.some((text) => text.includes('cut short'))).toBe(true);
+    expect(texts.some((text) => text.includes('unusable response'))).toBe(false);
+    expect(stored?.pendingModelRequest).toBeNull();
   });
 
   it('clears recovered model blockers after a successful current provider turn', async () => {

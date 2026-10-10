@@ -150,7 +150,7 @@ export function LibraryView({ state, bridge }: { state: PanelState; bridge: Moti
           </Button>
         ) : (
           <p className="text-xs text-ink-muted">
-            Open a MyLearningSpace lecture topic to find its file, or import a downloaded copy.
+            Open a Brightspace lecture topic to find its file, or import a downloaded copy.
           </p>
         )}
         {sources?.sources.length ? (

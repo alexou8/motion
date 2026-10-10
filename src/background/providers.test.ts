@@ -63,6 +63,59 @@ describe('resolveSessionProvider', () => {
     });
   });
 
+  it('tells the panel to open AI settings for the disclosure and provider-permission blockers', async () => {
+    const disclosure = await resolveSessionProvider({
+      preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'openai' }),
+      secrets: secrets({ openai: 'sk-test-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => true) },
+    });
+    expect(disclosure).toMatchObject({ kind: 'blocked', blocker: { kind: 'permission', action: 'open-ai-settings' } });
+
+    const hostAccess = await resolveSessionProvider({
+      preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'anthropic', cloudDisclosureAccepted: ['anthropic'] }),
+      secrets: secrets({ anthropic: 'sk-ant-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => false) },
+    });
+    expect(hostAccess).toMatchObject({ kind: 'blocked', blocker: { kind: 'permission', action: 'open-ai-settings' } });
+  });
+
+  it('blocks with the key-rejected message when the account listing says the key is invalid, rather than using the curated list', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }), { status: 401 }));
+    const result = await resolveSessionProvider({
+      preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'anthropic', cloudDisclosureAccepted: ['anthropic'] }),
+      secrets: secrets({ anthropic: 'sk-ant-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => true) },
+      fetchImpl,
+    });
+    expect(result).toEqual({ kind: 'blocked', blocker: { kind: 'provider', message: 'Your Anthropic API key is no longer valid. Reconnect.' } });
+  });
+
+  it('still proceeds with the curated list when the listing fails for a transient reason', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ bad: true }], has_more: false, last_id: null }), { status: 200 }));
+    const result = await resolveSessionProvider({
+      preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'anthropic', cloudDisclosureAccepted: ['anthropic'] }),
+      secrets: secrets({ anthropic: 'sk-ant-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => true) },
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ kind: 'ready', providerId: 'anthropic', model: 'claude-haiku-5-5' });
+  });
+
+  it('resolves "recommended" to the preferred model rather than the first (priciest) model the account lists', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: 'claude-fable-5-1' }, { id: 'claude-opus-5-5' }, { id: 'claude-sonnet-5-5' }],
+      has_more: false,
+      last_id: null,
+    }), { status: 200 }));
+    const result = await resolveSessionProvider({
+      preferencesStore: preferences({ ...DEFAULT_AI_PREFERENCES, providerId: 'anthropic', model: 'recommended', cloudDisclosureAccepted: ['anthropic'] }),
+      secrets: secrets({ anthropic: 'sk-ant-CANARY1234567890' }),
+      permissions: { contains: vi.fn(async () => true) },
+      fetchImpl,
+    });
+    expect(result).toMatchObject({ kind: 'ready', model: 'claude-sonnet-5-5' });
+  });
+
   it('blocks a disclosed cloud provider without its narrow host permission', async () => {
     const contains = vi.fn(async () => false);
     const result = await resolveSessionProvider({
@@ -149,6 +202,24 @@ describe('providerBlockerFromError', () => {
     );
     expect(blocker).toEqual({ kind: 'provider', message: 'Your Anthropic API key is no longer valid. Reconnect.' });
     expect(JSON.stringify(blocker)).not.toContain('CANARY');
+  });
+
+  it('marks a needs-permission provider error with the open-settings action', () => {
+    const blocker = providerBlockerFromError(new ProviderError('needs-permission', 'x'), 'Anthropic');
+    expect(blocker).toMatchObject({ kind: 'permission', action: 'open-ai-settings' });
+  });
+
+  it.each([
+    ['timeout', 'Anthropic took too long to respond. Try again.'],
+    ['forbidden', 'Your Anthropic API key doesn’t have permission to use this model. Check the key’s access or choose another model in Motion’s settings.'],
+    ['server-error', 'Anthropic is having trouble right now. Try again shortly.'],
+  ] as const)('explains a %s error in its own words', (kind, message) => {
+    expect(providerBlockerFromError(new ProviderError(kind, 'raw'), 'Anthropic')).toEqual({ kind: 'provider', message });
+  });
+
+  it('keeps the provider detail for a rejected request', () => {
+    const blocker = providerBlockerFromError(new ProviderError('bad-request', 'Anthropic rejected the request (invalid_request_error: too long).'), 'Anthropic');
+    expect(blocker.message).toContain('too long');
   });
 
   it('turns a retry-after duration into a rate-limit blocker with retryAt', () => {

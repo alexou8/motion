@@ -1,6 +1,7 @@
 import { EMPTY_PANEL_STATE, panelStateSchema, type PanelState } from '@/core/view';
 import { originPatternFor } from '@/platform/permissions';
 import { resolveAdapter } from '@/core/adapters';
+import { evaluateAssessmentContext } from '@/core/policy';
 import { z } from 'zod';
 import type { MotionBridge, MotionCommand, UiCommandResult } from './bridge';
 import { parseWorkerResult } from './responses';
@@ -221,6 +222,21 @@ export function startLocalInferenceHost(
   };
 }
 
+/** How long a supported tab may stay unobserved before the panel suggests a reload. */
+const RELOAD_HINT_GRACE_MS = 600;
+
+/**
+ * The assessment verdict for a tab Motion has not observed, from its URL and
+ * title alone. Returns the restriction reason, or null when the page type is
+ * not an assessment.
+ */
+function restrictionFromUrl(url: string, title?: string): string | null {
+  const pageType = resolveAdapter(url)?.classifyUrl(url);
+  if (!pageType) return null;
+  const verdict = evaluateAssessmentContext({ pageType, url, ...(title ? { pageTitle: title } : {}) });
+  return verdict.restricted ? verdict.reason : null;
+}
+
 export function createRuntimeBridge(): MotionBridge {
   let state: PanelState = EMPTY_PANEL_STATE;
   let refreshSequence = 0;
@@ -231,20 +247,39 @@ export function createRuntimeBridge(): MotionBridge {
     for (const listener of listeners) listener();
   };
 
-  const refresh = async (): Promise<void> => {
+  /**
+   * Reads the worker's state. A failure keeps the last good state but marks it
+   * with `workerError`, so the panel can say so and offer Retry instead of
+   * silently showing Idle forever. Returns the error message, or null.
+   */
+  const refresh = async (): Promise<string | null> => {
     const sequence = ++refreshSequence;
     const response = await ask({ type: 'get-state' });
     const envelope = workerResponseSchema.safeParse(response);
-    if (!envelope.success || !envelope.data.ok) return;
+    const fail = (message: string): string => {
+      if (sequence === refreshSequence) {
+        state = { ...state, workerError: message };
+        emit();
+      }
+      return message;
+    };
+    if (!envelope.success)
+      return fail('Motion received an invalid response from its background worker.');
+    if (!envelope.data.ok)
+      return fail(envelope.data.error ?? 'Motion could not reach its background worker.');
     const parsed = panelStateSchema.safeParse(envelope.data.result);
     // The worker is our own code, but it is still a boundary: a shape we do not
     // recognise is dropped rather than rendered.
-    if (!parsed.success) return;
+    if (!parsed.success)
+      return fail(
+        "Motion's background worker sent a state this panel does not recognise. Reload Motion from the Extensions page.",
+      );
 
     const next = await withActiveTabContext(parsed.data);
-    if (sequence !== refreshSequence) return;
+    if (sequence !== refreshSequence) return null;
     state = next;
     emit();
+    return null;
   };
 
   /**
@@ -264,10 +299,15 @@ export function createRuntimeBridge(): MotionBridge {
    * a workspace for a page it had already decided it could not read, and never
    * telling a signed-out student to sign in again.
    */
+  // A tab that just finished loading has not had time for its content script
+  // to report in; offering "Reload this tab" immediately would flash on every
+  // navigation. Remember when each tab was first seen unobserved and only show
+  // the hint once that has lasted a moment.
+  const unobservedSince = new Map<number, number>();
   const withActiveTabContext = async (base: PanelState): Promise<PanelState> => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const url = tab?.url;
-    if (!url) return { ...base, connection: 'idle' };
+    if (!url) return { ...base, connection: 'idle', tabNeedsReload: false };
 
     if (base.page.restrictionReason) return { ...base, connection: 'restricted' };
 
@@ -282,8 +322,33 @@ export function createRuntimeBridge(): MotionBridge {
     const origin = originPatternFor(url);
     if (origin) {
       const granted = await chrome.permissions.contains({ origins: [origin] });
-      if (!granted) return { ...base, connection: 'permission-needed' };
+      // The worker has no observation for a tab it cannot read, so its page
+      // url is null; "Request page permission" needs the tab's own url.
+      if (!granted)
+        return {
+          ...base,
+          connection: 'permission-needed',
+          page: { ...base.page, url, title: base.page.title || (tab.title ?? '') },
+        };
     }
+
+    if (tab.status === 'loading' && tab.id !== undefined) unobservedSince.delete(tab.id);
+
+    // A supported, permitted tab the worker has never heard from has no
+    // content script: it was open before Motion was installed or updated.
+    // With no observation there is no restriction verdict either, so the URL
+    // alone decides: an attempt in progress is never offered a reload.
+    if (base.connection === 'idle' && !base.page.observedAt && tab.status !== 'loading' && tab.id !== undefined) {
+      const restriction = restrictionFromUrl(url, tab.title);
+      if (restriction) return { ...base, connection: 'restricted', page: { ...base.page, url, restrictionReason: restriction } };
+      const now = Date.now();
+      const since = unobservedSince.get(tab.id) ?? now;
+      unobservedSince.set(tab.id, since);
+      if (now - since >= RELOAD_HINT_GRACE_MS) return { ...base, tabNeedsReload: true };
+      setTimeout(() => void refresh(), RELOAD_HINT_GRACE_MS - (now - since) + 50);
+      return base;
+    }
+    if (tab.id !== undefined) unobservedSince.delete(tab.id);
 
     return base;
   };
@@ -380,6 +445,30 @@ export function createRuntimeBridge(): MotionBridge {
         case 'open-settings':
           await chrome.runtime.openOptionsPage();
           return { ok: true };
+        case 'refresh': {
+          const error = await refresh();
+          return error === null
+            ? { ok: true }
+            : { ok: false, code: 'transport-unavailable', message: error, recoverable: true };
+        }
+        case 'reload-tab': {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab?.id === undefined || !tab.url || !resolveAdapter(tab.url))
+            return {
+              ok: false,
+              code: 'target-unavailable',
+              message: 'Motion could not find a Brightspace tab to reload.',
+            };
+          // Reloading a graded, timed or proctored attempt could end it.
+          if (restrictionFromUrl(tab.url, tab.title))
+            return {
+              ok: false,
+              code: 'restricted',
+              message: 'Motion will not reload this tab: it looks like an assessment in progress.',
+            };
+          await chrome.tabs.reload(tab.id);
+          return { ok: true };
+        }
         case 'request-permission': {
           // Must run inside the click that produced it: `chrome.permissions
           // .request` needs a live user gesture and loses it at the first
@@ -419,6 +508,11 @@ export function createRuntimeBridge(): MotionBridge {
             await ask({ type: 'request-extraction', tabId: tab.id }),
           );
           await refresh();
+          // No content script in the tab: show the reload guidance in place.
+          if (!result.ok && result.code === 'content-script-missing') {
+            state = { ...state, tabNeedsReload: true };
+            emit();
+          }
           return result;
         }
 

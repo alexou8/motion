@@ -17,7 +17,7 @@ export interface PortLike {
   name: string;
   postMessage(message: unknown): void;
   onMessage: { addListener(fn: (message: unknown) => void): void; removeListener(fn: (message: unknown) => void): void };
-  onDisconnect: { addListener(fn: () => void): void };
+  onDisconnect: { addListener(fn: () => void): void; removeListener?(fn: () => void): void };
 }
 
 function send(port: PortLike, frame: HostFrame): void {
@@ -42,6 +42,18 @@ export function attachInferenceHost(port: PortLike, provider: AIProvider): () =>
       return;
     }
 
+    if (frame.type === 'availability') {
+      void (async () => {
+        try {
+          const { status, message, retryAfterMs } = await provider.availability();
+          send(port, { type: 'availability', requestId: frame.requestId, status, message, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) });
+        } catch {
+          send(port, { type: 'availability', requestId: frame.requestId, status: 'unavailable', message: 'Chrome’s on-device model is not available right now.' });
+        }
+      })();
+      return;
+    }
+
     const controller = new AbortController();
     controllers.set(frame.requestId, controller);
 
@@ -52,8 +64,12 @@ export function attachInferenceHost(port: PortLike, provider: AIProvider): () =>
         }
         send(port, { type: 'done', requestId: frame.requestId });
       } catch (err) {
+        // Only a typed ProviderError carries text written for the student; any
+        // other error's message is an internal detail and stays in the panel.
         const kind = err instanceof ProviderError ? err.kind : 'bad-response';
-        const message = err instanceof Error ? err.message : 'Something went wrong.';
+        const message = err instanceof ProviderError
+          ? err.message
+          : 'Chrome’s on-device model ran into a problem. Try again.';
         send(port, { type: 'error', requestId: frame.requestId, kind, message });
       } finally {
         controllers.delete(frame.requestId);

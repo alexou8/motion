@@ -1,12 +1,16 @@
 # Motion builds and releases
 
-Motion distributes unpacked developer builds on GitHub. These workflows do not
-publish to the Chrome Web Store or change the extension's version automatically.
+Motion ships through the Chrome Web Store for students, and distributes
+unpacked developer builds on GitHub for review and testing. The GitHub
+workflows do not publish to the Chrome Web Store or change the extension's
+version automatically; store releases are uploaded by hand from a tagged
+version (see `CHROMEWEBSTORE.md`).
 
 ## Download channels
 
 | Channel                | Download                                                                                                                  | Behaviour                                                                                                                      |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Chrome Web Store       | The published listing                                                                                                     | The supported channel for students. Chrome installs updates automatically; no developer mode or manual reload is needed.      |
 | Main development build | [motion-extension-latest.zip](https://github.com/alexou8/motion/releases/download/main-build/motion-extension-latest.zip) | Refreshed after a validated push to `main`, including merged pull requests. A prerelease that may include unfinished features. |
 | Versioned release      | [Latest versioned release](https://github.com/alexou8/motion/releases/latest)                                             | Published by a matching `vX.Y.Z` tag. Published assets are never replaced by these workflows.                                  |
 | Branch or pull request | The **Build** run's Artifacts section                                                                                     | An unpacked extension for review; artifacts expire after 30 days and require GitHub access.                                    |

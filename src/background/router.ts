@@ -1,3 +1,4 @@
+import type { TruncationReason } from '@/core/ai/types';
 import type { Message } from '@/core/messaging';
 import {
   checklistSchema,
@@ -38,9 +39,10 @@ import { withLock } from '@/platform/locks';
 import { ChromeTabs, groupTitle, type LiveTab, type TabsCapability } from '@/platform/tabs';
 import { askContentScript, sendToContentScript } from './contentBridge';
 import { adoptWorkspaceTab, createOrReuseWorkspaceSession, handleSessionMessage } from './sessions';
-import { buildPanelState as buildAgentPanelState } from './panelState';
+import { buildPanelState as buildAgentPanelState, discoveryBusy } from './panelState';
 import { handleAiMessage } from './aiHandlers';
-import { resolveSessionProvider } from './providers';
+import { providerBlockerFromError, resolveSessionProvider } from './providers';
+import { warn } from './log';
 import { discoveryRunResultSchema } from '@/core/adapters/d2lDiscovery';
 import { reconcileReminders } from './reminders';
 import { handleDocumentMessage, forgetDocumentTab } from './documents';
@@ -244,8 +246,11 @@ export async function handlePopupCommand(
       return { action: message.action, sessionId: message.sessionId ?? undefined };
     case 'read-current-page': {
       const result = await requestExtraction(message.tabId);
-      if (!result.requested)
+      if (!result.requested) {
+        if (result.reason === 'content-script-missing')
+          throw new UiCommandError(result.reason, result.message ?? CONTENT_SCRIPT_MISSING);
         throw new UiCommandError('page-unavailable', 'Motion could not read this page. Wait for it to load, then try again.');
+      }
       return { action: message.action, requested: true };
     }
     case 'scan-deadlines': {
@@ -348,7 +353,11 @@ async function handlePageObserved(
       };
 
   await chrome.storage.session.set({ [observationKey(tabId)]: observation });
-  if (!message.restricted) void maybeAutomaticCourseScan(tabId, message.url);
+  if (!message.restricted) {
+    void maybeAutomaticCourseScan(tabId, message.url).catch((error) => {
+      void warn('Motion: automatic course scan failed', error);
+    });
+  }
   return { stored: !message.restricted };
 }
 
@@ -364,9 +373,7 @@ type DiscoverySettings = {
   result?: unknown;
 };
 
-export function discoveryBusy(settings: DiscoverySettings | undefined, now: Date): boolean {
-  return settings?.busy === true && typeof settings.busyUntil === 'string' && new Date(settings.busyUntil).getTime() > now.getTime();
-}
+export { discoveryBusy };
 export function automaticDiscoveryDue(lastAutomaticAt: unknown, now: Date): boolean {
   const last = typeof lastAutomaticAt === 'string' ? new Date(lastAutomaticAt).getTime() : 0;
   return !Number.isFinite(last) || now.getTime() - last >= AUTOMATIC_SCAN_INTERVAL_MS;
@@ -759,12 +766,16 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
   });
 
   let draft: string;
+  let truncated: TruncationReason | null = null;
   try {
     draft = await resolved.provider.generate({
       system: composed.instruction,
       messages: [{ role: 'user', content: buildPrompt(composed) }],
       model: resolved.model,
-      ...(composed.targetWords ? { maxOutputTokens: composed.targetWords } : {}),
+      // Words are not tokens, and current models spend some of the budget
+      // reasoning before they write; leave room so drafts are not cut off.
+      ...(composed.targetWords ? { maxOutputTokens: Math.max(1_024, composed.targetWords * 2) } : {}),
+      onTruncated: (reason) => { truncated = reason; },
     });
   } catch (error) {
     return {
@@ -775,6 +786,10 @@ async function handleComposeDraft(message: Extract<Message, { type: 'compose-dra
       reason: error instanceof Error ? error.message : 'Drafting failed.',
     };
   }
+
+  if (truncated === 'refusal')
+    return { noteId: null, draft: '', label: '', unsupported: [], reason: 'The selected AI provider declined this request. Try rephrasing it.' };
+  if (truncated === 'max-tokens') draft = `${draft}\n\n[Draft cut short by the model’s length limit. Ask for a shorter draft or continue from here.]`;
 
   const now = new Date().toISOString();
   const noteId = crypto.randomUUID();
@@ -873,21 +888,29 @@ export async function handleAskAboutPage(
       question: message.question,
       history: message.history,
     });
+    let truncated: TruncationReason | null = null;
     const answer = model
       ? await model.generate({ ...prompt, targetWords: 250 })
       : await provider!.provider.generate({
           system: prompt.instruction,
           messages: [{ role: 'user', content: buildPrompt(prompt) }],
           model: provider!.model,
-          maxOutputTokens: 250,
+          maxOutputTokens: 1_024,
+          onTruncated: (reason) => { truncated = reason; },
         });
+    if (truncated === 'refusal') return { answer: null, reason: 'The selected AI provider declined this question. Try rephrasing it.' };
     return {
-      answer: answer.trim(),
+      answer: truncated === 'max-tokens' ? `${answer.trim()}\n\n(Reply cut short by the model’s length limit.)` : answer.trim(),
       label: model ? CHAT_LABEL : 'Answered by Motion from this page. Check it against the page before relying on it.',
     };
-  } catch {
-    console.warn('Motion on-device model generation failed.');
-    return { answer: null, reason: 'The on-device model could not answer. Try again.' };
+  } catch (error) {
+    if (model || !provider) {
+      console.warn('Motion on-device model generation failed.');
+      return { answer: null, reason: 'The on-device model could not answer. Try again.' };
+    }
+    // The blocker message is written for students and carries no prompt text.
+    console.warn('Motion page answer generation failed.');
+    return { answer: null, reason: providerBlockerFromError(error, provider.displayName).message };
   }
 }
 
@@ -985,7 +1008,10 @@ export async function handlePrepareWorkspace(
 
     const created = await engine.create(
       PREPARE_WORKSPACE,
-      { url: page, sources, courseCode: course?.code ?? null, label, ...(sessionId ? { sessionId } : {}) },
+      // `currentTabId` lets a session workspace read the student's own tab in
+      // place and leave that page out of the tabs it opens, instead of opening
+      // two more copies of the page the student started from.
+      { url: page, sources, courseCode: course?.code ?? null, label, ...(sessionId ? { sessionId, currentTabId: tabId } : {}) },
       { courseId: course?.id ?? null, title: workspaceGroupTitle(course?.code, label) },
     );
     return { workflowId: created.id };
@@ -1146,7 +1172,18 @@ async function currentCourseId(tabId?: number): Promise<string | null> {
   return (await courseForUrl(observation?.url))?.id ?? null;
 }
 
-async function requestExtraction(tabId: number | undefined): Promise<{ requested: boolean }> {
+/**
+ * A declined extraction. `reason` is additive: it lets the panel tell a tab
+ * that only needs reloading from one Motion cannot read at all, and `message`
+ * is the plain-language text to show for it.
+ */
+export type ExtractionRequest =
+  | { requested: true }
+  | { requested: false; reason?: 'content-script-missing'; message?: string };
+
+const CONTENT_SCRIPT_MISSING = 'Reload this tab so Motion can read it.';
+
+async function requestExtraction(tabId: number | undefined): Promise<ExtractionRequest> {
   if (tabId === undefined) return { requested: false };
   try {
     // The content script does the reading; the worker never scrapes a page.
@@ -1156,7 +1193,12 @@ async function requestExtraction(tabId: number | undefined): Promise<{ requested
     // No content script in the tab: the page loaded before the extension, or it
     // is not a page Motion is injected into. Reporting success here left the
     // panel waiting for a result that was never coming.
-    return { requested: false };
+    const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+    // A supported LMS page without a listener was opened before Motion was
+    // installed or updated; Chrome only injects into pages loaded afterwards.
+    return tab?.url && resolveAdapter(tab.url)
+      ? { requested: false, reason: 'content-script-missing', message: CONTENT_SCRIPT_MISSING }
+      : { requested: false };
   }
 }
 

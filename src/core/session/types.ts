@@ -54,12 +54,21 @@ export const blockerKindSchema = z.enum([
 ]);
 export type BlockerKind = z.infer<typeof blockerKindSchema>;
 
+/**
+ * What the panel should offer for a blocker. Producers set this explicitly;
+ * the panel must not infer it from `kind`, because the same kind (for example
+ * `permission`) can mean a page-origin grant or a provider setting.
+ */
+export const blockerActionSchema = z.enum(['open-ai-settings', 'retry-model', 'page-permission']);
+export type BlockerAction = z.infer<typeof blockerActionSchema>;
+
 export const sessionBlockerSchema = z.object({
   id: z.string().min(1),
   kind: blockerKindSchema,
   message: z.string().min(1),
   retryAt: z.string().datetime().optional(),
   approvalId: z.string().optional(),
+  action: blockerActionSchema.optional(),
 });
 export type SessionBlocker = z.infer<typeof sessionBlockerSchema>;
 

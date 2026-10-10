@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { agentSessionSchema } from '@/core/session';
 import { deleteDatabase, openDatabase } from '@/core/storage/db';
 import { sessionRepository } from '@/core/storage/repositories';
+import { Repository } from '@/core/storage/repository';
+import { STORE } from '@/core/storage/schema';
+import { courseSchema } from '@/core/domain';
 import { FakeTabs } from '@/test/fakeTabs';
 import { registerCloudRequest, releaseCloudRequest } from './cloudRequests';
 
@@ -68,6 +71,30 @@ describe('session lifecycle', () => {
     expect(stored?.conversation.filter((message) => message.role === 'student').map((message) => message.text))
       .toEqual(['Use the connected provider.']);
     db.close();
+  });
+});
+
+describe('session course matching', () => {
+  it('matches the page course by its whole id, not a URL prefix', async () => {
+    runModelTurn.mockResolvedValueOnce(undefined);
+    const db = await openDatabase();
+    const courses = new Repository(db, STORE.courses, courseSchema);
+    // Synthetic courses whose ids share a prefix.
+    for (const externalId of ['12', '123']) {
+      await courses.put(courseSchema.parse({
+        id: `d2l:${externalId}`, platformId: 'd2l', name: `Synthetic course ${externalId}`,
+        externalId, lastVerifiedAt: NOW, archived: false,
+      }));
+    }
+    db.close();
+    await chrome.storage.session.set({ 'observation:5': {
+      url: 'https://mylearningspace.wlu.ca/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=123&db=1',
+      pageType: 'course-home',
+    } });
+
+    const result = await handleSessionMessage({ type: 'session-create', goal: 'Plan my week.', tabId: 5 }) as { session: { courseId: string | null } };
+
+    expect(result.session.courseId).toBe('d2l:123');
   });
 });
 
@@ -259,6 +286,57 @@ describe('popup workspace session', () => {
       reason: 'This tab is in a group chosen by the student.',
     });
     expect((await tabs.get(groupedTab))?.groupId).not.toBeNull();
+  });
+
+  it('groups into a new tab group when Chrome deleted the stored one', async () => {
+    const tabs = new FakeTabs();
+    const session = await createOrReuseWorkspaceSession({
+      title: 'Synthetic assignment', goal: 'Work on Synthetic assignment.', courseId: 'course-1',
+      pageUrl: 'https://lms.example.test/course-1/assignment-2', browserSessionKey: tabs.currentSession,
+    });
+    const db = await openDatabase();
+    const stored = await sessionRepository(db).get(session.id);
+    await sessionRepository(db).put({ ...stored!, workspace: { ...stored!.workspace, groupId: 555 } });
+    db.close();
+    const tabId = tabs.addStudentTab('https://lms.example.test/course-1/assignment-2');
+
+    await expect(adoptWorkspaceTab(session.id, tabId, tabs)).resolves.toEqual({ updated: true });
+
+    const after = await sessionRepository(await openDatabase()).get(session.id);
+    expect(after?.workspace.groupId).toBe(100);
+    expect(after?.workspace.adoptedTabIds).toEqual([tabId]);
+    expect((await tabs.get(tabId))?.groupId).toBe(100);
+  });
+
+  it('adds the student’s chosen tab, including a removed one, through the checked grouping path', async () => {
+    const tabs = new FakeTabs();
+    const session = await createOrReuseWorkspaceSession({
+      title: 'Synthetic assignment', goal: 'Work on Synthetic assignment.', courseId: 'course-1',
+      pageUrl: 'https://lms.example.test/course-1/assignment-2', browserSessionKey: tabs.currentSession,
+    });
+    const releasedTab = tabs.addStudentTab('https://lms.example.test/course-1/assignment-2');
+    // Not one of the session's sources: an explicit "Add this tab" still works.
+    const otherPage = tabs.addStudentTab('https://lms.example.test/course-1/reading-3');
+    const attempt = tabs.addStudentTab('https://mylearningspace.wlu.ca/d2l/lms/quizzing/user/attempt/201?ou=999999');
+    const db = await openDatabase();
+    const stored = await sessionRepository(db).get(session.id);
+    await sessionRepository(db).put({ ...stored!, workspace: { ...stored!.workspace, releasedTabIds: [releasedTab] } });
+    db.close();
+
+    await expect(handleSessionMessage({ type: 'session-tab', sessionId: session.id, tabId: releasedTab, op: 'adopt' }, tabs))
+      .resolves.toMatchObject({ updated: true });
+    await expect(handleSessionMessage({ type: 'session-tab', sessionId: session.id, tabId: otherPage, op: 'adopt' }, tabs))
+      .resolves.toMatchObject({ updated: true });
+    await expect(handleSessionMessage({ type: 'session-tab', sessionId: session.id, tabId: attempt, op: 'adopt' }, tabs))
+      .resolves.toEqual({ updated: false, reason: 'Motion does not add a graded attempt to a workspace.' });
+
+    const after = await sessionRepository(await openDatabase()).get(session.id);
+    expect(after?.workspace.adoptedTabIds).toEqual([releasedTab, otherPage]);
+    expect(after?.workspace.ownedTabIds).toEqual([]);
+    expect(after?.workspace.releasedTabIds).toEqual([]);
+    expect((await tabs.get(releasedTab))?.groupId).toBe(after?.workspace.groupId);
+    expect((await tabs.get(otherPage))?.groupId).toBe(after?.workspace.groupId);
+    expect((await tabs.get(attempt))?.groupId).toBeNull();
   });
 
   it('re-reads the tab immediately before grouping to preserve a navigation race', async () => {

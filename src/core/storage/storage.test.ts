@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
-import { openDatabase, deleteDatabase, putRecord, getAllRecords } from './db';
+import { openDatabase, deleteDatabase, putRecord, getAllRecords, DatabaseVersionError } from './db';
 import { Repository } from './repository';
 import { DB_VERSION, MIGRATIONS, STORE } from './schema';
 import { courseSchema } from '../domain';
@@ -165,5 +165,18 @@ describe('schema guards', () => {
     });
     expect(minimal.archived).toBe(false);
     expect(z.string().safeParse(minimal.code).success).toBe(false);
+  });
+});
+
+describe('opening data saved by a newer Motion', () => {
+  it('explains a rollback in plain language instead of a raw VersionError', async () => {
+    await deleteDatabase(NAME);
+    const newer = await openDatabase(NAME, DB_VERSION + 1);
+    newer.close();
+
+    const opening = openDatabase(NAME, DB_VERSION);
+    await expect(opening).rejects.toBeInstanceOf(DatabaseVersionError);
+    await expect(opening).rejects.toThrow('newer version of Motion');
+    await deleteDatabase(NAME);
   });
 });

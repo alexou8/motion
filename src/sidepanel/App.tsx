@@ -1,18 +1,24 @@
-import { useEffect, useRef, useSyncExternalStore } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { EMPTY_PANEL_STATE, type PanelState } from '../core/view/state';
 import { cn } from '../ui/components/cn';
-import { MotionMark } from '../ui/components';
+import { Button, Callout, MotionMark } from '../ui/components';
+import { FixedNowContext, useNow } from '../ui/useNow';
 import { motionCommandSchema, type MotionBridge, type MotionCommand } from './bridge';
-import { useState } from 'react';
+import { z } from 'zod';
 import { Home, SessionView } from './views';
+import { MESSAGE_MAX_LENGTH } from './views/SessionView';
 import { CourseworkView } from './views/CourseworkView';
 import { LibraryView } from './views/LibraryView';
 
 export interface AppProps {
   bridge: MotionBridge;
+  /** A fixed clock (tests). Omitted, relative times tick on their own. */
   now?: Date;
   className?: string;
 }
+
+/** Relative copy ("read just now", "2m ago") is minute-granular. */
+const CLOCK_INTERVAL_MS = 30_000;
 
 function usePanelState(bridge: MotionBridge): PanelState {
   return useSyncExternalStore(bridge.subscribe, bridge.getState, bridge.getState);
@@ -76,8 +82,10 @@ function PanelHeader({ state, onSettings }: { state: PanelState; onSettings: () 
   );
 }
 
-export function App({ bridge, now = new Date(), className }: AppProps) {
+export function App({ bridge, now: fixedNow, className }: AppProps) {
   const state = usePanelState(bridge);
+  const liveNow = useNow(CLOCK_INTERVAL_MS, fixedNow === undefined);
+  const now = fixedNow ?? liveNow;
   const [view, setView] = useState<'workspace' | 'coursework' | 'library'>('workspace');
   const main = useRef<HTMLElement>(null);
   const restricted = state.connection === 'restricted';
@@ -93,12 +101,18 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
   const [feedback, setFeedback] = useState<{ kind: 'pending' | 'error'; text: string } | null>(
     null,
   );
+  // Feedback belongs to the screen that produced it; a stale error must not
+  // follow the student to another view.
+  useEffect(() => setFeedback(null), [screen]);
   const send = async (command: MotionCommand): Promise<boolean> => {
-    const parsed = motionCommandSchema.parse(command);
-    const label = commandLabel(parsed);
-    setFeedback({ kind: 'pending', text: `${label}…` });
+    const label = commandLabel(command);
     try {
-      const result = await bridge.send(parsed);
+      // Inside the try: a payload the schema rejects (an over-long message,
+      // say) must surface as feedback rather than silently doing nothing.
+      const parsed = motionCommandSchema.safeParse(command);
+      if (!parsed.success) throw new Error(validationMessage(command, parsed.error));
+      setFeedback({ kind: 'pending', text: `${label}…` });
+      const result = await bridge.send(parsed.data);
       if (isFailedCommandResult(result)) throw new Error(result.message);
       setFeedback(null);
       return true;
@@ -116,98 +130,142 @@ export function App({ bridge, now = new Date(), className }: AppProps) {
   const openSession = (sessionId: string | null) => send({ type: 'session-select', sessionId });
 
   return (
-    <div
-      className={cn('flex h-dvh flex-col overflow-hidden bg-paper font-sans text-ink', className)}
-    >
-      <a href="#main-content" className="motion-skip-link">
-        Skip to content
-      </a>
-      <PanelHeader state={state} onSettings={() => void send({ type: 'open-settings' })} />
-      {!restricted && !state.activeSession ? (
-        <nav className="motion-panel-nav" aria-label="Workspace">
-          <button
-            type="button"
-            aria-current={view === 'workspace' ? 'page' : undefined}
-            onClick={() => setView('workspace')}
-          >
-            Workspace
-          </button>
-          <button
-            type="button"
-            aria-current={view === 'library' ? 'page' : undefined}
-            onClick={() => setView('library')}
-          >
-            Library
-          </button>
-          <button
-            type="button"
-            aria-current={view === 'coursework' ? 'page' : undefined}
-            onClick={() => setView('coursework')}
-          >
-            Coursework{' '}
-            <span className="font-mono text-xs">
-              {state.tasks.filter((task) => !task.archived && task.status !== 'archived').length}
-            </span>
-          </button>
-        </nav>
-      ) : null}
-      <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto" id="main-content">
-        <div className="mx-auto grid w-full max-w-lg content-start gap-6 px-4 py-5">
-          {feedback ? (
-            <p
-              className={cn(
-                'motion-command-feedback',
-                feedback.kind === 'error'
-                  ? 'motion-command-feedback-error'
-                  : 'motion-command-feedback-pending',
-              )}
-              role={feedback.kind === 'error' ? 'alert' : 'status'}
-              aria-live="polite"
+    <FixedNowContext.Provider value={fixedNow}>
+      <div
+        className={cn('flex h-dvh flex-col overflow-hidden bg-paper font-sans text-ink', className)}
+      >
+        <a href="#main-content" className="motion-skip-link">
+          Skip to content
+        </a>
+        <PanelHeader state={state} onSettings={() => void send({ type: 'open-settings' })} />
+        {!restricted && !state.activeSession ? (
+          <nav className="motion-panel-nav" aria-label="Workspace">
+            <button
+              type="button"
+              aria-current={view === 'workspace' ? 'page' : undefined}
+              onClick={() => setView('workspace')}
             >
-              {feedback.text}
-            </p>
-          ) : null}
-          {!restricted && state.page.warnings.length > 0 ? (
-            <aside
-              className="border-l-2 border-attention pl-3 text-xs text-attention"
-              aria-label="Page read notices"
+              Workspace
+            </button>
+            <button
+              type="button"
+              aria-current={view === 'library' ? 'page' : undefined}
+              onClick={() => setView('library')}
             >
-              {state.page.warnings.map((warning, index) => (
-                <p key={index}>{warning}</p>
-              ))}
-            </aside>
-          ) : null}
-          {restricted ? (
-            <Home
-              state={state}
-              send={send}
-              onOpenSession={(sessionId) => openSession(sessionId)}
-              now={now}
-            />
-          ) : state.activeSession ? (
-            <SessionView
-              state={state}
-              session={state.activeSession}
-              send={send}
-              onBack={() => openSession(null)}
-              now={now}
-            />
-          ) : view === 'coursework' ? (
-            <CourseworkView state={state} send={send} />
-          ) : view === 'library' ? (
-            <LibraryView state={state} bridge={bridge} />
-          ) : (
-            <Home
-              state={state}
-              send={send}
-              onOpenSession={(sessionId) => openSession(sessionId)}
-              now={now}
-            />
-          )}
-        </div>
-      </main>
-    </div>
+              Library
+            </button>
+            <button
+              type="button"
+              aria-current={view === 'coursework' ? 'page' : undefined}
+              onClick={() => setView('coursework')}
+            >
+              Coursework{' '}
+              <span className="font-mono text-xs">
+                {state.tasks.filter((task) => !task.archived && task.status !== 'archived').length}
+              </span>
+            </button>
+          </nav>
+        ) : null}
+        <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto" id="main-content">
+          <div className="mx-auto grid w-full max-w-lg content-start gap-6 px-4 py-5">
+            {state.workerError ? (
+              <Callout variant="warning" title="Motion could not load its latest state">
+                <p>{state.workerError}</p>
+                <Button
+                  variant="secondary"
+                  className="mt-2"
+                  onClick={() => void send({ type: 'refresh' })}
+                >
+                  Retry
+                </Button>
+              </Callout>
+            ) : null}
+            {feedback ? (
+              <div
+                className={cn(
+                  'motion-command-feedback flex items-start justify-between gap-2',
+                  feedback.kind === 'error'
+                    ? 'motion-command-feedback-error'
+                    : 'motion-command-feedback-pending',
+                )}
+              >
+                <p role={feedback.kind === 'error' ? 'alert' : 'status'} aria-live="polite">
+                  {feedback.text}
+                </p>
+                {feedback.kind === 'error' ? (
+                  <button
+                    type="button"
+                    aria-label="Dismiss message"
+                    title="Dismiss message"
+                    onClick={() => setFeedback(null)}
+                    className="-my-1 inline-flex size-6 shrink-0 items-center justify-center rounded-sm text-ink-muted hover:bg-sunken hover:text-ink focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+                  >
+                    <svg
+                      aria-hidden="true"
+                      viewBox="0 0 16 16"
+                      className="size-3"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                    >
+                      <path d="M4 4l8 8M12 4l-8 8" />
+                    </svg>
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
+            {!restricted && state.page.warnings.length > 0 ? (
+              <aside
+                className="border-l-2 border-attention pl-3 text-xs text-attention"
+                aria-label="Page read notices"
+              >
+                {state.page.warnings.map((warning, index) => (
+                  <p key={index}>{warning}</p>
+                ))}
+              </aside>
+            ) : null}
+            {restricted ? (
+              <Home
+                state={state}
+                send={send}
+                onOpenSession={(sessionId) => openSession(sessionId)}
+                now={now}
+              />
+            ) : state.activeSession ? (
+              <SessionView
+                state={state}
+                session={state.activeSession}
+                send={send}
+                onBack={() => openSession(null)}
+                now={now}
+              />
+            ) : view === 'coursework' ? (
+              <CourseworkView state={state} send={send} />
+            ) : view === 'library' ? (
+              <LibraryView state={state} bridge={bridge} />
+            ) : (
+              <Home
+                state={state}
+                send={send}
+                onOpenSession={(sessionId) => openSession(sessionId)}
+                now={now}
+              />
+            )}
+          </div>
+        </main>
+      </div>
+    </FixedNowContext.Provider>
   );
+}
+
+function validationMessage(command: MotionCommand, error: z.ZodError): string {
+  if (
+    command.type === 'session-message' &&
+    error.issues.some((issue) => issue.path[0] === 'text' && issue.code === 'too_big')
+  )
+    return `Messages can be up to ${MESSAGE_MAX_LENGTH.toLocaleString()} characters. Shorten it and send again.`;
+  return `${commandLabel(command)} could not be sent: Motion did not accept that input.`;
 }
 
 function commandLabel(command: MotionCommand): string {
@@ -223,6 +281,9 @@ function commandLabel(command: MotionCommand): string {
   if (command.type === 'decide-approval')
     return command.approved ? 'Confirming action' : 'Denying action';
   if (command.type === 'open-settings') return 'Opening settings';
+  if (command.type === 'refresh') return 'Loading Motion';
+  if (command.type === 'reload-tab') return 'Reloading tab';
+  if (command.type === 'request-permission') return 'Requesting access';
   if (command.type === 'read-page') return 'Reading page';
   if (command.type === 'create-note') return 'Adding note';
   if (command.type === 'scan-all-courses') return 'Scanning courses';

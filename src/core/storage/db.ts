@@ -7,6 +7,17 @@ import { DB_NAME, DB_VERSION, MIGRATIONS, type StoreName } from './schema';
  * extension pays for every dependency in review scrutiny and bundle size.
  */
 
+/** The saved data was written by a newer Motion than the one now installed. */
+export class DatabaseVersionError extends Error {
+  override readonly name = 'DatabaseVersionError';
+  constructor(readonly expectedVersion: number) {
+    super(
+      'Motion’s saved data comes from a newer version of Motion than the one installed. '
+        + 'Update Motion to the latest version to keep using your saved courses and sessions.',
+    );
+  }
+}
+
 export function openDatabase(
   name = DB_NAME,
   version = DB_VERSION,
@@ -35,7 +46,15 @@ export function openDatabase(
       db.onversionchange = () => db.close();
       resolve(db);
     };
-    request.onerror = () => reject(request.error ?? new Error('Failed to open database'));
+    request.onerror = () => {
+      // A stored database newer than this build means Motion was rolled back
+      // to an older version. Opening it would lose data, so say so plainly.
+      if (request.error?.name === 'VersionError') {
+        reject(new DatabaseVersionError(version));
+        return;
+      }
+      reject(request.error ?? new Error('Failed to open database'));
+    };
     request.onblocked = () =>
       reject(new Error('Database upgrade blocked by another open connection'));
   });

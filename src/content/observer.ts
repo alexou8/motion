@@ -7,7 +7,7 @@
  * page; this module never does.
  */
 import { resolveAdapter } from '@/core/adapters';
-import { boundedVisibleText } from '@/core/adapters/dom';
+import { boundedVisibleText, boundedWarning } from '@/core/adapters/dom';
 import { evaluateAssessmentContext } from '@/core/policy';
 import type { Message } from '@/core/messaging';
 import { LIMITS } from '@/core/messaging/contracts';
@@ -24,10 +24,27 @@ const SETTLE_MAX_MS = 3_000;
 
 let lastObservation = '';
 
+/**
+ * After the extension reloads or updates, this script keeps running in the page
+ * but its runtime is gone: `chrome.runtime.id` is undefined and every
+ * `sendMessage` throws "Extension context invalidated". Nothing can be reported
+ * again, so the script stops watching rather than throwing on every settle.
+ */
+function isContextInvalidated(error: unknown): boolean {
+  if (typeof chrome === 'undefined' || !chrome.runtime?.id) return true;
+  return /extension context invalidated/i.test(error instanceof Error ? error.message : String(error));
+}
+
 function send(message: Message): void {
-  // A failure here means the worker is asleep or the panel is closed; neither
-  // is worth surfacing to the student on a page they are reading.
-  void chrome.runtime.sendMessage(message).catch(() => undefined);
+  try {
+    // A rejection means the worker is asleep or the panel is closed; neither
+    // is worth surfacing to the student on a page they are reading.
+    void chrome.runtime.sendMessage(message).catch((error: unknown) => {
+      if (isContextInvalidated(error)) teardown();
+    });
+  } catch (error) {
+    if (isContextInvalidated(error)) teardown();
+  }
 }
 
 function currentUrl(): string {
@@ -85,7 +102,7 @@ function observe(): void {
     pageType: detection.pageType,
     title: document.title.slice(0, 500),
     detectionConfidence: detection.confidence,
-    warnings: detection.warnings.slice(0, 50),
+    warnings: detection.warnings.slice(0, LIMITS.warningCount).map(boundedWarning),
     restricted: assessment.restricted,
   });
 }
@@ -149,7 +166,7 @@ export function extract(requestId: string): void {
     title: document.title.slice(0, LIMITS.title),
     detectionConfidence: detection?.confidence ?? 'low',
     restricted: false,
-    warnings: warnings.slice(0, LIMITS.warningCount),
+    warnings: warnings.slice(0, LIMITS.warningCount).map(boundedWarning),
   });
 
   send({
@@ -159,7 +176,7 @@ export function extract(requestId: string): void {
     course: adapter.extractCourse(input),
     tasks,
     content: adapter.extractPageContent(input),
-    warnings: warnings.slice(0, LIMITS.warningCount),
+    warnings: warnings.slice(0, LIMITS.warningCount).map(boundedWarning),
   });
 }
 
@@ -199,9 +216,11 @@ export function readContent(): { content: unknown } | { refused: string } {
 let lastUrl = currentUrl();
 let urlPoll: ReturnType<typeof setInterval> | undefined;
 let observerStarted = false;
+/** Set once the extension context is gone; nothing restarts after that. */
+let orphaned = false;
 
 function startUrlPoll(): void {
-  if (urlPoll !== undefined) return;
+  if (orphaned || urlPoll !== undefined) return;
   urlPoll = setInterval(() => {
     const url = currentUrl();
     if (url === lastUrl) return;
@@ -246,7 +265,7 @@ const settleObserver = new MutationObserver(() => {
  * structure, and that changes what kind of page this is.
  */
 function watchPage(): void {
-  if (!document.documentElement) return;
+  if (orphaned || !document.documentElement) return;
   settleObserver.observe(document.documentElement, {
     childList: true,
     subtree: true,
@@ -266,7 +285,7 @@ function stopWatchingPage(): void {
 // the service worker may have been suspended meanwhile: re-announce the page.
 // Only on a restore -- pageshow also fires on an ordinary load, where observe()
 // has already run and a second identical report would be noise.
-window.addEventListener('pageshow', (event) => {
+function onPageShow(event: PageTransitionEvent): void {
   if (!event.persisted) return;
   // A restore reuses the document that pagehide tore down, so start watching
   // again before reporting: otherwise the page is observed once and then never
@@ -275,23 +294,36 @@ window.addEventListener('pageshow', (event) => {
   startUrlPoll();
   lastObservation = '';
   observe();
-});
+}
+window.addEventListener('pageshow', onPageShow);
 
 // Returning to a tab is the other moment the panel may be showing something
 // else: the worker keeps one observation for all tabs, so the visible tab
 // re-announces itself.
-document.addEventListener('visibilitychange', () => {
+function onVisibilityChange(): void {
   if (document.visibilityState !== 'visible') return;
   lastObservation = '';
   observe();
-});
+}
+document.addEventListener('visibilitychange', onVisibilityChange);
 
 // Leave the page as we found it: stop watching before it is frozen or unloaded,
 // so the observer and the poll cannot hold a bfcache entry open.
-window.addEventListener('pagehide', () => {
+function onPageHide(): void {
   stopWatchingPage();
   stopUrlPoll();
-});
+}
+window.addEventListener('pagehide', onPageHide);
+
+/** Permanent: an orphaned script has no runtime to report to, ever again. */
+function teardown(): void {
+  orphaned = true;
+  stopWatchingPage();
+  stopUrlPoll();
+  window.removeEventListener('pageshow', onPageShow);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  window.removeEventListener('pagehide', onPageHide);
+}
 
 /** Wires up the observer: first look, URL polling, DOM settle watching, bfcache/visibility handling. */
 export function initObserver(): void {

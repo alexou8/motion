@@ -23,6 +23,7 @@ import type { MotionCommand } from '../bridge';
 import {
   IdleView,
   PermissionNeededView,
+  ReloadTabView,
   RestrictedView,
   SignedOutView,
   UnsupportedView,
@@ -153,7 +154,7 @@ function DeadlineItem({
       ) : null}
       {dueConflict ? (
         <p className="mt-1 text-xs font-medium text-attention">
-          Learn changed this date to{' '}
+          Brightspace changed this date to{' '}
           {dueDateLabel({ ...dueConflict.observed, timeAssumed: true }, timeZone)}; you set{' '}
           {dateLabel}. Needs review.
         </p>
@@ -242,7 +243,7 @@ function DiscoveryControls({
           Find deadlines across your courses?
         </h3>
         <p className="text-xs text-ink-muted">
-          Motion can read deadline data from Learn while you are on {new URL(discovery.host).host}.
+          Motion can read deadline data from Brightspace while you are on {new URL(discovery.host).host}.
           It stays in this browser.
         </p>
         <div className="flex gap-2">
@@ -425,7 +426,7 @@ function DeadlineSections({ state, now }: { state: PanelState; now: Date }) {
       ) : null}
       <DeadlineSummary state={state} tasks={visibleTasks} now={now} />
       <p className="text-xs text-ink-muted">
-        Dates shown in {timeZone}. Check Learn before submitting.
+        Dates shown in {timeZone}. Check Brightspace before submitting.
       </p>
       {state.connection !== 'supported' ? (
         <p className="text-xs text-attention" role="status">
@@ -647,7 +648,9 @@ export function Home({ state, send, onOpenSession, now }: HomeProps) {
   if (state.connection === 'restricted') return <RestrictedView state={state} send={send} />;
   if (state.connection !== 'supported') {
     const connectionView =
-      state.connection === 'idle' ? (
+      state.connection === 'idle' && state.tabNeedsReload ? (
+        <ReloadTabView state={state} send={send} />
+      ) : state.connection === 'idle' ? (
         <IdleView state={state} send={send} />
       ) : state.connection === 'unsupported' ? (
         <UnsupportedView state={state} send={send} />

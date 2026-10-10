@@ -113,6 +113,18 @@ describe('content-script request authentication', () => {
     expect(sendResponse).not.toHaveBeenCalled();
   });
 
+  it('rejects a reused actor nonce while keeping the consumed-nonce window bounded', async () => {
+    const { consumeActorNonce, MAX_CONSUMED_ACTOR_NONCES } = await import('./content-script');
+    const nonce = (index: number) => `00000000-0000-4000-8000-${index.toString().padStart(12, '0')}`;
+
+    expect(consumeActorNonce(nonce(0))).toBe(true);
+    expect(consumeActorNonce(nonce(0))).toBe(false);
+    for (let index = 1; index <= MAX_CONSUMED_ACTOR_NONCES; index += 1) expect(consumeActorNonce(nonce(index))).toBe(true);
+    // Every nonce still inside the window is refused; only the oldest aged out.
+    for (let index = 1; index <= MAX_CONSUMED_ACTOR_NONCES; index += 1) expect(consumeActorNonce(nonce(index))).toBe(false);
+    expect(consumeActorNonce(nonce(0))).toBe(true);
+  });
+
   function makePort(sender: unknown) {
     let messageListener: ((raw: unknown) => void) | undefined;
     let disconnectListener: (() => void) | undefined;

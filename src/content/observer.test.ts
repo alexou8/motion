@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { extractionResultSchema, LIMITS } from '../core/messaging/contracts';
+import { extractionResultSchema, LIMITS, pageObservedSchema } from '../core/messaging/contracts';
 import { extract, readContent } from './observer';
 
 afterEach(() => vi.unstubAllGlobals());
@@ -66,4 +66,20 @@ it('bounds large synthetic lecture modules without losing their real deadline', 
       smallerRead.find((message) => message.type === 'extraction-result'),
     ).tasks,
   ).toHaveLength(1);
+});
+
+it('bounds every reported warning to the contract limit', () => {
+  const pageDocument = new DOMParser().parseFromString('<title>Synthetic</title><main><h1>Synthetic</h1></main>', 'text/html');
+  const sendMessage = vi.fn().mockResolvedValue(undefined);
+  vi.stubGlobal('window', {
+    location: new URL(`https://school.brightspace.com/d2l/unknown/${'segment/'.repeat(200)}`),
+  });
+  vi.stubGlobal('document', pageDocument);
+  vi.stubGlobal('chrome', { runtime: { sendMessage } });
+
+  extract('44444444-4444-4444-8444-444444444444');
+  const messages = sendMessage.mock.calls.map(([message]) => message);
+  expect(() => pageObservedSchema.parse(messages.find((message) => message.type === 'page-observed'))).not.toThrow();
+  const result = extractionResultSchema.parse(messages.find((message) => message.type === 'extraction-result'));
+  expect(result.warnings[0]).toMatch(/^Unsupported D2L route/);
 });

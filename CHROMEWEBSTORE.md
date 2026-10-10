@@ -118,7 +118,8 @@ Published and verified without authentication on 2026-10-04. The public `privacy
 
 | Version | Date       | Changes                                                                                                                                                                              | Status                     |
 | ------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------- |
-| 0.1.2   | 2026-10-04 | Rising M mark; complete deadline views and cached coursework; cloud consent and cancellation fixes; provider-only optional hosts; package/license validation; listing assets and public privacy policy | Chrome Web Store submission pending |
+| 0.1.2   | 2026-10-04 | Rising M mark; complete deadline views and cached coursework; cloud consent and cancellation fixes; provider-only optional hosts; package/license validation; listing assets and public privacy policy | Published to the Chrome Web Store |
+| 0.1.1   | 2026-09-11 | Fixes from a live MyLearningSpace run: list extraction, the assessment-restriction scope, and the panel's connection state                                             | Tagged release (`v0.1.1`)  |
 | 0.1.0   | 2026-09-07 | Initial draft listing and service-worker packaging                                                                                                                                   | Draft                      |
 
 ## Validation and submission checklist
@@ -136,7 +137,7 @@ Before submission:
 - Supply the reviewer instructions below and the prepared demonstration recording through the dashboard's reviewer channel. If authenticated access is requested, supply permitted access to a synthetic course. No reviewer account or private credentials are included in this repository.
 - Run the current live MyLearningSpace checklist in `docs/MANUAL-TESTING.md`. Synthetic browser tests prove package integration, not current institution markup or all remote course-action flows.
 
-Local-model availability varies. Institutions outside the built-in content-script matches are not supported. Production OS-vault installation needs separate validation. The policy is published; Chrome Web Store submission and approval remain outstanding.
+Local-model availability varies. Institutions outside the built-in content-script matches are not supported. Production OS-vault installation needs separate validation. The policy is published and the extension is live on the Chrome Web Store; later versions are uploaded from a tagged release.
 
 ## Reviewer instructions
 

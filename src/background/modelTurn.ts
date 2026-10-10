@@ -1,4 +1,4 @@
-import { ProviderError } from '@/core/ai/types';
+import { type TruncationReason, ProviderError } from '@/core/ai/types';
 import { buildAgentPrompt } from '@/core/agent/prompt';
 import { buildStepContext } from '@/core/agent/context';
 import { fallbackPlan } from '@/core/agent/fallback';
@@ -60,7 +60,7 @@ async function finishClaimedTurn(
   generation: number,
   message: string,
   now: string,
-  blocker?: { id: string; kind: import('@/core/session').SessionBlocker['kind']; message: string; retryAt?: string },
+  blocker?: { id: string; kind: import('@/core/session').SessionBlocker['kind']; message: string; retryAt?: string; action?: import('@/core/session').SessionBlocker['action'] },
 ): Promise<AgentSession | null> {
   const db = await openDatabase();
   try {
@@ -81,6 +81,13 @@ async function finishClaimedTurn(
   } finally {
     db.close();
   }
+}
+
+function unusableResponseMessage(truncated: TruncationReason | null): string {
+  if (truncated === 'max-tokens') return 'The reply was cut short by the model’s length limit. Try a shorter or more specific request.';
+  if (truncated === 'refusal') return 'The selected AI provider declined to answer this request. Try rephrasing it.';
+  if (truncated === 'incomplete') return 'The selected AI provider stopped before finishing. Please try again.';
+  return 'I received an unusable response from the selected AI provider. Please try again.';
 }
 
 function blockerId(kind: string): string {
@@ -427,6 +434,22 @@ export async function runModelTurn(
 ): Promise<AgentSession | null> {
   let session = await loadSession(sessionId);
   if (!session) return null;
+  if (session.status === 'paused' && !session.pendingModelRequest) {
+    // Keep what the student wrote; the paused session must not drop it.
+    const now = timestamp(deps);
+    const db = await openDatabase();
+    try {
+      return await updateSession(db, sessionId, (current) => current.status === 'paused'
+        ? appendMessage(
+            appendStudentTurn(current, studentText, now, reuseLastStudentTurn),
+            { id: crypto.randomUUID(), role: 'motion', text: 'This session is paused. Resume it when you want Motion to continue.' },
+            now,
+          )
+        : null);
+    } finally {
+      db.close();
+    }
+  }
   if (session.pendingModelRequest || session.status === 'archived' || session.status === 'completed' || session.status === 'paused') {
     const now = timestamp(deps);
     const db = await openDatabase();
@@ -455,6 +478,7 @@ export async function runModelTurn(
           id: blockerId(resolution.blocker.kind), kind: resolution.blocker.kind,
           message: resolution.blocker.message,
           ...(resolution.blocker.retryAt ? { retryAt: new Date(resolution.blocker.retryAt).toISOString() } : {}),
+          ...(resolution.blocker.action ? { action: resolution.blocker.action } : {}),
         }, now);
       });
     } finally {
@@ -550,6 +574,9 @@ export async function runModelTurn(
       role: entry.role === 'student' ? 'user' as const : 'assistant' as const,
       content: entry.text.slice(0, 4_000),
     }));
+    // A reply cut short by the length limit is unparseable JSON; remember why
+    // so the student is told to shorten the request rather than "try again".
+    let truncated: TruncationReason | null = null;
     for await (const delta of resolution.provider.stream({
       system: prompt,
       messages,
@@ -557,6 +584,7 @@ export async function runModelTurn(
       json: true,
       signal: controller.signal,
       maxOutputTokens: 2_000,
+      onTruncated: (reason) => { truncated = reason; },
     })) {
       output = `${output}${delta}`.slice(-STREAM_MAX_LENGTH);
       const nowMs = Date.now();
@@ -580,7 +608,7 @@ export async function runModelTurn(
     if (!parsed.ok) {
       return (await finishClaimedTurn(
         sessionId, requestKey, session.modelTurnGeneration,
-        'I received an unusable response from the selected AI provider. Please try again.', timestamp(deps),
+        unusableResponseMessage(truncated), timestamp(deps),
       )) ?? (await loadSession(sessionId));
     }
     // `session` (not a pre-cleared copy) is passed on so `persistPlan` can
@@ -604,6 +632,7 @@ export async function runModelTurn(
     const next = await finishClaimedTurn(sessionId, requestKey, session.modelTurnGeneration, blocker.message, nowError, {
       id: blockerId(blocker.kind), kind: blocker.kind, message: blocker.message,
       ...(blocker.retryAt ? { retryAt: new Date(blocker.retryAt).toISOString() } : {}),
+      ...(blocker.action ? { action: blocker.action } : {}),
     });
     if (next && blocker.retryAt) scheduleModelRetry(sessionId, new Date(blocker.retryAt));
     return next ?? (await loadSession(sessionId));
@@ -699,6 +728,7 @@ export async function recoverStaleModelRequests(now = Date.now()): Promise<void>
         let next = recordBlocker({ ...current, pendingModelRequest: null }, {
           id: blockerId('interrupted'), kind: 'provider',
           message: `Motion was interrupted while waiting for ${active.providerId}. Retry?`,
+          action: 'retry-model',
         }, at);
         if (next.status === 'working') next = transitionSession(next, 'waiting', at);
         return next;

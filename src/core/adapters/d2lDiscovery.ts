@@ -65,7 +65,14 @@ export function taskKindForD2LEntity(entityType: unknown): TaskKind {
   return 'other';
 }
 
-function apiTask(row: RecordValue, course: Course, sourceUrl: string, now: Date): CourseTask | null {
+/**
+ * What an API date means. Only a due-date event is a deadline; an availability
+ * or unlock end is the same review hint the HTML adapter records as
+ * "Available until …" at low confidence, and must not outrank it.
+ */
+type ApiDateKind = 'due' | 'availability-end';
+
+function apiTask(row: RecordValue, course: Course, sourceUrl: string, now: Date, dateKind: ApiDateKind = 'due'): CourseTask | null {
   const title = string(row.Title ?? row.Name);
   const dueRaw = string(row.EndDateTime ?? row.DueDate);
   if (!title || !dueRaw) return null;
@@ -78,7 +85,14 @@ function apiTask(row: RecordValue, course: Course, sourceUrl: string, now: Date)
   const capturedAt = now.toISOString();
   return {
     id: d2lTaskId(course.externalId ?? course.id.replace(/^d2l:/, ''), kind, entityId), courseId: course.id, title, kind,
-    due: { iso: dueDate.toISOString(), raw: dueRaw, zoneEvidence: /(?:Z|[+-]\d\d:\d\d)$/i.test(dueRaw) ? 'explicit' : 'none', timeAssumed: false, confidence: 'high', lastObservedAt: capturedAt },
+    due: {
+      iso: dueDate.toISOString(),
+      raw: dateKind === 'due' ? dueRaw : `Available until ${dueRaw}`,
+      zoneEvidence: /(?:Z|[+-]\d\d:\d\d)$/i.test(dueRaw) ? 'explicit' : 'none',
+      timeAssumed: false,
+      confidence: dateKind === 'due' ? 'high' : 'low',
+      lastObservedAt: capturedAt,
+    },
     dueHistory: [], dueConflict: null, status: row.IsCompleted === true || row.IsSubmitted === true ? 'submitted' : 'todo', weight: null,
     provenance: { sourceUrl, pageTitle: 'D2L calendar', platformId: 'd2l', pageType: 'calendar', capturedAt, extractionVersion: EXTRACTION_VERSION, strategy: 'lms-api' },
     corrections: [], studentEdited: false, manual: false, archived: false, createdAt: capturedAt, updatedAt: capturedAt,
@@ -120,7 +134,7 @@ export function tasksFromCalendarEvents(value: unknown, course: Course, sourceUr
     if (!row || !record(row.AssociatedEntity)) continue;
     const rank = preference(row);
     if (rank === 0) continue;
-    const task = apiTask(row, course, sourceUrl, now);
+    const task = apiTask(row, course, sourceUrl, now, rank === 3 ? 'due' : 'availability-end');
     if (!task) continue;
     const existing = chosen.get(task.id);
     if (!existing || rank > existing.preference) chosen.set(task.id, { task, preference: rank });

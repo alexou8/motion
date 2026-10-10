@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { useCallback, useEffect, useState } from 'react';
 import { supportedHosts } from '@/core/adapters';
+import { supportedSitesSentence } from '@/core/view/supportedSites';
 import {
   aiStatusResultSchema,
   keychainStatusResultSchema,
@@ -70,7 +71,7 @@ const ACTION_LABELS: Record<ConfigurableActionId, string> = {
   'fill-form-field': 'Fill in a form field',
   'select-option': 'Choose an option in a form',
   'toggle-control': 'Toggle a control on a page',
-  'save-remote-draft': 'Save a draft in your LMS',
+  'save-remote-draft': 'Save a draft in Brightspace',
   'prepare-upload': 'Prepare a file for you to upload',
   'prepare-discussion-response': 'Prepare a discussion reply for you to review',
   'add-calendar-event': 'Add an event to your calendar',
@@ -97,6 +98,10 @@ export function App(): JSX.Element {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [section, setSection] = useState<Section>(sectionFromHash);
   const [ai, setAi] = useState<AiStatusResult | null>(null);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  // A status line belongs to the section that produced it.
+  useEffect(() => setStatus(null), [section]);
 
   const loadGrants = useCallback(async () => {
     const all = await chrome.permissions.getAll();
@@ -110,9 +115,17 @@ export function App(): JSX.Element {
 
   const loadAiStatus = useCallback(async () => {
     const response = await ask({ type: 'ai-status' });
-    if (!response.ok) return;
+    if (!response.ok) {
+      setAiError(response.error ?? 'Motion could not reach its background worker.');
+      return;
+    }
     const parsed = aiStatusResultSchema.safeParse(response.result);
-    setAi(parsed.success ? parsed.data : null);
+    if (!parsed.success) {
+      setAiError('Motion received provider status it does not recognise.');
+      return;
+    }
+    setAiError(null);
+    setAi(parsed.data);
   }, []);
 
   useEffect(() => {
@@ -139,14 +152,6 @@ export function App(): JSX.Element {
     },
     [loadGrants],
   );
-  const grant = useCallback(
-    async (origin: string) => {
-      const granted = await chrome.permissions.request({ origins: [origin] });
-      setStatus(granted ? `Motion can now read ${origin}.` : `Access to ${origin} was not granted.`);
-      await loadGrants();
-    },
-    [loadGrants],
-  );
   const deleteEverything = useCallback(async () => {
     setConfirmingDelete(false);
     const response = await ask({ type: 'delete-local-data', confirm: 'DELETE' });
@@ -169,6 +174,7 @@ export function App(): JSX.Element {
         </div>
         <span className="text-sm text-ink-muted">Motion {version}</span>
       </header>
+      <GettingStarted />
       <div className="mt-8 grid gap-8 md:grid-cols-[12rem_1fr]">
         <nav aria-label="Settings sections" className="flex flex-wrap gap-1 md:block md:space-y-1">
           {sections.map(({ id, label }) => (
@@ -184,8 +190,8 @@ export function App(): JSX.Element {
           ))}
         </nav>
         <div className="min-w-0">
-          {section === 'ai' && <AISection ai={ai} refresh={loadAiStatus} setStatus={setStatus} />}
-          {section === 'browser' && <BrowserAccess grants={grants} revoke={revoke} grant={grant} />}
+          {section === 'ai' && <AISection ai={ai} error={aiError} refresh={loadAiStatus} />}
+          {section === 'browser' && <BrowserAccess grants={grants} revoke={revoke} />}
           {section === 'behaviour' && <AgentBehaviour ai={ai} setStatus={setStatus} refresh={loadAiStatus} />}
           {section === 'reminders' && <ReminderSection setStatus={setStatus} />}
           {section === 'privacy' && (
@@ -196,12 +202,37 @@ export function App(): JSX.Element {
             />
           )}
           {section === 'about' && <About version={version} ai={ai} />}
-          <p role="status" aria-live="polite" className="mt-8 text-sm text-ink-muted">
-            {status}
-          </p>
+          {/* Provider cards report beside their own controls. */}
+          {section !== 'ai' ? (
+            <p role="status" aria-live="polite" className="mt-4 text-sm text-ink-muted">
+              {status}
+            </p>
+          ) : null}
         </div>
       </div>
     </main>
+  );
+}
+
+/** First-run landing: the service worker opens this page once on install. */
+function GettingStarted() {
+  return (
+    <section aria-labelledby="getting-started-heading" className={`${card} mt-6`}>
+      <h2 id="getting-started-heading" className="font-serif text-lg">
+        Getting started
+      </h2>
+      <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-ink-muted">
+        <li>
+          Open a Brightspace course page.{' '}
+          <span className="text-ink-muted">{supportedSitesSentence()}</span>
+        </li>
+        <li>Open Motion from the toolbar, or pin it so it is one click away.</li>
+        <li>
+          Optional: add an AI provider below, or use Chrome&apos;s on-device model where it is
+          available.
+        </li>
+      </ol>
+    </section>
   );
 }
 
@@ -377,17 +408,18 @@ function statusCopy(diagnostic: ProviderDiagnostic | undefined): string {
 function ProviderCard({
   diagnostic,
   ai,
-  setStatus,
   refresh,
 }: {
   diagnostic: ProviderDiagnostic;
   ai: AiStatusResult;
-  setStatus: (s: string) => void;
   refresh: () => Promise<void>;
 }) {
   const providerId = diagnostic.providerId;
   const isCloud = diagnostic.cloud;
   const isSelected = ai.selected === providerId;
+  // Messages render inside this card, next to the control that caused them.
+  const [status, setStatus] = useState<string | null>(null);
+  const [offerUse, setOfferUse] = useState(false);
   const [key, setKey] = useState('');
   const [disclosure, setDisclosure] = useState(diagnostic.disclosureAccepted);
   const [testing, setTesting] = useState(false);
@@ -415,12 +447,26 @@ function ProviderCard({
       // loses the user-activation state at the first `await` otherwise
       // (docs/THREAT_MODEL.md T10).
       const origin = PROVIDER_ORIGINS[providerId];
-      if (origin) await chrome.permissions.request({ origins: [origin] });
+      if (origin) {
+        const granted = await chrome.permissions.request({ origins: [origin] });
+        if (!granted) {
+          setStatus(
+            `Motion needs access to ${new URL(origin.replace('/*', '/')).host} to use ${PROVIDER_LABELS[providerId]}. Your provider was not changed.`,
+          );
+          return;
+        }
+      }
     }
     // A model ID belongs to its provider. Reset the global preference on a
     // provider change so an OpenAI ID can never be sent to Claude or vice versa.
-    await ask({ type: 'set-ai-preferences', providerId, model: 'recommended' });
+    const response = await ask({ type: 'set-ai-preferences', providerId, model: 'recommended' });
+    if (!response.ok) {
+      setStatus(response.error ?? `Motion could not switch to ${PROVIDER_LABELS[providerId]}. Try again.`);
+      return;
+    }
+    setOfferUse(false);
     await refresh();
+    setStatus(`Motion now uses ${PROVIDER_LABELS[providerId]}.`);
   };
 
   const acceptDisclosure = async (accepted: boolean) => {
@@ -457,6 +503,7 @@ function ProviderCard({
       }
       await refresh();
       setStatus(rememberKey ? `${PROVIDER_LABELS[providerId]} key saved in your OS keychain.` : `${PROVIDER_LABELS[providerId]} key saved for this browser session.`);
+      setOfferUse(!isSelected);
     } finally {
       setSavingKey(false);
     }
@@ -489,8 +536,12 @@ function ProviderCard({
     setTesting(false);
     const availability = providerAvailabilityResultSchema.safeParse(response.result);
     const ready = response.ok && availability.success && availability.data.availability.status === 'available';
+    // Say why a test failed: the provider's own reason, else the worker's.
+    const reason = availability.success ? availability.data.availability.message : response.error;
     setStatus(
-      ready ? `${PROVIDER_LABELS[providerId]} connection test succeeded.` : `${PROVIDER_LABELS[providerId]} connection test failed.`,
+      ready
+        ? `${PROVIDER_LABELS[providerId]} connection test succeeded.`
+        : `${PROVIDER_LABELS[providerId]} connection test failed.${reason ? ` ${reason}` : ''}`,
     );
   };
 
@@ -636,11 +687,24 @@ function ProviderCard({
           </p>
         </div>
       ) : null}
+
+      {offerUse && !isSelected ? (
+        <button
+          type="button"
+          onClick={() => void selectProvider()}
+          className={`w-fit min-h-[24px] rounded bg-signal px-3 py-1 text-sm font-medium text-on-signal hover:opacity-90 ${focus}`}
+        >
+          Use {PROVIDER_LABELS[providerId]}
+        </button>
+      ) : null}
+      <p role="status" aria-live="polite" className="text-sm text-ink-muted">
+        {status}
+      </p>
     </div>
   );
 }
 
-function AISection({ ai, refresh, setStatus }: { ai: AiStatusResult | null; refresh: () => Promise<void>; setStatus: (s: string) => void }) {
+function AISection({ ai, error, refresh }: { ai: AiStatusResult | null; error: string | null; refresh: () => Promise<void> }) {
   return (
     <section aria-labelledby="ai-heading">
       <h2 id="ai-heading" className="font-serif text-lg">
@@ -651,11 +715,24 @@ function AISection({ ai, refresh, setStatus }: { ai: AiStatusResult | null; refr
         Anthropic send what you ask about to their cloud service.
       </p>
       <div className="mt-4 grid gap-4">
+        {error ? (
+          <div className={`${card} grid gap-2`} role="alert">
+            <p className="text-sm font-medium">Motion could not load provider status.</p>
+            <p className="text-sm text-ink-muted">{error}</p>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              className={`w-fit min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}
+            >
+              Retry
+            </button>
+          </div>
+        ) : null}
         {ai ? (
           ai.providers.map((diagnostic) => (
-            <ProviderCard key={diagnostic.providerId} diagnostic={diagnostic} ai={ai} setStatus={setStatus} refresh={refresh} />
+            <ProviderCard key={diagnostic.providerId} diagnostic={diagnostic} ai={ai} refresh={refresh} />
           ))
-        ) : (
+        ) : error ? null : (
           <p className="text-sm text-ink-muted">Loading provider status…</p>
         )}
       </div>
@@ -663,14 +740,14 @@ function AISection({ ai, refresh, setStatus }: { ai: AiStatusResult | null; refr
   );
 }
 
-function BrowserAccess({ grants, revoke, grant }: { grants: Grant[]; revoke: (origin: string) => void; grant: (origin: string) => void }) {
+function BrowserAccess({ grants, revoke }: { grants: Grant[]; revoke: (origin: string) => void }) {
   return (
     <section aria-labelledby="browser-heading">
       <h2 id="browser-heading" className="font-serif text-lg">
         Browser access
       </h2>
       <div className={`${card} mt-4`}>
-        <h3 className="text-md font-medium">Authorized LMS hosts</h3>
+        <h3 className="text-md font-medium">Authorized Brightspace sites</h3>
         <p className="mt-1 text-sm text-ink-muted">
           Motion only reads pages on these sites, and only while you have them open. It never
           collects browsing outside them.
@@ -694,15 +771,9 @@ function BrowserAccess({ grants, revoke, grant }: { grants: Grant[]; revoke: (or
             </li>
           ))}
         </ul>
-        <div className="mt-3">
-          <button
-            type="button"
-            onClick={() => grant('https://mylearningspace.wlu.ca/*')}
-            className={`min-h-[24px] rounded border border-edge px-3 py-1 text-sm hover:bg-sunken ${focus}`}
-          >
-            Grant access
-          </button>
-        </div>
+        {/* Supported hosts are declared in the manifest, so there is nothing
+            to grant here; name them so a student knows where Motion works. */}
+        <p className="mt-3 text-sm text-ink-muted">{supportedSitesSentence()}</p>
       </div>
       <div className={`${card} mt-4`}>
         <h3 className="text-md font-medium">Safety boundaries</h3>
@@ -866,7 +937,7 @@ function Privacy({
             <p className="text-sm">
               This permanently deletes every course, deadline, note, checklist, session and
               workflow Motion has stored, and forgets any saved API keys. It cannot be undone, and
-              it does not touch anything in your LMS.
+              it does not touch anything in Brightspace.
             </p>
             <div className="mt-3 flex gap-2">
               <button
@@ -901,7 +972,7 @@ function About({ version, ai }: { version: string; ai: AiStatusResult | null }) 
     { label: 'Background local AI', value: diagnosticFor(ai, 'chrome-local')?.backgroundExecution ? 'Supported' : 'Unsupported' },
     { label: 'OpenAI', value: statusCopy(diagnosticFor(ai, 'openai')) },
     { label: 'Anthropic', value: statusCopy(diagnosticFor(ai, 'anthropic')) },
-    { label: 'D2L access', value: ai?.lmsAccess.some((a) => a.granted) ? 'Granted' : 'Not granted' },
+    { label: 'Brightspace access', value: ai?.lmsAccess.some((a) => a.granted) ? 'Granted' : 'Not granted' },
   ];
   return (
     <section aria-labelledby="about-heading">
@@ -911,9 +982,8 @@ function About({ version, ai }: { version: string; ai: AiStatusResult | null }) 
       <div className={`${card} mt-4`}>
         <h3 className="text-md font-medium">Motion {version}</h3>
         <p className="mt-1 text-sm text-ink-muted">
-          Motion helps you organise coursework on supported learning sites. Supported LMS: D2L
-          Brightspace. Everything it stores stays in this browser — there is no account and no
-          server.
+          Motion helps you organise coursework on Brightspace course sites. Everything it stores
+          stays in this browser — there is no account and no server.
         </p>
       </div>
       <div className={`${card} mt-4`}>

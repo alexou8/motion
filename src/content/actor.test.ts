@@ -326,6 +326,45 @@ describe('content actor', () => {
     });
   });
 
+  it('applies the consequential check to a same-origin link labelled like a submit control', async () => {
+    document.body.innerHTML = '<a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101">Submit</a>';
+    const { buildSnapshot, act } = await loadActor();
+    const snapshot = buildSnapshot();
+    const link = snapshot.elements[0]!;
+    const navigate = vi.fn();
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: link.handle }, { navigate })).toMatchObject({
+      ok: false,
+      error: 'refused-consequential',
+    });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: link.handle }, { navigate, consequentialCapability: true })).toMatchObject({ ok: true });
+    expect(navigate).toHaveBeenCalledWith('https://school.brightspace.com/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363&db=101');
+  });
+
+  it.each([
+    ['/d2l/logout', 'Sign out'],
+    ['/d2l/lp/auth/login/signOut.d2l', 'Leave'],
+    ['/d2l/lms/dropbox/user/folder_delete_file.d2l?ou=363&db=101', 'Tidy up'],
+    ['/d2l/le/363/discussions/posts/7/Remove', 'Hide'],
+    ['/d2l/lp/enrollments/withdraw?ou=363', 'Course options'],
+  ])('refuses to follow the destructive link %s even with an approval', async (path, label) => {
+    document.body.innerHTML = `<a href="${path}">${label}</a>`;
+    const { buildSnapshot, act, actWithPresence } = await loadActor();
+    const snapshot = buildSnapshot();
+    const link = snapshot.elements[0]!;
+    const navigate = vi.fn();
+    expect(act({ type: 'click', snapshotId: snapshot.snapshotId, handle: link.handle }, { navigate, consequentialCapability: true })).toMatchObject({
+      ok: false,
+      error: 'refused-navigation',
+    });
+    await expect(actWithPresence({ type: 'click', snapshotId: snapshot.snapshotId, handle: link.handle }, { navigate, consequentialCapability: true })).resolves.toMatchObject({
+      ok: false,
+      error: 'refused-navigation',
+    });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(document.getElementById('motion-presence-root')).toBeNull();
+  });
+
   it('fills a text input via the native setter and fires input/change events', async () => {
     document.body.innerHTML = '<input type="text" id="name" name="name" />';
     const { buildSnapshot, act } = await loadActor();

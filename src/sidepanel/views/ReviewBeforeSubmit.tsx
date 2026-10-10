@@ -96,7 +96,7 @@ export function ReviewBeforeSubmit({ review, summary, className }: ReviewBeforeS
 
       <aside className="grid gap-1 border-l-4 border-signal bg-surface px-3 py-2" aria-labelledby={studentControlTitleId}>
         <h2 className="font-medium text-balance" id={studentControlTitleId}>You're submitting this yourself</h2>
-        <p className="text-sm text-ink-muted text-pretty">Motion has not submitted anything. You submit it in your LMS.</p>
+        <p className="text-sm text-ink-muted text-pretty">Motion has not submitted anything. You submit it in Brightspace.</p>
       </aside>
     </section>
   );

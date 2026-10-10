@@ -38,6 +38,36 @@ function isOutOfGroup(session: AgentSession, tab: chrome.tabs.Tab, changeInfo: c
   return groupId !== session.workspace.groupId;
 }
 
+/**
+ * Tab and group ids are scoped to one browser session, and Chrome reuses low
+ * tab ids after a restart. A workspace recorded under another session key is
+ * re-keyed with no ids at all before new tabs are merged in, so an unrelated
+ * student tab that inherited an old id is never counted as Motion's. Kept here
+ * rather than in sessions.ts because capabilities.ts needs it and sessions.ts
+ * imports the workflow engine, which imports capabilities.ts.
+ */
+export function workspaceForBrowserSession(
+  workspace: AgentSession['workspace'],
+  sessionKey: string,
+): AgentSession['workspace'] {
+  if (workspace.sessionKey === sessionKey) return workspace;
+  return { ...workspace, sessionKey, groupId: null, ownedTabIds: [], adoptedTabIds: [], releasedTabIds: [] };
+}
+
+/**
+ * The stored group id when it is still usable, otherwise null so the caller
+ * creates a fresh group. Chrome deletes a group when its last tab closes, and
+ * grouping into a deleted id throws "No group with id".
+ */
+export async function liveWorkspaceGroupId(
+  workspace: AgentSession['workspace'],
+  sessionKey: string,
+  tabs: TabsCapability,
+): Promise<number | null> {
+  if (workspace.groupId === null || workspace.sessionKey !== sessionKey) return null;
+  return (await tabs.groupExists(workspace.groupId)) ? workspace.groupId : null;
+}
+
 async function consumeNavigationMarker(tabId: number): Promise<boolean> {
   const stored = await chrome.storage.session.get(NAVIGATION_MARKERS_KEY);
   const raw = stored[NAVIGATION_MARKERS_KEY];

@@ -208,3 +208,119 @@ describe('worker command outcomes', () => {
     expect(parseWorkerResult('session-select', { selected: 9 })).toBeNull();
   });
 });
+
+describe('active-tab context and worker failures', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stub({
+    tab,
+    granted = true,
+    getState,
+  }: {
+    tab: Partial<chrome.tabs.Tab> | undefined;
+    granted?: boolean;
+    getState: () => unknown;
+  }) {
+    const chromeEvent = { addListener: vi.fn() };
+    const reload = vi.fn(async () => undefined);
+    const sendMessage = vi.fn(async (message: { type?: string }) =>
+      message.type === 'get-state' ? getState() : { ok: true, result: { requested: true } },
+    );
+    vi.stubGlobal('chrome', {
+      runtime: { sendMessage },
+      tabs: {
+        query: vi.fn(async () => (tab ? [tab] : [])),
+        reload,
+        onActivated: chromeEvent,
+        onUpdated: chromeEvent,
+      },
+      storage: { session: { onChanged: { addListener: vi.fn() } } },
+      permissions: { contains: vi.fn(async () => granted) },
+    });
+    return { reload, sendMessage };
+  }
+
+  it('keeps the active tab url when page permission is needed', async () => {
+    stub({
+      tab: { id: 4, url: 'https://synthetic.brightspace.com/d2l/home', title: 'Synthetic home' },
+      granted: false,
+      getState: () => ({ ok: true, result: EMPTY_PANEL_STATE }),
+    });
+    const bridge = createRuntimeBridge();
+    await vi.waitFor(() => expect(bridge.getState().connection).toBe('permission-needed'));
+    expect(bridge.getState().page.url).toBe('https://synthetic.brightspace.com/d2l/home');
+  });
+
+  it('flags a supported, permitted tab the worker has never observed as needing a reload', async () => {
+    const { reload } = stub({
+      tab: { id: 4, url: 'https://synthetic.brightspace.com/d2l/home' },
+      getState: () => ({ ok: true, result: EMPTY_PANEL_STATE }),
+    });
+    const bridge = createRuntimeBridge();
+    await vi.waitFor(() => expect(bridge.getState().tabNeedsReload).toBe(true));
+    expect(bridge.getState().connection).toBe('idle');
+    await expect(bridge.send({ type: 'reload-tab' })).resolves.toEqual({ ok: true });
+    expect(reload).toHaveBeenCalledWith(4);
+  });
+
+  it('never offers or performs a reload inside a quiz attempt Motion has not observed', async () => {
+    const { reload } = stub({
+      tab: { id: 4, url: 'https://synthetic.brightspace.com/d2l/lms/quizzing/user/attempt/quiz_start_frame_auto.d2l?ou=999999&qi=7' },
+      getState: () => ({ ok: true, result: EMPTY_PANEL_STATE }),
+    });
+    const bridge = createRuntimeBridge();
+    await vi.waitFor(() => expect(bridge.getState().connection).toBe('restricted'));
+    expect(bridge.getState().tabNeedsReload).toBeFalsy();
+    expect(bridge.getState().page.restrictionReason).toBeTruthy();
+    await expect(bridge.send({ type: 'reload-tab' })).resolves.toMatchObject({ ok: false, code: 'restricted' });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('does not ask to reload a tab Motion does not support', async () => {
+    const { reload } = stub({
+      tab: { id: 4, url: 'https://unrelated.example.test/' },
+      getState: () => ({ ok: true, result: EMPTY_PANEL_STATE }),
+    });
+    const bridge = createRuntimeBridge();
+    await vi.waitFor(() => expect(bridge.getState().connection).toBe('unsupported'));
+    expect(bridge.getState().tabNeedsReload).toBeFalsy();
+    await expect(bridge.send({ type: 'reload-tab' })).resolves.toMatchObject({ ok: false });
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a failed state read and clears it after a successful retry', async () => {
+    let answer: unknown = { ok: false, error: 'The background worker did not respond.' };
+    stub({ tab: undefined, getState: () => answer });
+    const bridge = createRuntimeBridge();
+    await vi.waitFor(() =>
+      expect(bridge.getState().workerError).toBe('The background worker did not respond.'),
+    );
+    await expect(bridge.send({ type: 'refresh' })).resolves.toMatchObject({ ok: false });
+    answer = { ok: true, result: EMPTY_PANEL_STATE };
+    await expect(bridge.send({ type: 'refresh' })).resolves.toEqual({ ok: true });
+    expect(bridge.getState().workerError).toBeUndefined();
+  });
+});
+
+describe('content script missing', () => {
+  it('turns the worker reason code into a readable, recoverable refusal', () => {
+    expect(
+      toUiCommandResult({
+        ok: true,
+        result: {
+          requested: false,
+          reason: 'content-script-missing',
+          message: 'Reload this tab so Motion can read it.',
+        },
+      }),
+    ).toEqual({
+      ok: false,
+      code: 'content-script-missing',
+      message: 'Reload this tab so Motion can read it.',
+      recoverable: true,
+    });
+    expect(
+      toUiCommandResult({ ok: true, result: { requested: false, reason: 'content-script-missing' } }),
+    ).toMatchObject({ code: 'content-script-missing', message: 'Reload this tab so Motion can read it.' });
+  });
+});

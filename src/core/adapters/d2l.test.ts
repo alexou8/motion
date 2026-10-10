@@ -1,10 +1,25 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { evaluateAssessmentContext } from '@/core/policy';
 import { courseTaskSchema } from '@/core/domain';
+import { pageObservedSchema } from '@/core/messaging/contracts';
 import { d2lAdapter, d2lDocumentResourceForUrl, d2lDocumentResources } from './d2l';
+import { MAX_WARNING_LENGTH } from './dom';
 import type { AdapterInput } from './types';
+
+// The real parser, except for a synthetic marker that simulates a parser
+// failure so the adapter's per-row isolation can be exercised directly.
+vi.mock('@/core/parse/dueDate', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/core/parse/dueDate')>();
+  return {
+    ...actual,
+    parseDueDate: (raw: string, now: Date, timeZone: string) => {
+      if (raw.includes('SYNTHETIC-PARSER-FAILURE')) throw new RangeError('Invalid time zone specified: Pass/Fail');
+      return actual.parseDueDate(raw, now, timeZone);
+    },
+  };
+});
 
 const STOCK_ORIGIN = 'https://school.brightspace.com';
 const WLU_ORIGIN = 'https://mylearningspace.wlu.ca';
@@ -108,6 +123,11 @@ describe('D2L route detection', () => {
     ['/d2l/lms/quizzing/user/attempt/201', 'quiz-attempt'],
     ['/d2l/lms/grades/363', 'grades'],
     ['/d2l/le/calendar/363', 'calendar'],
+    ['/d2l/le/lessons/363', 'content-module'],
+    ['/d2l/le/lessons/363/units/12', 'content-module'],
+    ['/d2l/le/lessons/363/topics/12', 'content-topic'],
+    ['/d2l/le/363/discussions/threads/301/View', 'discussion-topic'],
+    ['/d2l/lms/dropbox/user/folders_history.d2l?ou=363&db=101', 'assignment'],
   ];
 
   it.each(routes.flatMap(([path, pageType]) => [[STOCK_ORIGIN, path, pageType], [WLU_ORIGIN, path, pageType]]))(
@@ -121,6 +141,20 @@ describe('D2L route detection', () => {
     const detection = d2lAdapter.detectPage(input(`${STOCK_ORIGIN}/d2l/unknown`, fixture('broken')));
     expect(detection).toMatchObject({ pageType: 'unsupported', confidence: 'low' });
     expect(detection?.warnings[0]).toContain('Unsupported D2L route');
+  });
+
+  it('bounds the unsupported-route warning so a long path cannot fail the page-observed contract', () => {
+    const url = `${STOCK_ORIGIN}/d2l/unknown/${'segment/'.repeat(200)}`;
+    const detection = d2lAdapter.detectPage(input(url, fixture('broken')));
+    expect(detection?.warnings[0]).toMatch(/^Unsupported D2L route: \/d2l\/unknown\//);
+    expect(detection?.warnings[0]?.length).toBe(MAX_WARNING_LENGTH);
+    expect(() => pageObservedSchema.parse({
+      type: 'page-observed', url, pageType: 'unsupported', title: 'Synthetic', detectionConfidence: 'low', warnings: detection?.warnings,
+    })).not.toThrow();
+    // The local bound is the contract's bound, not a guess at it.
+    expect(pageObservedSchema.safeParse({
+      type: 'page-observed', url, pageType: 'unsupported', title: 'Synthetic', detectionConfidence: 'low', warnings: ['x'.repeat(MAX_WARNING_LENGTH + 1)],
+    }).success).toBe(false);
   });
 
   it.each([
@@ -138,6 +172,10 @@ describe('D2L route detection', () => {
     [`${WLU_ORIGIN}/d2l/home/999999`, '999999'],
     [`${WLU_ORIGIN}/d2l/le/calendar/999999`, '999999'],
     [`${WLU_ORIGIN}/d2l/le/999999/discussions/List`, '999999'],
+    [`${WLU_ORIGIN}/d2l/le/lessons/999999`, '999999'],
+    [`${WLU_ORIGIN}/d2l/le/lessons/999999/topics/12`, '999999'],
+    [`${WLU_ORIGIN}/d2l/le/999999/discussions/threads/301/View`, '999999'],
+    [`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_history.d2l?ou=999999&db=101`, '999999'],
     [`${WLU_ORIGIN}/d2l/lms/quizzing/user/quizzes_list.d2l?ou=999999`, '999999'],
     [`${WLU_ORIGIN}/d2l/home`, null],
     [`${WLU_ORIGIN}/d2l/lms/quizzing/user/attempt/1`, null],
@@ -379,6 +417,28 @@ describe('regressions found in review', () => {
       .map((task) => task.title);
     expect(titles).toContain('Lab check-in');
     expect(titles).not.toContain('Calendar');
+  });
+
+  it('keeps the rest of the page when one row\'s date cannot be parsed', () => {
+    const page = parse(
+      '<main>'
+        + '<div class="d2l-datalist-item"><a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&db=5">Synthetic essay</a><span class="d2l-dates-text">Due Oct 14 11:59 PM SYNTHETIC-PARSER-FAILURE</span></div>'
+        + '<div class="d2l-datalist-item"><a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&db=6">Synthetic lab</a><span class="d2l-dates-text">Due January 20, 2099 11:59 PM</span></div>'
+        + '</main>',
+    );
+    const tasks = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, page));
+    expect(tasks.map((task) => task.title)).toEqual(['Synthetic essay', 'Synthetic lab']);
+    expect(tasks[0]?.due).toMatchObject({ iso: null, raw: 'Due Oct 14 11:59 PM SYNTHETIC-PARSER-FAILURE', confidence: 'low' });
+    expect(tasks[1]?.due.iso).not.toBeNull();
+    for (const task of tasks) expect(() => courseTaskSchema.parse(task)).not.toThrow();
+  });
+
+  it('reads an ISO <time datetime> fallback with its explicit offset', () => {
+    const page = parse(
+      '<main><div class="d2l-datalist-item"><a href="/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=999999&db=7">Synthetic memo</a><time datetime="2099-10-14T23:59:00-04:00">Synthetic date</time></div></main>',
+    );
+    const [task] = d2lAdapter.extractTasks(input(`${WLU_ORIGIN}/d2l/lms/dropbox/user/folders_list.d2l?ou=999999`, page));
+    expect(task?.due).toMatchObject({ iso: '2099-10-15T03:59:00.000Z', zoneEvidence: 'explicit' });
   });
 
   it('does not call a page signed out just because it ships a session-expiry script', () => {

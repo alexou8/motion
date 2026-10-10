@@ -11,7 +11,9 @@ import { withLock } from '@/platform/locks';
 import { workspacePageUrl } from '@/core/workspace';
 import { ChromePreferencesStore } from '@/platform/ai/preferencesStore';
 import { createEngine } from './recovery';
-import { closeSessionWorkspace } from './workspaceEvents';
+import { closeSessionWorkspace, liveWorkspaceGroupId, workspaceForBrowserSession } from './workspaceEvents';
+import { resolveAdapter } from '@/core/adapters';
+import { evaluateAssessmentContext } from '@/core/policy';
 import { recoverStaleModelRequests, runFallbackPlan, runModelTurn, stopGeneration } from './modelTurn';
 import { abortSessionRequests } from './cloudRequests';
 
@@ -79,7 +81,9 @@ async function createSession(message: Extract<SessionMessage, { type: 'session-c
   const courses = await new Repository(db, STORE.courses, courseSchema).all();
   const tasks = await new Repository(db, STORE.tasks, courseTaskSchema).all();
   const url = typeof observation?.url === 'string' ? observation.url : null;
-  const course = url ? courses.records.find((item) => item.externalId && url.includes(`ou=${item.externalId}`)) ?? null : null;
+  // The adapter owns LMS routes; a substring test let `ou=123` match course 12.
+  const externalId = url ? resolveAdapter(url)?.courseIdForUrl(url) : null;
+  const course = externalId ? courses.records.find((item) => item.externalId === externalId) ?? null : null;
   const matching = course ? tasks.records.filter((task) => task.courseId === course.id) : tasks.records;
   const resolved = resolveTaskForGoal(message.goal, matching, course ? [course] : courses.records);
   const task = resolved.task;
@@ -176,23 +180,35 @@ export async function adoptWorkspaceTab(
   sessionId: string,
   tabId: number,
   tabs: TabsCapability = new ChromeTabs(),
+  /** True when the student explicitly asks to add a tab they removed earlier. */
+  readopt = false,
 ): Promise<{ updated: boolean; reason?: string }> {
   return withLock(`motion:workspace-adopt:${sessionId}`, async () => {
-    const session = await getSession(sessionId);
-    if (!session) return { updated: false, reason: 'That workspace is no longer available.' };
-    if (terminalRefusal(session)) return { updated: false, reason: terminalRefusal(session)?.message };
-    if (session.workspace.sessionKey !== await tabs.sessionKey())
+    const stored = await getSession(sessionId);
+    if (!stored) return { updated: false, reason: 'That workspace is no longer available.' };
+    if (terminalRefusal(stored)) return { updated: false, reason: terminalRefusal(stored)?.message };
+    const sessionKey = await tabs.sessionKey();
+    // A panel-created session has never been keyed and holds no browser ids,
+    // so it may claim this browser session. One keyed elsewhere never can.
+    if (stored.workspace.sessionKey !== null && stored.workspace.sessionKey !== sessionKey)
       return { updated: false, reason: 'This workspace belongs to an earlier browser session.' };
-    if (session.workspace.releasedTabIds.includes(tabId))
+    const session = { ...stored, workspace: workspaceForBrowserSession(stored.workspace, sessionKey) };
+    if (!readopt && session.workspace.releasedTabIds.includes(tabId))
       return { updated: false, reason: 'This tab was removed from the Motion workspace.' };
     const tab = await tabs.get(tabId);
     if (!tab) return { updated: false, reason: 'That page is no longer open.' };
     const currentPage = workspacePageUrl(tab.url);
-    if (!currentPage || !session.context.sources.some((source) => workspacePageUrl(source.url) === currentPage))
+    // The popup offers this session for one page, so that page must still be
+    // showing. An explicit "Add this tab" names the tab itself instead: any
+    // page may join except a graded attempt, which Motion never groups.
+    if (!currentPage || (!readopt && !session.context.sources.some((source) => workspacePageUrl(source.url) === currentPage)))
       return { updated: false, reason: 'That page changed before Motion could add it to this workspace.' };
+    if (readopt && isRestrictedPage(tab))
+      return { updated: false, reason: 'Motion does not add a graded attempt to a workspace.' };
     if (tab.groupId !== null && tab.groupId !== session.workspace.groupId)
       return { updated: false, reason: 'This tab is in a group chosen by the student.' };
-    if (session.workspace.groupId !== null && tab.groupId === session.workspace.groupId && session.workspace.adoptedTabIds.includes(tabId))
+    if (session.workspace.groupId !== null && tab.groupId === session.workspace.groupId
+      && session.workspace.adoptedTabIds.includes(tabId) && !session.workspace.releasedTabIds.includes(tabId))
       return { updated: true };
     // A tab may navigate or be moved while the worker is awaiting state. Read
     // it again immediately before grouping, and preserve any student override.
@@ -201,25 +217,36 @@ export async function adoptWorkspaceTab(
       return { updated: false, reason: 'That page changed before Motion could add it to this workspace.' };
     if (latest.groupId !== null && latest.groupId !== session.workspace.groupId)
       return { updated: false, reason: 'This tab is in a group chosen by the student.' };
-    const groupId = await tabs.groupInto(session.workspace.groupId, [tabId], {
+    const groupId = await tabs.groupInto(await liveWorkspaceGroupId(session.workspace, sessionKey, tabs), [tabId], {
       title: session.workspace.groupTitle,
       color: 'blue',
       ...(latest.windowId === undefined ? {} : { windowId: latest.windowId }),
     });
     const next = await updateExistingSession(sessionId, (current) => {
-      if (terminalRefusal(current) || current.workspace.sessionKey !== session.workspace.sessionKey) return null;
+      if (terminalRefusal(current) || current.workspace.sessionKey !== stored.workspace.sessionKey) return null;
+      const workspace = workspaceForBrowserSession(current.workspace, sessionKey);
       return {
         ...current,
         updatedAt: new Date().toISOString(),
         workspace: {
-          ...current.workspace,
+          ...workspace,
           groupId,
-          adoptedTabIds: [...new Set([...current.workspace.adoptedTabIds, tabId])],
+          ownedTabIds: workspace.ownedTabIds.filter((id) => id !== tabId),
+          adoptedTabIds: [...new Set([...workspace.adoptedTabIds, tabId])],
+          releasedTabIds: workspace.releasedTabIds.filter((id) => id !== tabId),
         },
       };
     });
     return next ? { updated: true } : { updated: false, reason: 'That workspace changed before the tab could be added.' };
   });
+}
+
+function isRestrictedPage(tab: { url: string; title: string }): boolean {
+  return evaluateAssessmentContext({
+    pageType: resolveAdapter(tab.url)?.classifyUrl(tab.url) ?? 'unsupported',
+    url: tab.url,
+    pageTitle: tab.title,
+  }).restricted;
 }
 
 async function applyIntent(session: AgentSession, text: string): Promise<AgentSession> {
@@ -276,7 +303,10 @@ async function applyIntent(session: AgentSession, text: string): Promise<AgentSe
   return result;
 }
 
-export async function handleSessionMessage(message: SessionMessage): Promise<unknown> {
+export async function handleSessionMessage(
+  message: SessionMessage,
+  tabs: TabsCapability = new ChromeTabs(),
+): Promise<unknown> {
   switch (message.type) {
     case 'session-create': return { session: await createSession(message) };
     case 'session-select':
@@ -323,8 +353,15 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
         await chrome.tabs.update(tab.id, { active: true });
         return { updated: true, focused: true };
       }
+      if (message.op === 'adopt') {
+        // The student asked for this tab explicitly, so a tab removed earlier
+        // may come back; it still passes every page, group and session check.
+        const adopted = await adoptWorkspaceTab(session.id, message.tabId, tabs, true);
+        return adopted.updated
+          ? { updated: true, session: await getSession(session.id) }
+          : { updated: false, reason: adopted.reason };
+      }
       if (message.op === 'release' && liveWorkspaceTab) {
-        const tabs = new ChromeTabs();
         const tab = await tabs.get(message.tabId);
         if (tab?.groupId !== null && tab?.groupId === session.workspace.groupId)
           await tabs.ungroup([message.tabId]);
@@ -333,7 +370,7 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
       const next = await updateExistingSession(session.id, (current) => {
         if (terminalRefusal(current)) return null;
         const owned = current.workspace.ownedTabIds.filter((id) => id !== message.tabId);
-        const adopted = message.op === 'adopt' ? [...new Set([...current.workspace.adoptedTabIds, message.tabId])] : current.workspace.adoptedTabIds.filter((id) => id !== message.tabId);
+        const adopted = current.workspace.adoptedTabIds.filter((id) => id !== message.tabId);
         return { ...current, workspace: { ...current.workspace, ownedTabIds: owned, adoptedTabIds: adopted, releasedTabIds: message.op === 'release' ? [...new Set([...current.workspace.releasedTabIds, message.tabId])] : current.workspace.releasedTabIds }, updatedAt: now };
       });
       return { updated: next !== null, session: next };
@@ -366,7 +403,7 @@ export async function handleSessionMessage(message: SessionMessage): Promise<unk
         : null;
       const engine = await createEngine();
       for (const id of session.workflowIds) await (message.command === 'pause' ? engine.pause(id) : message.command === 'resume' ? engine.resume(id) : engine.cancel(id));
-      if (message.command === 'archive') await closeSessionWorkspace(session, new ChromeTabs());
+      if (message.command === 'archive') await closeSessionWorkspace(session, tabs);
       const status = message.command === 'pause' ? 'paused' : message.command === 'archive' ? 'archived' : 'active';
       const next = message.command === 'resume'
         ? resumed

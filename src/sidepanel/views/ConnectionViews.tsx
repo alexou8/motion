@@ -1,5 +1,6 @@
 import type { PanelState } from '../../core/view/state';
-import { Button, Callout, EmptyState } from '../../ui/components';
+import { Button, Callout } from '../../ui/components';
+import { OPEN_COURSE_GUIDANCE, supportedSitesSentence } from '../../core/view/supportedSites';
 import type { MotionCommand } from '../bridge';
 
 interface ConnectionViewProps {
@@ -11,11 +12,41 @@ function pageName(state: PanelState): string {
   return state.page.title || 'This page';
 }
 
+/**
+ * What a new student needs on any tab Motion cannot work with: where Motion
+ * works, and the one thing to do next. No page action is offered here — on a
+ * tab Motion does not read, a note or a read would only fail.
+ */
+function SupportedSitesGuidance({ send }: Pick<ConnectionViewProps, 'send'>) {
+  return (
+    <div className="grid gap-2 text-sm text-ink-muted text-pretty">
+      <p>{supportedSitesSentence()}</p>
+      <p className="font-medium text-ink">{OPEN_COURSE_GUIDANCE}</p>
+      <p>
+        <button
+          type="button"
+          onClick={() => send({ type: 'open-settings' })}
+          className="text-signal underline underline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-focus"
+        >
+          Open settings
+        </button>
+      </p>
+    </div>
+  );
+}
+
 export function IdleView({ send }: ConnectionViewProps) {
   return (
-    <EmptyState title="Motion organizes coursework" actionLabel="Read a course page" onAction={() => send({ type: 'read-page', url: null })}>
-      Open a course page to see deadlines with their sources, keep notes, and watch background work as it progresses.
-    </EmptyState>
+    <section className="grid gap-3 rounded border border-rule bg-surface p-4" aria-labelledby="idle-title">
+      <h2 className="text-md font-medium text-balance" id="idle-title">
+        Motion organizes coursework
+      </h2>
+      <p className="text-sm text-ink-muted text-pretty">
+        On a course page, Motion shows deadlines with their sources, keeps notes, and tracks
+        background work as it progresses.
+      </p>
+      <SupportedSitesGuidance send={send} />
+    </section>
   );
 }
 
@@ -23,17 +54,40 @@ export function UnsupportedView({ state, send }: ConnectionViewProps) {
   return (
     <section className="grid gap-4" aria-labelledby="unsupported-title">
       <div>
-        <p className="mb-1 text-xs font-medium text-ink-muted">Unsupported page</p>
+        <p className="mb-1 text-xs font-medium text-ink-muted">Not a Brightspace page</p>
         <h1 className="text-lg font-medium text-balance" id="unsupported-title">
           {pageName(state)}
         </h1>
       </div>
       <p className="text-sm text-ink-muted text-pretty">
-        Motion cannot read coursework from this page yet. You can still keep a note or read the page yourself.
+        Motion cannot read coursework from this page.
+      </p>
+      <SupportedSitesGuidance send={send} />
+    </section>
+  );
+}
+
+/**
+ * A supported, permitted tab that has never reported to the worker: it was
+ * open before Motion was installed, so Chrome never injected the content
+ * script. Only a reload fixes that.
+ */
+export function ReloadTabView({ state, send }: ConnectionViewProps) {
+  return (
+    <section className="grid gap-4" aria-labelledby="reload-title">
+      <div>
+        <p className="mb-1 text-xs font-medium text-ink-muted">Brightspace page</p>
+        <h1 className="text-lg font-medium text-balance" id="reload-title">
+          Reload this tab so Motion can read it
+        </h1>
+      </div>
+      <p className="text-sm text-ink-muted text-pretty">
+        {pageName(state)} was open before Motion was installed, so Motion cannot see it yet.
+        Reloading keeps you on the same page.
       </p>
       <div>
-        <Button variant="secondary" onClick={() => send({ type: 'create-note', pageUrl: state.page.url })}>
-          Add a note
+        <Button variant="primary" onClick={() => send({ type: 'reload-tab' })}>
+          Reload tab
         </Button>
       </div>
     </section>
@@ -46,12 +100,12 @@ export function SignedOutView({ state, send }: ConnectionViewProps) {
       <div>
         <p className="mb-1 text-xs font-medium text-ink-muted">Signed out</p>
         <h1 className="text-lg font-medium text-balance" id="signed-out-title">
-          Your D2L session has ended
+          Your Brightspace session has ended
         </h1>
       </div>
       <Callout variant="warning" title="Sign in to continue">
         <p>
-          D2L sent this tab to its sign-in page, so there is no coursework on it to read. Sign in
+          Brightspace sent this tab to its sign-in page, so there is no coursework on it to read. Sign in
           again in the tab, then ask Motion to read the page.
         </p>
       </Callout>
@@ -77,7 +131,7 @@ export function PermissionNeededView({ state, send }: ConnectionViewProps) {
         </h1>
       </div>
       <Callout variant="warning" title="Motion needs you">
-        This page is on a supported type of site, but the browser has not granted Motion access to it. The page will stay unchanged until you choose to allow access.
+        This page is on a Brightspace site, but the browser has not granted Motion access to it. The page will stay unchanged until you choose to allow access.
       </Callout>
       <div>
         <Button variant="primary" onClick={() => send({ type: 'request-permission' })}>
