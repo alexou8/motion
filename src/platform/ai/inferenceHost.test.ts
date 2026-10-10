@@ -76,6 +76,48 @@ describe('attachInferenceHost', () => {
     expect(port.sent).toEqual([{ type: 'error', requestId: 'r1', kind: 'invalid-key', message: 'Your OpenAI API key is no longer valid. Reconnect.' }]);
   });
 
+  it('does not forward the message of an unexpected non-provider error to the panel', async () => {
+    const provider = stubProvider(async function* () {
+      yield* [] as string[];
+      throw new Error('internal detail: LanguageModel session 0xdeadbeef crashed at /secret/path');
+    });
+    const port = fakePort();
+    attachInferenceHost(port, provider);
+    port.emit({ type: 'generate', requestId: 'r1', request: { system: 's', messages: [] } });
+    await flush();
+
+    expect(port.sent).toEqual([{
+      type: 'error',
+      requestId: 'r1',
+      kind: 'bad-response',
+      message: 'Chrome’s on-device model ran into a problem. Try again.',
+    }]);
+    expect(JSON.stringify(port.sent)).not.toContain('deadbeef');
+  });
+
+  it('answers an availability frame from the panel’s own provider', async () => {
+    const provider = stubProvider(async function* () { yield ''; });
+    provider.availability = async () => ({ status: 'downloadable', message: 'needs download' });
+    const port = fakePort();
+    attachInferenceHost(port, provider);
+    port.emit({ type: 'availability', requestId: 'a1' });
+    await flush();
+
+    expect(port.sent).toEqual([{ type: 'availability', requestId: 'a1', status: 'downloadable', message: 'needs download' }]);
+  });
+
+  it('reports unavailable, not ready, when the panel’s availability probe throws', async () => {
+    const provider = stubProvider(async function* () { yield ''; });
+    provider.availability = async () => { throw new Error('probe exploded'); };
+    const port = fakePort();
+    attachInferenceHost(port, provider);
+    port.emit({ type: 'availability', requestId: 'a1' });
+    await flush();
+
+    expect(port.sent).toEqual([expect.objectContaining({ type: 'availability', requestId: 'a1', status: 'unavailable' })]);
+    expect(JSON.stringify(port.sent)).not.toContain('exploded');
+  });
+
   it('aborts the generation signal on a cancel frame', async () => {
     let sawAbort = false;
     const provider = stubProvider(async function* (req) {

@@ -1060,6 +1060,23 @@ describe('talking to the content script', () => {
 
     const result = (await handleMessage({ type: 'request-extraction', tabId: 11 })) as { requested: boolean };
 
+    // The tab is on a supported LMS host, so the only fix is a reload.
+    expect(result).toEqual({
+      requested: false,
+      reason: 'content-script-missing',
+      message: 'Reload this tab so Motion can read it.',
+    });
+    send.mockImplementation(async () => undefined);
+  });
+
+  it('declines without a reload hint when the silent tab is not a supported LMS page', async () => {
+    const send = chrome.tabs.sendMessage as ReturnType<typeof vi.fn>;
+    send.mockClear();
+    send.mockRejectedValue(new Error('Could not establish connection. Receiving end does not exist.'));
+    activeTabUrl = 'https://example.com/not-learn';
+
+    const result = await handleMessage({ type: 'request-extraction', tabId: 11 });
+
     expect(result).toEqual({ requested: false });
     send.mockImplementation(async () => undefined);
   });

@@ -3,6 +3,7 @@ import {
   EXTRACTION_VERSION,
   type Course,
   type CourseTask,
+  type DueDate,
   type PageContent,
   type PageType,
   type TaskKind,
@@ -14,6 +15,7 @@ import {
   absoluteUrl,
   allMatches,
   boundedVisibleText,
+  boundedWarning,
   canonicalUrl,
   courseIdFromUrl,
   elementLabelText,
@@ -40,14 +42,22 @@ const ROUTES: readonly { pattern: RegExp; pageType: PageType }[] = [
   { pattern: /^\/d2l\/le\/content\/[^/]+\/home\/?$/i, pageType: 'content-module' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/viewContent\//i, pageType: 'content-topic' },
   { pattern: /^\/d2l\/le\/content\/[^/]+\/navigateContent\//i, pageType: 'content-topic' },
+  // The Lessons tool is the newer content experience for the same modules and
+  // topics, so it maps onto the existing content page types.
+  { pattern: /^\/d2l\/le\/lessons\/\d+\/topics\//i, pageType: 'content-topic' },
+  { pattern: /^\/d2l\/le\/lessons\/\d+(?:\/|$)/i, pageType: 'content-module' },
   { pattern: /^\/d2l\/le\/news(?:\/|$)/i, pageType: 'announcements' },
   { pattern: /^\/d2l\/lms\/news\/main(?:\.d2l)?\/?$/i, pageType: 'announcements' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folders_list(?:\.d2l)?\/?$/i, pageType: 'assignment-list' },
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_submit_files(?:\/|\.|$)/i, pageType: 'assignment' },
   // Opening a submitted assignment for feedback lands here, not on the submit page.
   { pattern: /^\/d2l\/lms\/dropbox\/user\/folder_user_view_src(?:\/|\.|$)/i, pageType: 'assignment' },
+  // A closed or submitted folder leaves only its submission history; it is the
+  // same assignment (see TASK_ROUTE_PATTERNS).
+  { pattern: /^\/d2l\/lms\/dropbox\/user\/folders_history(?:\/|\.|$)/i, pageType: 'assignment' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/List(?:\/|$)/i, pageType: 'discussion-list' },
   { pattern: /^\/d2l\/le\/[^/]+\/discussions\/topics\//i, pageType: 'discussion-topic' },
+  { pattern: /^\/d2l\/le\/[^/]+\/discussions\/threads\//i, pageType: 'discussion-topic' },
   { pattern: /^\/d2l\/lms\/quizzing\/user\/quizzes_list(?:\.d2l)?\/?$/i, pageType: 'quiz-list' },
   // The pre-attempt summary is metadata about a quiz, not an attempt: it stays
   // outside ASSESSMENT_PAGE_TYPES so Motion may read it, and the attempt route
@@ -616,13 +626,25 @@ function courseIdForTask(candidate: TaskCandidate, courseId: string | null): str
   return resolved ? `d2l:${resolved}` : null;
 }
 
+/**
+ * One row's unreadable date must never abort the page or a multi-course scan:
+ * the row is kept with its raw text and no instant, for the student to check.
+ */
+function safeParseDueDate(raw: string, input: AdapterInput): DueDate {
+  try {
+    return parseDueDate(raw, input.now, input.timeZone);
+  } catch {
+    return { iso: null, raw, zoneEvidence: 'none', timeAssumed: false, confidence: 'low' };
+  }
+}
+
 function makeTask(candidate: TaskCandidate, input: AdapterInput, pageType: PageType, courseId: string | null): CourseTask | null {
   if (candidate.route?.kind === 'content' && ASSESSMENT_PAGE_TYPES.includes(pageType)) return null;
   const capturedAt = input.now.toISOString();
   const title = taskTitle(candidate);
   const resolvedCourseId = courseIdForTask(candidate, courseId);
   const dueRaw = dueText(candidate.row);
-  const parsedDue = { ...parseDueDate(dueRaw, input.now, input.timeZone), lastObservedAt: capturedAt };
+  const parsedDue = { ...safeParseDueDate(dueRaw, input), lastObservedAt: capturedAt };
   // Brightspace uses the same date wrapper for an availability window. An end
   // is useful as a review hint, but it is not the assignment's due date unless
   // the row explicitly says due/submit by.
@@ -825,7 +847,7 @@ export class D2LBrightspaceAdapter implements LearningPlatformAdapter {
       };
     }
 
-    return { pageType: 'unsupported', confidence: 'low', warnings: [`Unsupported D2L route: ${pathname}`] };
+    return { pageType: 'unsupported', confidence: 'low', warnings: [boundedWarning(`Unsupported D2L route: ${pathname}`)] };
   }
 
   extractCourse(input: AdapterInput): Course | null {

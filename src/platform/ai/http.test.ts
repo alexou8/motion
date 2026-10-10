@@ -5,7 +5,9 @@ import {
   classifyHttpError,
   E2E_PROVIDER_BASE_URL,
   EndpointNotAllowedError,
+  parseRetryAfterMs,
   parseSSEStream,
+  providerErrorForKind,
   requestWithRetry,
   type FetchLike,
 } from './http';
@@ -189,7 +191,7 @@ describe('requestWithRetry', () => {
     expect(calls).toBe(3);
   });
 
-  it('keeps the timeout active while a response body is stalled', async () => {
+  it('keeps an idle timeout active while a response body is stalled', async () => {
     vi.useFakeTimers();
     let requestSignal: AbortSignal | undefined;
     const fetchImpl = vi.fn(async (_url, init) => {
@@ -200,7 +202,8 @@ describe('requestWithRetry', () => {
       url: 'https://api.openai.com/v1/responses',
       init: { method: 'POST', body: '{}' },
       fetchImpl,
-      timeoutMs: 1_000,
+      timeoutMs: 60_000,
+      idleTimeoutMs: 1_000,
     });
     const response = await pending;
     const bodyRead = response.text().then(
@@ -208,9 +211,63 @@ describe('requestWithRetry', () => {
       (error) => error,
     );
     await vi.advanceTimersByTimeAsync(1_000);
-    await expect(bodyRead).resolves.toMatchObject({ outcomeUnknown: true });
+    await expect(bodyRead).resolves.toMatchObject({ outcomeUnknown: true, timedOut: true });
     expect(requestSignal?.aborted).toBe(true);
     vi.useRealTimers();
+  });
+
+  it('does not cap a long stream as a whole: each chunk resets the idle timeout', async () => {
+    vi.useFakeTimers();
+    try {
+      let push!: (text: string) => void;
+      let close!: () => void;
+      const encoder = new TextEncoder();
+      const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          push = (text) => controller.enqueue(encoder.encode(text));
+          close = () => controller.close();
+        },
+      }), { status: 200 })) as unknown as FetchLike;
+      const response = await requestWithRetry({
+        url: 'https://api.openai.com/v1/responses',
+        init: { method: 'POST', body: '{}' },
+        fetchImpl,
+        timeoutMs: 1_000,
+        idleTimeoutMs: 1_000,
+      });
+      const body = response.text();
+      // Five chunks 800 ms apart: 4 s total, far past either 1 s window.
+      for (let i = 0; i < 5; i += 1) {
+        await vi.advanceTimersByTimeAsync(800);
+        push(`c${i}`);
+      }
+      await vi.advanceTimersByTimeAsync(800);
+      close();
+      await expect(body).resolves.toBe('c0c1c2c3c4');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a pre-response timeout as a timeout, not a cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      })) as unknown as FetchLike;
+      const pending = requestWithRetry({
+        url: 'https://api.openai.com/v1/responses',
+        init: { method: 'POST', body: '{}' },
+        fetchImpl,
+        timeoutMs: 500,
+      });
+      const settled = pending.then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(500);
+      const error = await settled;
+      expect(error).toMatchObject({ timedOut: true, cancelled: false, outcomeUnknown: true });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('cancels a response body when revocation won before its abort listener was attached', async () => {
@@ -229,9 +286,16 @@ describe('requestWithRetry', () => {
 });
 
 describe('classifyHttpError', () => {
-  it('maps 401/403 to invalid-key for both providers', () => {
+  it('maps 401 to invalid-key and 403 to forbidden for both providers', () => {
     expect(classifyHttpError('openai', 401, {})).toBe('invalid-key');
-    expect(classifyHttpError('anthropic', 403, {})).toBe('invalid-key');
+    expect(classifyHttpError('anthropic', 401, {})).toBe('invalid-key');
+    expect(classifyHttpError('anthropic', 403, {})).toBe('forbidden');
+    expect(classifyHttpError('openai', 403, {})).toBe('forbidden');
+  });
+
+  it.each([400, 413, 422])('maps a %i to bad-request for both providers', (status) => {
+    expect(classifyHttpError('openai', status, {})).toBe('bad-request');
+    expect(classifyHttpError('anthropic', status, {})).toBe('bad-request');
   });
 
   it('maps openai insufficient_quota distinctly from plain rate limiting', () => {
@@ -253,8 +317,52 @@ describe('classifyHttpError', () => {
     expect(classifyHttpError('anthropic', 400, { error: { message: 'Your credit balance is too low' } })).toBe('insufficient-quota');
   });
 
-  it('maps a bare 5xx to network-error', () => {
-    expect(classifyHttpError('openai', 500, {})).toBe('network-error');
+  it('maps a bare 5xx to server-error rather than a connection problem', () => {
+    expect(classifyHttpError('openai', 500, {})).toBe('server-error');
+    expect(classifyHttpError('anthropic', 503, {})).toBe('server-error');
+  });
+
+  it('keeps an overload distinct from a plain server error', () => {
+    expect(classifyHttpError('anthropic', 529, {})).toBe('rate-limited');
+  });
+});
+
+describe('parseRetryAfterMs', () => {
+  const withHeader = (value: string) => new Response('', { headers: { 'retry-after': value } });
+
+  it('parses delta-seconds and rounds to whole milliseconds', () => {
+    expect(parseRetryAfterMs(withHeader('12'))).toBe(12_000);
+    expect(parseRetryAfterMs(withHeader('0.0004'))).toBe(0);
+  });
+
+  it('parses the HTTP-date form', () => {
+    const ms = parseRetryAfterMs(withHeader(new Date(Date.now() + 30_000).toUTCString()));
+    expect(ms).toBeGreaterThan(28_000);
+    expect(ms).toBeLessThanOrEqual(30_000);
+  });
+
+  it('treats a past date as no wait and garbage as absent', () => {
+    expect(parseRetryAfterMs(withHeader('Wed, 21 Oct 2015 07:28:00 GMT'))).toBe(0);
+    expect(parseRetryAfterMs(withHeader('soon'))).toBeUndefined();
+  });
+});
+
+describe('providerErrorForKind', () => {
+  it('redacts the key from a request-rejection detail and bounds its length', () => {
+    const key = 'sk-test-CANARY1234567890';
+    const error = providerErrorForKind('openai', 'bad-request', {
+      key,
+      body: { error: { type: 'invalid_request_error', message: `${key} ${'x'.repeat(1_000)}` } },
+    });
+    expect(error.kind).toBe('bad-request');
+    expect(error.message).not.toContain(key);
+    expect(error.message.length).toBeLessThan(450);
+  });
+
+  it('gives an overload a default retry hint and an explicit one precedence', () => {
+    expect(providerErrorForKind('anthropic', 'rate-limited', { key: 'k', overloaded: true }).retryAfterMs).toBe(30_000);
+    expect(providerErrorForKind('anthropic', 'rate-limited', { key: 'k', overloaded: true, retryAfterMs: 5_000 }).retryAfterMs).toBe(5_000);
+    expect(providerErrorForKind('anthropic', 'rate-limited', { key: 'k' }).retryAfterMs).toBeUndefined();
   });
 });
 
@@ -290,6 +398,16 @@ describe('parseSSEStream', () => {
   it('parses multiple events across chunk boundaries', async () => {
     const events = [];
     const chunks = ['event: delta\ndata: a\n\nevent: delta\nda', 'ta: b\n\n'];
+    for await (const e of parseSSEStream(streamFromChunks(chunks))) events.push(e);
+    expect(events).toEqual([
+      { event: 'delta', data: 'a' },
+      { event: 'delta', data: 'b' },
+    ]);
+  });
+
+  it('parses CRLF-framed events, including a CR and LF split across chunks', async () => {
+    const events = [];
+    const chunks = ['event: delta\r\ndata: a\r\n\r\nevent: delta\r', '\ndata: b\r\n\r', '\n'];
     for await (const e of parseSSEStream(streamFromChunks(chunks))) events.push(e);
     expect(events).toEqual([
       { event: 'delta', data: 'a' },

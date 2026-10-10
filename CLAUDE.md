@@ -16,6 +16,7 @@ here in full and are not repeated below.
 | Single suite | `npx vitest run src/core/policy` |
 | Lint | `npm run lint` |
 | Build extension | `npm run build` (emits `dist/`) |
+| Everything CI runs | `npm run ci` (same steps as `.github/workflows/validate.yml`; run before opening a PR) |
 
 Node 22+. npm is the only package manager; commit `package-lock.json`.
 

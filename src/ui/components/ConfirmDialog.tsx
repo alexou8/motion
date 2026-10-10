@@ -9,6 +9,12 @@ export interface ConfirmDialogProps {
   confirmLabel: string;
   onConfirm: () => void;
   onOpenChange: (open: boolean) => void;
+  /**
+   * Records an explicit refusal. Cancel only closes the dialog and leaves the
+   * request pending; Decline answers it.
+   */
+  onDecline?: () => void;
+  declineLabel?: string;
   expiry?: string | null;
   className?: string;
 }
@@ -20,6 +26,8 @@ export function ConfirmDialog({
   confirmLabel,
   onConfirm,
   onOpenChange,
+  onDecline,
+  declineLabel = 'Decline',
   expiry,
   className,
 }: ConfirmDialogProps) {
@@ -84,6 +92,11 @@ export function ConfirmDialog({
           <Button variant="quiet" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
+          {onDecline ? (
+            <Button variant="secondary" onClick={onDecline}>
+              {declineLabel}
+            </Button>
+          ) : null}
           <Button variant="primary" onClick={onConfirm}>
             {confirmLabel}
           </Button>

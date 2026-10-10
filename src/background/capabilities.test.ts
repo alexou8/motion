@@ -273,6 +273,82 @@ describe('capability boundaries', () => {
     ]);
   });
 
+  it('never keeps tab or group ids recorded under an earlier browser session', async () => {
+    // After a restart Chrome hands low tab ids to unrelated tabs. Tab 10 is now
+    // the student's own page; the old workspace claimed id 10 before.
+    await seedSession({ workspace: { groupId: 7, groupTitle: 'Motion · CP363 · A2', sessionKey: 'old-browser', ownedTabIds: [10], adoptedTabIds: [3], releasedTabIds: [4] } });
+    const tabs = new FakeTabs();
+    const studentTab = tabs.addStudentTab('https://school.brightspace.com/d2l/home/363');
+    const capability = buildCapabilities(tabs).find((item) => item.action === 'open-tab')!;
+    const open = context();
+    open.step.input = { urls: URLS, destinationProvenance: 'observed-link' };
+
+    await expect(capability.execute(open)).resolves.toMatchObject({ kind: 'done' });
+
+    const stored = await sessionRepository(await openDatabase()).get('cap-session');
+    expect(stored?.workspace).toMatchObject({ sessionKey: 'session-1', adoptedTabIds: [], releasedTabIds: [] });
+    expect(stored?.workspace.ownedTabIds).not.toContain(studentTab);
+    expect(stored?.workspace.ownedTabIds).toHaveLength(3);
+    expect(stored?.workspace.groupId).not.toBe(7);
+  });
+
+  it('reads through a fresh group when Chrome deleted the stored one', async () => {
+    // The group vanished when its last tab closed; grouping into it would throw.
+    await seedSession({ workspace: { groupId: 555, groupTitle: 'Motion · CP363 · A2', sessionKey: 'session-1', ownedTabIds: [], adoptedTabIds: [], releasedTabIds: [] } });
+    const tabs = new FakeTabs();
+    const url = 'https://school.brightspace.com/d2l/lms/dropbox/user/folder_submit_files.d2l?ou=363';
+    const capability = buildCapabilities(tabs, {
+      askContent: async () => ({
+        pageType: 'assignment', title: 'Synthetic instructions', url, text: 'Synthetic text.', headings: [], links: [],
+        resources: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
+      }),
+    }).find((item) => item.action === 'read-page')!;
+    const read = context();
+    read.step.action = 'read-page';
+    read.step.input = { url, destinationProvenance: 'observed-link' };
+
+    await expect(capability.execute(read)).resolves.toMatchObject({ kind: 'done' });
+
+    const stored = await sessionRepository(await openDatabase()).get('cap-session');
+    expect(stored?.workspace.groupId).toBe(100);
+    expect(stored?.workspace.ownedTabIds).toEqual([10]);
+    expect(tabs.tabs.get(10)?.groupId).toBe(100);
+  });
+
+  it('reads the student’s own tab for the workflow page and opens only the other sources', async () => {
+    await seedSession({ workspace: { groupId: null, groupTitle: '', sessionKey: 'session-1', ownedTabIds: [], adoptedTabIds: [], releasedTabIds: [] } });
+    const tabs = new FakeTabs();
+    const studentTab = tabs.addStudentTab(URLS[0]!);
+    const asked: number[] = [];
+    const capabilities = buildCapabilities(tabs, {
+      askContent: async (tabId) => {
+        asked.push(tabId);
+        return {
+          pageType: 'assignment', title: 'Synthetic instructions', url: URLS[0]!, text: 'Synthetic text.', headings: [],
+          links: [], resources: [], capturedAt: NOW, instructionBlocks: [], warnings: [],
+        };
+      },
+    });
+    const read = context('wf-1:read-assignment:1');
+    read.workflow.params = { sessionId: 'cap-session', url: URLS[0], currentTabId: studentTab };
+    read.step.action = 'read-page';
+    read.step.input = { url: URLS[0] };
+    const open = context();
+    open.workflow.params = { sessionId: 'cap-session', url: URLS[0], currentTabId: studentTab };
+    open.step.input = { urls: URLS, destinationProvenance: 'observed-link' };
+
+    await expect(capabilities.find((item) => item.action === 'read-page')!.execute(read)).resolves.toMatchObject({ kind: 'done' });
+    await expect(capabilities.find((item) => item.action === 'open-tab')!.execute(open)).resolves.toMatchObject({
+      kind: 'done', sourcesVisited: [URLS[1], URLS[2]],
+    });
+
+    expect(asked).toEqual([studentTab]);
+    expect(tabs.opened).toBe(2);
+    expect([...tabs.tabs.values()].filter((tab) => tab.url === URLS[0])).toHaveLength(1);
+    const stored = await sessionRepository(await openDatabase()).get('cap-session');
+    expect(stored?.workspace.ownedTabIds).not.toContain(studentTab);
+  });
+
   it('refuses a same-origin assessment destination before opening it', async () => {
     await seedSession();
     const tabs = new FakeTabs();

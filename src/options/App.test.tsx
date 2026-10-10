@@ -250,6 +250,10 @@ describe('reminders', () => {
 });
 
 describe('AI settings', () => {
+  /** Provider messages render inside the provider's own card. */
+  const openaiStatus = () =>
+    within(screen.getByLabelText('API key', { selector: '#openai-key' }).closest('div.grid') as HTMLElement).getByRole('status');
+
   it('saves the on-page pointer preference and keeps authority copy explicit', async () => {
     const user = userEvent.setup();
     render(<App />);
@@ -285,7 +289,7 @@ describe('AI settings', () => {
     await user.type(openaiKey, 'sk-super-secret-key-value');
     await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Save for this browser session' }));
 
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('key saved'));
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('key saved'));
     expect(openaiKey).toHaveValue('');
     expect(document.body.textContent).not.toContain('sk-super-secret-key-value');
     expect(sendMessage).toHaveBeenCalledWith(
@@ -305,7 +309,7 @@ describe('AI settings', () => {
     expect(sendMessage).toHaveBeenCalledWith(expect.objectContaining({
       type: 'set-provider-key', providerId: 'openai', key: 'sk-keychain-secret-value', storage: 'keychain',
     }));
-    expect(screen.getByRole('status')).toHaveTextContent('saved in your OS keychain');
+    expect(openaiStatus()).toHaveTextContent('saved in your OS keychain');
   });
 
   it('does not send a remembered key when native messaging permission is denied', async () => {
@@ -317,7 +321,7 @@ describe('AI settings', () => {
     await user.click(within(form).getByRole('checkbox', { name: 'Remember key securely on this device' }));
     await user.type(openaiKey, 'sk-denied-key-value');
     await user.click(within(form).getByRole('button', { name: 'Save in OS keychain' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('key was not saved'));
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('key was not saved'));
     expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'set-provider-key' }));
   });
 
@@ -333,8 +337,8 @@ describe('AI settings', () => {
     const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
     await user.type(openaiKey, 'sk-failed-save-value');
     await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Save for this browser session' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Secure storage is unavailable.'));
-    expect(screen.getByRole('status')).not.toHaveTextContent('key saved');
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('Secure storage is unavailable.'));
+    expect(openaiStatus()).not.toHaveTextContent('key saved');
   });
 
   it('only reports a key as forgotten after the worker confirms it', async () => {
@@ -348,8 +352,8 @@ describe('AI settings', () => {
     render(<App />);
     const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
     await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Forget key' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('Secure storage is unavailable.'));
-    expect(screen.getByRole('status')).not.toHaveTextContent('key forgotten');
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('Secure storage is unavailable.'));
+    expect(openaiStatus()).not.toHaveTextContent('key forgotten');
   });
 
   it('checks the companion through a user-triggered native messaging permission', async () => {
@@ -375,7 +379,7 @@ describe('AI settings', () => {
     const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
     const form = openaiKey.closest('form')!;
     await user.click(within(form).getByRole('button', { name: 'Forget key' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('key forgotten'));
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('key forgotten'));
   });
 
   it('reports a malformed provider-health response as a failed connection check', async () => {
@@ -389,7 +393,7 @@ describe('AI settings', () => {
     render(<App />);
     const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
     await user.click(within(openaiKey.closest('form')!).getByRole('button', { name: 'Test connection' }));
-    await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent('OpenAI connection test failed.'));
+    await waitFor(() => expect(openaiStatus()).toHaveTextContent('OpenAI connection test failed.'));
   });
 
   it('requires the disclosure before selecting a cloud provider', async () => {
@@ -400,7 +404,7 @@ describe('AI settings', () => {
     const openaiRadio = radios.find((r) => r.closest('div.grid')?.textContent?.includes('OpenAI'))!;
 
     await user.click(openaiRadio);
-    expect(screen.getByRole('status')).toHaveTextContent('Accept the cloud-processing disclosure');
+    expect(openaiStatus()).toHaveTextContent('Accept the cloud-processing disclosure');
     expect(permissionsRequest).not.toHaveBeenCalled();
 
     const openaiCard = openaiRadio.closest('div.grid') as HTMLElement;
@@ -446,7 +450,85 @@ describe('About', () => {
     expect(within(table).getByText('Chrome built-in AI')).toBeInTheDocument();
     expect(within(table).getByText('OpenAI')).toBeInTheDocument();
     expect(within(table).getByText('Anthropic')).toBeInTheDocument();
-    expect(within(table).getByText('D2L access')).toBeInTheDocument();
+    expect(within(table).getByText('Brightspace access')).toBeInTheDocument();
     expect(within(table).getByText('Granted')).toBeInTheDocument();
+  });
+});
+
+describe('first run and provider recovery', () => {
+  it('opens with a compact getting-started block and no hard-coded grant button', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const start = screen.getByRole('heading', { name: 'Getting started' }).closest('section')!;
+    expect(within(start).getAllByRole('listitem')).toHaveLength(3);
+    expect(within(start).getByText(/Open a Brightspace course page/)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Browser access' }));
+    expect(screen.queryByRole('button', { name: 'Grant access' })).not.toBeInTheDocument();
+    expect(screen.getAllByText(/\*\.desire2learn\.com/).length).toBeGreaterThan(0);
+  });
+
+  it('shows a provider-status failure with Retry instead of loading forever', async () => {
+    const original = sendMessage;
+    let fail = true;
+    sendMessage = vi.fn(async (message: unknown) =>
+      fail && (message as { type?: string }).type === 'ai-status'
+        ? { ok: false, error: 'The background worker did not respond.' }
+        : original(message));
+    const user = userEvent.setup();
+    render(<App />);
+    expect(await screen.findByText('Motion could not load provider status.')).toBeInTheDocument();
+    expect(screen.queryByText('Loading provider status…')).not.toBeInTheDocument();
+    fail = false;
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByLabelText('API key', { selector: '#openai-key' })).toBeInTheDocument();
+  });
+
+  it('does not switch provider when endpoint permission is denied', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiCard = (await screen.findByLabelText('API key', { selector: '#openai-key' })).closest('div.grid') as HTMLElement;
+    await user.click(within(openaiCard).getByText('This provider processes the content you send using its cloud service.').closest('label')!.querySelector('input')!);
+    permissionsRequest.mockResolvedValueOnce(false);
+    await user.click(within(openaiCard).getByRole('radio'));
+    await waitFor(() => expect(within(openaiCard).getByRole('status')).toHaveTextContent('Your provider was not changed.'));
+    expect(sendMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'set-ai-preferences', providerId: 'openai' }));
+    expect(within(openaiCard).getByRole('radio')).not.toBeChecked();
+  });
+
+  it('offers to use a provider after its key is saved', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiKey = await screen.findByLabelText('API key', { selector: '#openai-key' });
+    const openaiCard = openaiKey.closest('div.grid') as HTMLElement;
+    await user.click(within(openaiCard).getByText('This provider processes the content you send using its cloud service.').closest('label')!.querySelector('input')!);
+    await user.type(openaiKey, 'sk-synthetic-key-value');
+    await user.click(within(openaiCard).getByRole('button', { name: 'Save for this browser session' }));
+    await user.click(await within(openaiCard).findByRole('button', { name: 'Use OpenAI' }));
+    await waitFor(() => expect(sendMessage).toHaveBeenCalledWith({ type: 'set-ai-preferences', providerId: 'openai', model: 'recommended' }));
+    await waitFor(() => expect(within(openaiCard).getByRole('radio')).toBeChecked());
+    expect(within(openaiCard).queryByRole('button', { name: 'Use OpenAI' })).not.toBeInTheDocument();
+  });
+
+  it('explains a failed connection test inside the provider card', async () => {
+    const original = sendMessage;
+    sendMessage = vi.fn(async (message: unknown) =>
+      (message as { type?: string }).type === 'test-provider'
+        ? { ok: true, result: { availability: { status: 'invalid-key', message: 'OpenAI rejected this key.' } } }
+        : original(message));
+    const user = userEvent.setup();
+    render(<App />);
+    const openaiCard = (await screen.findByLabelText('API key', { selector: '#openai-key' })).closest('div.grid') as HTMLElement;
+    await user.click(within(openaiCard).getByRole('button', { name: 'Test connection' }));
+    await waitFor(() => expect(within(openaiCard).getByRole('status')).toHaveTextContent('OpenAI connection test failed. OpenAI rejected this key.'));
+  });
+
+  it('clears a section status when moving to another section', async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole('button', { name: 'Reminders' }));
+    await user.click(screen.getByRole('button', { name: 'Send a test reminder' }));
+    expect(screen.getByRole('status')).toHaveTextContent('Test reminder sent.');
+    await user.click(screen.getByRole('button', { name: 'Privacy & data' }));
+    expect(screen.getByRole('status')).toBeEmptyDOMElement();
   });
 });

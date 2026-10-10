@@ -17,6 +17,11 @@ function fakePort(): PortLike & { emit(msg: unknown): void } {
     postMessage: vi.fn((msg: unknown) => {
       // Auto-respond to a generate frame with one delta + done, as a stand-in host would.
       const frame = msg as { type: string; requestId: string };
+      if (frame.type === 'availability') {
+        queueMicrotask(() => {
+          for (const l of listeners) l({ type: 'availability', requestId: frame.requestId, status: 'available', message: 'ready' });
+        });
+      }
       if (frame.type === 'generate') {
         queueMicrotask(() => {
           for (const l of listeners) l({ type: 'delta', requestId: frame.requestId, text: 'via-port' });
@@ -44,6 +49,22 @@ describe('WorkerChromeLocalProvider', () => {
     expect(availability.status).toBe('available');
     const result = await provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] });
     expect(result).toBe('via-port');
+  });
+
+  it('does not report ready just because a panel port exists when the panel says its model is not available', async () => {
+    const port = fakePort();
+    const original = port.postMessage as unknown as (message: unknown) => void;
+    port.postMessage = vi.fn((msg: unknown) => {
+      const frame = msg as { type: string; requestId: string };
+      if (frame.type === 'availability') {
+        queueMicrotask(() => port.emit({ type: 'availability', requestId: frame.requestId, status: 'downloadable', message: 'needs download' }));
+        return;
+      }
+      original(msg);
+    });
+    const provider = new WorkerChromeLocalProvider(() => port);
+    expect((await provider.availability()).status).toBe('downloadable');
+    await expect(provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] })).rejects.toMatchObject({ kind: 'downloadable' });
   });
 
   it('runs in-context when no port is connected and the Prompt API answers available', async () => {

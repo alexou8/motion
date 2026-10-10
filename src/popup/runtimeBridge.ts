@@ -52,12 +52,21 @@ export interface PopupBridge {
   getContext(): Promise<UiCommandResult<PopupLauncherState>>;
   run(action: PopupAction, state: PopupLauncherState): Promise<UiCommandResult<z.infer<typeof popupCommandResultSchema>>>;
   openSettings(): Promise<UiCommandResult>;
+  /**
+   * The window of the tab the last context read looked at, kept so the popup
+   * can still open the side panel inside the click gesture when the worker
+   * failed to answer.
+   */
+  windowId?(): number | null;
 }
 
 export function createPopupBridge(): PopupBridge {
+  let lastWindowId: number | null = null;
   return {
+    windowId: () => lastWindowId,
     async getContext() {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      lastWindowId = tab?.windowId ?? null;
       if (tab?.id === undefined)
         return { ok: false, code: 'tab-unavailable', message: 'Motion could not find the current tab. Try again.' };
       return outcome(await ask({ type: 'popup-context', tabId: tab.id }), popupLauncherStateSchema);

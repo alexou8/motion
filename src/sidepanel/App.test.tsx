@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApprovalRequest } from '../core/policy';
@@ -555,7 +555,10 @@ describe('SessionView', () => {
     expect(screen.getByRole('heading', { name: 'CP363 · Assignment 2' })).toBeInTheDocument();
     expect(screen.getByText('Read the instructions')).toBeInTheDocument();
     expect(screen.getByText('Draft an outline')).toBeInTheDocument();
-    expect(screen.getByText('Workspace · 2 tabs')).toBeInTheDocument();
+    // The session stores two tab ids, but no live tab rows: count live tabs only.
+    expect(screen.getByText('Workspace · 0 tabs')).toBeInTheDocument();
+    expect(screen.getByText(/No workspace tabs open yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/Workspace details are loading/)).not.toBeInTheDocument();
     expect(screen.getByText('Needs you')).toBeInTheDocument();
   });
 
@@ -588,6 +591,7 @@ describe('SessionView', () => {
         now={NOW}
       />,
     );
+    expect(screen.getByText('Workspace · 2 tabs')).toBeInTheDocument();
     expect(screen.getByText('Synthetic rubric')).toBeInTheDocument();
     expect(screen.getByText('Motion tab · lms.example.test')).toBeInTheDocument();
     expect(screen.getByText('Your tab · lms.example.test · current')).toBeInTheDocument();
@@ -712,7 +716,16 @@ describe('SessionView', () => {
     );
     const log = screen.getByRole('log');
     expect(log).toHaveAttribute('aria-live', 'polite');
+    // Busy while streaming so partial chunks are not re-announced; the text is
+    // in the content, never hidden behind an aria-label.
+    expect(log).toHaveAttribute('aria-busy', 'true');
     expect(within(log).getByText('Drafting the outline…')).toBeInTheDocument();
+    expect(log.querySelector('[aria-label]')).toBeNull();
+  });
+
+  it('marks the log idle once the reply completes', () => {
+    render(<App bridge={bridgeFor(withSession())} now={NOW} />);
+    expect(screen.getByRole('log')).toHaveAttribute('aria-busy', 'false');
   });
 
   it('shows only the partial top-level reply and decodes JSON escapes', () => {
@@ -811,5 +824,205 @@ describe('SessionView', () => {
     render(<App bridge={bridgeFor(withSession(), commands)} now={NOW} />);
     await user.click(screen.getByRole('button', { name: /Sessions/ }));
     expect(commands).toContainEqual({ type: 'session-select', sessionId: null });
+  });
+});
+
+describe('session blockers', () => {
+  function blocked(blocker: AgentSession['blockers'][number]) {
+    return state({
+      activeSession: { ...session, status: 'waiting', blockers: [blocker] },
+      tasks: [task],
+    });
+  }
+
+  it.each([
+    ['open-ai-settings', 'Open AI settings', { type: 'open-settings' }],
+    [
+      'retry-model',
+      'Retry',
+      { type: 'session-command', sessionId: session.id, command: 'retry-model' },
+    ],
+    ['page-permission', 'Allow access', { type: 'request-permission' }],
+  ] as const)('offers the producer-named %s action', async (action, label, command) => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(
+      <App
+        bridge={bridgeFor(
+          blocked({ id: 'b1', kind: 'permission', message: 'Synthetic blocker.', action }),
+          commands,
+        )}
+        now={NOW}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: label }));
+    expect(commands).toEqual([command]);
+  });
+
+  it.each(['permission', 'provider', 'error'] as const)(
+    'falls back to settings, never a page permission request, for a %s blocker without an action',
+    async (kind) => {
+      const user = userEvent.setup();
+      const commands: MotionCommand[] = [];
+      render(
+        <App
+          bridge={bridgeFor(blocked({ id: 'b1', kind, message: 'Synthetic blocker.' }), commands)}
+          now={NOW}
+        />,
+      );
+      expect(screen.queryByRole('button', { name: 'Allow access' })).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Open settings' }));
+      expect(commands).toEqual([{ type: 'open-settings' }]);
+    },
+  );
+
+  it('counts a rate-limit retry down without waiting for a worker update', () => {
+    vi.useFakeTimers();
+    try {
+      const start = new Date('2026-09-16T12:00:00.000Z');
+      vi.setSystemTime(start);
+      render(
+        <App
+          bridge={bridgeFor(
+            blocked({
+              id: 'b1',
+              kind: 'rate-limit',
+              message: 'The provider is busy.',
+              retryAt: new Date(start.getTime() + 10_000).toISOString(),
+            }),
+          )}
+        />,
+      );
+      expect(screen.getByRole('button', { name: 'Retrying in 10s' })).toBeDisabled();
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(screen.getByRole('button', { name: 'Retrying in 7s' })).toBeDisabled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('approval decline', () => {
+  it('records an explicit decline from the confirmation dialog', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(
+      <App
+        bridge={bridgeFor(
+          state({ activeSession: session, tasks: [task], approvals: [approval] }),
+          commands,
+        )}
+        now={NOW}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Review' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: 'Decline' }));
+    expect(commands).toEqual([
+      { type: 'decide-approval', approvalId: approval.id, approved: false },
+    ]);
+  });
+});
+
+describe('session composer limits', () => {
+  it('caps the message at the schema limit and shows the remaining count near it', () => {
+    render(<App bridge={bridgeFor(state({ activeSession: session, tasks: [task] }))} now={NOW} />);
+    const input = screen.getByLabelText('Message Motion');
+    expect(input).toHaveAttribute('maxLength', '4000');
+    expect(screen.queryByText(/characters left/)).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'a'.repeat(3_700) } });
+    expect(screen.getByText('300 characters left')).toBeInTheDocument();
+  });
+
+  it('shows a validation failure as feedback and keeps the draft', async () => {
+    const commands: MotionCommand[] = [];
+    render(
+      <App bridge={bridgeFor(state({ activeSession: session, tasks: [task] }), commands)} now={NOW} />,
+    );
+    const input = screen.getByLabelText('Message Motion');
+    // A programmatic value can exceed maxLength; the schema must still be heard.
+    fireEvent.change(input, { target: { value: 'a'.repeat(4_100) } });
+    fireEvent.submit(input.closest('form')!);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Messages can be up to 4,000 characters',
+    );
+    expect(commands).toHaveLength(0);
+    expect(input).toHaveValue('a'.repeat(4_100));
+  });
+});
+
+describe('command feedback', () => {
+  function failingBridge(panelState: PanelState): MotionBridge {
+    return {
+      ...bridgeFor(panelState),
+      send: async () => ({ ok: false, code: 'command-refused', message: 'Synthetic refusal.' }),
+    };
+  }
+
+  it('can be dismissed', async () => {
+    const user = userEvent.setup();
+    render(<App bridge={failingBridge(state())} now={NOW} />);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Synthetic refusal.');
+    await user.click(screen.getByRole('button', { name: 'Dismiss message' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('clears when the student changes view', async () => {
+    const user = userEvent.setup();
+    render(<App bridge={failingBridge(state())} now={NOW} />);
+    await user.click(screen.getByRole('button', { name: 'Settings' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Synthetic refusal.');
+    await user.click(screen.getByRole('button', { name: /Coursework/ }));
+    expect(screen.queryByText('Synthetic refusal.')).not.toBeInTheDocument();
+  });
+});
+
+describe('first-run and recovery guidance', () => {
+  it.each(['idle', 'unsupported'] as const)(
+    'names the supported Brightspace sites on %s and offers settings instead of a failing note',
+    async (connection) => {
+      const user = userEvent.setup();
+      const commands: MotionCommand[] = [];
+      render(<App bridge={bridgeFor(state({ connection }), commands)} now={NOW} />);
+      expect(screen.getByText(/\*\.brightspace\.com, \*\.desire2learn\.com/)).toBeInTheDocument();
+      expect(screen.getByText(/mylearningspace\.wlu\.ca/)).toBeInTheDocument();
+      expect(
+        screen.getByText('Open your Brightspace course, then reopen Motion.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Add a note' })).not.toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: 'Open settings' }));
+      expect(commands).toEqual([{ type: 'open-settings' }]);
+    },
+  );
+
+  it('asks for a reload when a supported tab has no content script', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(
+      <App bridge={bridgeFor(state({ connection: 'idle', tabNeedsReload: true }), commands)} now={NOW} />,
+    );
+    expect(
+      screen.getByRole('heading', { name: 'Reload this tab so Motion can read it' }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reload tab' }));
+    expect(commands).toEqual([{ type: 'reload-tab' }]);
+  });
+
+  it('shows a worker failure with Retry instead of a silent idle state', async () => {
+    const user = userEvent.setup();
+    const commands: MotionCommand[] = [];
+    render(
+      <App
+        bridge={bridgeFor(
+          state({ connection: 'idle', workerError: 'The background worker did not respond.' }),
+          commands,
+        )}
+        now={NOW}
+      />,
+    );
+    expect(screen.getByText('The background worker did not respond.')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(commands).toEqual([{ type: 'refresh' }]);
   });
 });

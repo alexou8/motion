@@ -1,6 +1,6 @@
 import type { ActRequest, SnapshotResult } from '@/core/actor/contracts';
 import { deriveRequirements, toRequirements } from '@/core/assist';
-import type { AIProvider } from '@/core/ai/types';
+import { ProviderError, type AIProvider, type TruncationReason } from '@/core/ai/types';
 import { buildLayeredPrompt } from '@/core/ai/prompt';
 import { buildStepContext } from '@/core/agent/context';
 import { validateDestination, type DestinationProvenance } from '@/core/agent/destination';
@@ -32,6 +32,8 @@ import {
   type ProviderResolution,
 } from './providers';
 import { registerCloudRequest, releaseCloudRequest } from './cloudRequests';
+import { liveWorkspaceGroupId, workspaceForBrowserSession } from './workspaceEvents';
+import { workspacePageUrl } from '@/core/workspace';
 
 const SNAPSHOTS_KEY = 'motion.snapshots';
 const OBSERVATION_PREFIX = 'observation:';
@@ -145,6 +147,63 @@ function workspaceTitle(session: AgentSession): string {
   return groupTitle([session.title]);
 }
 
+/** Groups into the session's group while Chrome still has it, else a new one. */
+async function groupIntoWorkspace(
+  services: CapabilityServices,
+  session: AgentSession,
+  sessionKey: string,
+  tabIds: number[],
+): Promise<number> {
+  const existing = await liveWorkspaceGroupId(session.workspace, sessionKey, services.tabs);
+  return services.tabs.groupInto(existing, tabIds, { title: workspaceTitle(session), color: 'blue' });
+}
+
+/** Records Motion-opened tabs, dropping ids left over from another browser session. */
+function withOwnedTabs(
+  current: AgentSession,
+  sessionKey: string,
+  groupId: number,
+  tabIds: number[],
+  now: string,
+): AgentSession {
+  const workspace = workspaceForBrowserSession(current.workspace, sessionKey);
+  return {
+    ...current,
+    updatedAt: now,
+    workspace: {
+      ...workspace,
+      groupId,
+      groupTitle: workspaceTitle(current),
+      ownedTabIds: [...new Set([...workspace.ownedTabIds, ...tabIds])],
+    },
+  };
+}
+
+/**
+ * The student's own tab that started this workflow, when it still shows
+ * `url`. Reading it in place avoids opening a second copy of the page the
+ * student is already looking at.
+ */
+async function studentTabShowing(
+  context: StepContext,
+  url: string,
+  tabs: TabsCapability,
+): Promise<number | null> {
+  const tabId = context.workflow.params['currentTabId'];
+  if (!Number.isInteger(tabId) || (tabId as number) < 0) return null;
+  const page = workspacePageUrl(url);
+  const tab = await tabs.get(tabId as number);
+  return page !== null && tab !== null && workspacePageUrl(tab.url) === page ? (tabId as number) : null;
+}
+
+/** The page whose student tab started this workflow; it is never reopened. */
+function studentPage(context: StepContext): string | null {
+  const url = context.workflow.params['url'];
+  return Number.isInteger(context.workflow.params['currentTabId']) && typeof url === 'string'
+    ? workspacePageUrl(url)
+    : null;
+}
+
 async function isRestricted(tabId: number, content?: PageContent): Promise<boolean> {
   const key = `${OBSERVATION_PREFIX}${tabId}`;
   const stored = (await chrome.storage.session.get(key))[key];
@@ -185,8 +244,13 @@ function openTabCapability(services: CapabilityServices): StepCapability {
     const { value: session } = await sessionFor(context);
     if (urls.some((url) => !sessionDestinationAllowed(url, context.step.input)))
       return { kind: 'blocked', reason: 'Motion will only open a known safe LMS destination.' };
+    // The student's own tab already shows the workflow's page.
+    const current = studentPage(context);
+    const toOpen = current === null ? urls : urls.filter((url) => workspacePageUrl(url) !== current);
+    if (toOpen.length === 0)
+      return { kind: 'done', result: 'Using the tab you already have open.', sourcesVisited: [] };
     const tabIds: number[] = [];
-    for (const [index, url] of urls.entries()) {
+    for (const [index, url] of toOpen.entries()) {
       if (!(await context.stillCurrent()))
         return { kind: 'skipped', reason: 'Stopped before opening the next tab.' };
       tabIds.push((await services.tabs.open(url, `${context.intentKey}:${index}`)).tabId);
@@ -198,21 +262,12 @@ function openTabCapability(services: CapabilityServices): StepCapability {
       tabIds,
     );
     const sessionKey = await services.tabs.sessionKey();
-    await updateSession(context, (current) => ({
-      ...current,
-      updatedAt: services.now().toISOString(),
-      workspace: {
-        ...current.workspace,
-        groupId,
-        groupTitle: workspaceTitle(current),
-        sessionKey,
-        ownedTabIds: [...new Set([...current.workspace.ownedTabIds, ...tabIds])],
-      },
-    }));
+    await updateSession(context, (latest) =>
+      withOwnedTabs(latest, sessionKey, groupId, tabIds, services.now().toISOString()));
     return {
       kind: 'done',
       result: `Opened ${tabIds.length} page${tabIds.length === 1 ? '' : 's'} in ${workspaceTitle(session)}.`,
-      sourcesVisited: urls,
+      sourcesVisited: toOpen,
       evidence: { groupId, tabIds, sessionKey },
     };
   };
@@ -315,31 +370,20 @@ function readPageCapability(services: CapabilityServices): StepCapability {
         const url = requireString(context.step.input, 'url');
         if (!sessionDestinationAllowed(url, context.step.input))
           return { kind: 'blocked', reason: 'Motion will only read a known safe LMS destination.' };
-        const owned = initialSession.workspace.ownedTabIds.filter(
-          (id) => !initialSession.workspace.releasedTabIds.includes(id),
-        );
+        const sessionKey = await services.tabs.sessionKey();
+        const workspace = workspaceForBrowserSession(initialSession.workspace, sessionKey);
+        const owned = workspace.ownedTabIds.filter((id) => !workspace.releasedTabIds.includes(id));
         const existing = await Promise.all(owned.map(async (id) => ({ id, tab: await services.tabs.get(id) })));
-        tabId = existing.find(({ tab }) => tab?.url === url)?.id ?? -1;
+        tabId = existing.find(({ tab }) => tab?.url === url)?.id
+          ?? (await studentTabShowing(context, url, services.tabs))
+          ?? -1;
         if (tabId < 0) {
           const opened = await services.tabs.open(url, `${context.intentKey}:read`);
-          tabId = opened.tabId;
-          const groupId = await services.tabs.groupInto(
-            initialSession.workspace.groupId,
-            [tabId],
-            { title: workspaceTitle(initialSession), color: 'blue' },
-          );
-          const sessionKey = await services.tabs.sessionKey();
-          await updateSession(context, (current) => ({
-            ...current,
-            updatedAt: services.now().toISOString(),
-            workspace: {
-              ...current.workspace,
-              groupId,
-              groupTitle: workspaceTitle(current),
-              sessionKey,
-              ownedTabIds: [...new Set([...current.workspace.ownedTabIds, tabId])],
-            },
-          }));
+          const openedId = opened.tabId;
+          tabId = openedId;
+          const groupId = await groupIntoWorkspace(services, initialSession, sessionKey, [openedId]);
+          await updateSession(context, (current) =>
+            withOwnedTabs(current, sessionKey, groupId, [openedId], services.now().toISOString()));
         }
       }
       const liveContent = await services.askContent(tabId);
@@ -626,12 +670,18 @@ function providerCapability(
 }
 
 async function generate(provider: AIProvider, model: string, request: string, prompt: string, signal: AbortSignal): Promise<string> {
-  return provider.generate({
+  let truncated: TruncationReason | null = null;
+  const text = await provider.generate({
     system: prompt,
     messages: [{ role: 'user', content: request }],
     model,
     signal,
+    onTruncated: (reason) => { truncated = reason; },
   });
+  // A declined request has no usable text; a length cut-off still returns
+  // what arrived, and the caller's parsing decides whether that is enough.
+  if (truncated === 'refusal') throw new ProviderError('bad-response', 'The selected AI provider declined this request. Try rephrasing it.');
+  return text;
 }
 
 function checklistCapability(services: CapabilityServices): StepCapability {
@@ -646,25 +696,19 @@ function checklistCapability(services: CapabilityServices): StepCapability {
         if (!sessionDestinationAllowed(url, context.step.input))
           return { kind: 'blocked', reason: 'Motion will only read a known safe LMS destination.' };
         const { value: initialSession } = await sessionFor(context);
-        const existing = await Promise.all(initialSession.workspace.ownedTabIds
-          .filter((id) => !initialSession.workspace.releasedTabIds.includes(id))
+        const sessionKey = await services.tabs.sessionKey();
+        const workspace = workspaceForBrowserSession(initialSession.workspace, sessionKey);
+        const existing = await Promise.all(workspace.ownedTabIds
+          .filter((id) => !workspace.releasedTabIds.includes(id))
           .map(async (id) => ({ id, tab: await services.tabs.get(id) })));
         tabId = existing.find(({ tab }) => tab?.url === url)?.id ?? -1;
         if (tabId < 0) {
           const opened = await services.tabs.open(url, `${context.intentKey}:checklist`);
-          tabId = opened.tabId;
-          const groupId = await services.tabs.groupInto(initialSession.workspace.groupId, [tabId], {
-            title: workspaceTitle(initialSession), color: 'blue',
-          });
-          const sessionKey = await services.tabs.sessionKey();
-          await updateSession(context, (current) => ({
-            ...current,
-            updatedAt: services.now().toISOString(),
-            workspace: {
-              ...current.workspace, groupId, groupTitle: workspaceTitle(current), sessionKey,
-              ownedTabIds: [...new Set([...current.workspace.ownedTabIds, tabId])],
-            },
-          }));
+          const openedId = opened.tabId;
+          tabId = openedId;
+          const groupId = await groupIntoWorkspace(services, initialSession, sessionKey, [openedId]);
+          await updateSession(context, (current) =>
+            withOwnedTabs(current, sessionKey, groupId, [openedId], services.now().toISOString()));
         }
       }
       if (await isRestricted(tabId))

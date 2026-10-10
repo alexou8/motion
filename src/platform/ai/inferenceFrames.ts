@@ -26,10 +26,34 @@ export type InferenceRequest = z.infer<typeof inferenceRequestSchema>;
 export const clientFrameSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('generate'), requestId: z.string(), request: inferenceRequestSchema }),
   z.object({ type: z.literal('cancel'), requestId: z.string() }),
+  /** Asks the panel's own `LanguageModel` whether it can run, rather than assuming a port means ready. */
+  z.object({ type: z.literal('availability'), requestId: z.string() }),
 ]);
 export type ClientFrame = z.infer<typeof clientFrameSchema>;
 
+const availabilityStatusSchema = z.enum([
+  'available',
+  'downloadable',
+  'downloading',
+  'unavailable',
+  'not-configured',
+  'needs-document-context',
+  'needs-permission',
+  'invalid-key',
+  'rate-limited',
+  'insufficient-quota',
+  'network-error',
+  'model-unavailable',
+]);
+
 export const hostFrameSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('availability'),
+    requestId: z.string(),
+    status: availabilityStatusSchema,
+    message: z.string(),
+    retryAfterMs: z.number().int().nonnegative().optional(),
+  }),
   z.object({ type: z.literal('delta'), requestId: z.string(), text: z.string() }),
   z.object({ type: z.literal('done'), requestId: z.string() }),
   z.object({ type: z.literal('error'), requestId: z.string(), kind: z.string(), message: z.string() }),

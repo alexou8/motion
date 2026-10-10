@@ -4,6 +4,19 @@ import { STORE } from '@/core/storage/schema';
 import { askAboutPageSchema } from '@/core/messaging';
 import type { LanguageModelCapability, ModelAvailability, GenerationRequest } from '@/platform/languageModel';
 import { handleAskAboutPage, handleMessage } from './router';
+import { providerBlockerFromError, type ProviderResolution } from './providers';
+
+const { resolveOverride } = vi.hoisted(() => ({
+  resolveOverride: { current: null as null | (() => Promise<unknown>) },
+}));
+vi.mock('./providers', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./providers')>();
+  return {
+    ...actual,
+    resolveSessionProvider: (...args: Parameters<typeof actual.resolveSessionProvider>) =>
+      resolveOverride.current ? resolveOverride.current() : actual.resolveSessionProvider(...args),
+  };
+});
 
 const TAB = 3;
 const URL = 'https://mylearningspace.wlu.ca/d2l/lms/content/999/view';
@@ -26,6 +39,7 @@ class FakeModel implements LanguageModelCapability {
 
 beforeEach(async () => {
   await deleteDatabase('motion');
+  resolveOverride.current = null;
   session = {};
   contentUrl = URL;
   sendMessage = vi.fn(async () => ({ content: {
@@ -92,6 +106,22 @@ describe('asking about a page', () => {
     const failing = new FakeModel(); failing.error = new Error('Page text secret');
     const result = await handleAskAboutPage({ type: 'ask-about-page', tabId: TAB, question: 'q', history: [] }, failing);
     expect(result.reason).not.toContain('Page text secret');
+  });
+
+  it('explains a cloud provider failure as that provider, not the on-device model', async () => {
+    await observe();
+    const failure = new Error('Synthetic upstream failure quoting Page text');
+    resolveOverride.current = async () => ({
+      kind: 'ready', providerId: 'openai', model: 'gpt-synthetic', displayName: 'OpenAI', cloud: true,
+      provider: { generate: async () => { throw failure; } },
+    } as unknown as ProviderResolution);
+
+    const result = await handleAskAboutPage({ type: 'ask-about-page', tabId: TAB, question: 'q', history: [] });
+
+    expect(result.answer).toBeNull();
+    expect(result.reason).toBe(providerBlockerFromError(failure, 'OpenAI').message);
+    expect(result.reason).not.toContain('on-device');
+    expect(result.reason).not.toContain('Page text');
   });
 
   it('routes a parsed worker message', async () => {

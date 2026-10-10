@@ -62,6 +62,43 @@ describe('AI/settings handlers', () => {
     error.mockRestore();
   });
 
+  it('verifies a saved key with a real request when consent is in place and reports a rejected key honestly', async () => {
+    await preferences.update({ cloudDisclosureAccepted: ['anthropic'] });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid x-api-key' } }), { status: 401 }));
+    const result = await handleAiMessage(
+      { type: 'set-provider-key', providerId: 'anthropic', key: CANARY },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, permissions: { contains: vi.fn(async () => true) }, fetchImpl },
+    );
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ configured: true, availability: { status: 'invalid-key', message: 'Your Anthropic API key is no longer valid. Reconnect.' } });
+    // The key stays saved so the student can correct or retry it.
+    expect(await secrets.has('anthropic')).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(CANARY);
+  });
+
+  it('reports a verified key as ready only after a successful request', async () => {
+    await preferences.update({ cloudDisclosureAccepted: ['anthropic'] });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ data: [{ id: 'claude-haiku-5-5' }], has_more: false, last_id: null }), { status: 200 }));
+    const result = await handleAiMessage(
+      { type: 'set-provider-key', providerId: 'anthropic', key: CANARY },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, permissions: { contains: vi.fn(async () => true) }, fetchImpl },
+    );
+    expect(result).toMatchObject({ configured: true, availability: { status: 'available', message: 'Anthropic is ready.' } });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('saves a key without a request, and without claiming it is ready, until disclosure and host access exist', async () => {
+    const fetchImpl = vi.fn();
+    const result = await handleAiMessage(
+      { type: 'set-provider-key', providerId: 'anthropic', key: CANARY },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, fetchImpl },
+    ) as { availability: { message: string } };
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(result.availability.message).not.toMatch(/is ready/);
+    expect(result.availability.message).toMatch(/saved/);
+  });
+
   it('forgets a provider key immediately', async () => {
     await secrets.set('anthropic', CANARY);
     await handleAiMessage(
@@ -136,6 +173,49 @@ describe('AI/settings handlers', () => {
     expect(local.values).toEqual({ unrelated: 'keep' });
     expect(session.values).toEqual({ [DOCUMENT_LIFECYCLE_KEY]: { epoch: expect.any(String), deleting: false } });
     expect(JSON.stringify(session.values)).not.toContain(CANARY);
+  });
+
+  it('also clears every scheduled alarm and open notification when deleting all data', async () => {
+    const calls: string[] = [];
+    await handleAiMessage(
+      { type: 'delete-local-data', confirm: 'DELETE' },
+      {
+        preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session,
+        deleteDatabase: async () => { calls.push('db'); },
+        clearAlarms: async () => { calls.push('alarms'); },
+        clearNotifications: async () => { calls.push('notifications'); },
+      },
+    );
+    expect(calls).toEqual(expect.arrayContaining(['db', 'alarms', 'notifications']));
+    expect(calls.indexOf('alarms')).toBeLessThan(calls.indexOf('notifications'));
+  });
+
+  it('clears alarms and notifications through chrome when no override is supplied', async () => {
+    const clearAll = vi.fn(async () => true);
+    const clear = vi.fn((_id: string, callback?: (cleared: boolean) => void) => callback?.(true));
+    vi.stubGlobal('chrome', {
+      permissions: { contains: vi.fn(async () => false) },
+      runtime: { id: 'test-extension-id' },
+      alarms: { clearAll },
+      notifications: { getAll: (callback: (all: object) => void) => callback({ 'motion-reminder-notification:a': true, 'motion-test-reminder-1': true }), clear },
+    });
+    await handleAiMessage(
+      { type: 'delete-local-data', confirm: 'DELETE' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, deleteDatabase: async () => undefined },
+    );
+    expect(clearAll).toHaveBeenCalledOnce();
+    expect(clear.mock.calls.map(([id]) => id).sort()).toEqual(['motion-reminder-notification:a', 'motion-test-reminder-1']);
+  });
+
+  it('reports a failure to clear alarms instead of confirming the deletion', async () => {
+    await expect(handleAiMessage(
+      { type: 'delete-local-data', confirm: 'DELETE' },
+      {
+        preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session,
+        deleteDatabase: async () => undefined,
+        clearAlarms: async () => { throw new Error('alarms unavailable'); },
+      },
+    )).rejects.toThrow(/could not delete all local data/i);
   });
 
   it('preserves storage and the database when an opted-in vault credential cannot be deleted', async () => {
@@ -264,6 +344,51 @@ describe('AI/settings handlers', () => {
     expect(models).toContain('gpt-6-luna');
     expect(models).not.toContain('gpt-4o-audio-preview');
     expect(models).not.toContain('text-embedding-3-small');
+  });
+
+  it('surfaces a rejected key from the account listing instead of returning the curated list', async () => {
+    await preferences.update({ providerId: 'anthropic', cloudDisclosureAccepted: ['anthropic'] });
+    await secrets.set('anthropic', CANARY);
+    await expect(handleAiMessage(
+      { type: 'list-provider-models', providerId: 'anthropic' },
+      {
+        preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session,
+        permissions: { contains: vi.fn(async () => true) },
+        fetchImpl: vi.fn(async () => new Response(JSON.stringify({ type: 'error', error: { type: 'authentication_error', message: 'invalid' } }), { status: 401 })),
+      },
+    )).rejects.toThrow('Your Anthropic API key is no longer valid. Reconnect.');
+  });
+
+  it('surfaces a provider outage from the account listing in plain language', async () => {
+    await preferences.update({ providerId: 'anthropic', cloudDisclosureAccepted: ['anthropic'] });
+    await secrets.set('anthropic', CANARY);
+    await expect(handleAiMessage(
+      { type: 'list-provider-models', providerId: 'anthropic' },
+      {
+        preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session,
+        permissions: { contains: vi.fn(async () => true) },
+        fetchImpl: vi.fn(async () => new Response('{}', { status: 500 })),
+      },
+    )).rejects.toThrow(/having trouble right now/);
+  });
+
+  it('aborts the underlying listing request when the bounded wait times out', async () => {
+    vi.useFakeTimers();
+    await preferences.update({ providerId: 'openai', cloudDisclosureAccepted: ['openai'] });
+    await secrets.set('openai', CANARY);
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      requestSignal = init?.signal ?? undefined;
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+    }));
+    const settled = handleAiMessage(
+      { type: 'list-provider-models', providerId: 'openai' },
+      { preferencesStore: preferences, secrets, localStorage: local, sessionStorage: session, permissions: { contains: async () => true }, fetchImpl },
+    ).then(() => null, (error: Error) => error);
+    await vi.advanceTimersByTimeAsync(5_600);
+    const error = await settled;
+    expect(error?.message).toMatch(/took too long to respond/);
+    expect(requestSignal?.aborted).toBe(true);
   });
 
   it('does not query account models before disclosure, host permission, and session-key gates pass', async () => {

@@ -45,6 +45,13 @@ const INTERACTIVE_SELECTOR = [
 
 const SUBMIT_LABEL_PATTERN = /\b(submit|post|send|publish|upload|finalize|finish)\b/i;
 
+/**
+ * Link paths whose GET ends the session or mutates the course: following one is
+ * never a navigation, whatever the link says or whatever approval accompanies
+ * it. Matched as substrings so `folder_delete_file` and `DeleteFile` both count.
+ */
+const DESTRUCTIVE_HREF_PATH_PATTERN = /log[-_]?(?:out|off)|sign[-_]?(?:out|off)|delete|remove|withdraw/i;
+
 let currentSnapshotId: string | null = null;
 let currentHandles = new Map<string, WeakRef<Element>>();
 let handleCounter = 0;
@@ -213,8 +220,17 @@ function hrefOf(element: Element): string | undefined {
   }
 }
 
+function isDestructiveHref(href: string | undefined): boolean {
+  if (href === undefined) return false;
+  try {
+    return DESTRUCTIVE_HREF_PATH_PATTERN.test(new URL(href).pathname);
+  } catch {
+    return true;
+  }
+}
+
 function isRefusedNavigation(element: Element, descriptor: ElementDescriptor): boolean {
-  return element.tagName.toLowerCase() === 'a' && descriptor.href === undefined;
+  return element.tagName.toLowerCase() === 'a' && (descriptor.href === undefined || isDestructiveHref(descriptor.href));
 }
 
 function describe(element: Element, handle: string): ElementDescriptor {
@@ -380,11 +396,29 @@ export function act(request: ActRequest, options: ActorOptions = {}): ActResult 
     case 'click': {
       if (element.tagName.toLowerCase() === 'a') {
         const href = descriptor.href;
+        if (isDestructiveHref(href)) {
+          return {
+            ok: false,
+            error: 'refused-navigation',
+            message: 'Motion does not follow sign-out, delete, remove or withdraw links.',
+            evidence: { descriptor },
+          };
+        }
         if (isRefusedNavigation(element, descriptor) || href === undefined) {
           return {
             ok: false,
             error: 'refused-navigation',
             message: 'Motion only follows secure links on the current LMS origin.',
+            evidence: { descriptor },
+          };
+        }
+        // A link can submit as surely as a button: the same consequential
+        // check applies before it is followed.
+        if (isSubmitLike(descriptor) && !options.consequentialCapability) {
+          return {
+            ok: false,
+            error: 'refused-consequential',
+            message: 'This looks like a submit control. Motion needs a fresh approval before clicking it.',
             evidence: { descriptor },
           };
         }

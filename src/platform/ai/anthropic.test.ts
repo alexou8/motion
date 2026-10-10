@@ -51,6 +51,19 @@ describe('AnthropicProvider', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
+  it('asks current-generation models for low effort and leaves older models alone', async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const fetchImpl = vi.fn(async (_url: unknown, init: unknown) => {
+      bodies.push(JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>);
+      return jsonResponse({ type: 'message', content: [{ type: 'text', text: 'hi' }], stop_reason: 'end_turn' });
+    }) as unknown as FetchLike;
+    const provider = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
+    await provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'claude-haiku-5-5' });
+    await provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], model: 'claude-haiku-4-5' });
+    expect(bodies[0]?.output_config).toEqual({ effort: 'low' });
+    expect(bodies[1]?.output_config).toBeUndefined();
+  });
+
   it('follows Anthropic model pages with an encoded cursor', async () => {
     const fetchImpl = vi.fn(async (url: unknown) => {
       if (url === 'https://api.anthropic.com/v1/models?limit=20') {
@@ -200,7 +213,7 @@ describe('AnthropicProvider', () => {
     expect(out).toEqual(['a']);
   });
 
-  it('does not treat an error event after partial output as success', async () => {
+  it('maps a mid-stream overloaded_error to a retryable overload, not a bad response', async () => {
     const provider = new AnthropicProvider({
       secrets: fakeSecrets(CANARY),
       fetchImpl: vi.fn(async () => sseResponse([
@@ -212,11 +225,62 @@ describe('AnthropicProvider', () => {
 
     await expect((async () => {
       for await (const delta of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) output.push(delta);
-    })()).rejects.toMatchObject({ kind: 'bad-response', message: expect.not.stringContaining(CANARY) });
+    })()).rejects.toMatchObject({ kind: 'rate-limited', retryAfterMs: 30_000, message: expect.not.stringContaining(CANARY) });
     expect(output.join('')).toBe('partial');
   });
 
-  it('rejects a stream that ends with the max_tokens stop reason', async () => {
+  it.each([
+    ['authentication_error', 'invalid-key'],
+    ['permission_error', 'forbidden'],
+    ['rate_limit_error', 'rate-limited'],
+    ['api_error', 'outcome-unknown'],
+    ['mystery_error', 'bad-response'],
+  ])('maps a mid-stream %s event to %s', async (type, kind) => {
+    const provider = new AnthropicProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => sseResponse([
+        `event: error\ndata: {"type":"error","error":{"type":"${type}","message":"boom"}}\n\n`,
+      ])) as unknown as FetchLike,
+    });
+    await expect((async () => {
+      for await (const _ of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) void _;
+    })()).rejects.toMatchObject({ kind });
+  });
+
+  it('surfaces a redacted request-rejection detail from a mid-stream invalid_request_error', async () => {
+    const provider = new AnthropicProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => sseResponse([
+        `event: error\ndata: {"type":"error","error":{"type":"invalid_request_error","message":"bad ${CANARY}"}}\n\n`,
+      ])) as unknown as FetchLike,
+    });
+    await expect((async () => {
+      for await (const _ of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) void _;
+    })()).rejects.toMatchObject({
+      kind: 'bad-request',
+      message: expect.stringContaining('invalid_request_error'),
+    });
+    await expect((async () => {
+      for await (const _ of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) void _;
+    })()).rejects.toMatchObject({ message: expect.not.stringContaining(CANARY) });
+  });
+
+  it('ignores unknown delta types instead of failing the stream', async () => {
+    const provider = new AnthropicProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => sseResponse([
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"citations_delta","citation":{"x":1}}}\n\n',
+        'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n',
+        'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
+        'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+      ])) as unknown as FetchLike,
+    });
+    const output: string[] = [];
+    for await (const delta of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) output.push(delta);
+    expect(output.join('')).toBe('ok');
+  });
+
+  it('keeps the text of a stream that ends with the max_tokens stop reason and reports truncation', async () => {
     const provider = new AnthropicProvider({
       secrets: fakeSecrets(CANARY),
       fetchImpl: vi.fn(async () => sseResponse([
@@ -226,11 +290,30 @@ describe('AnthropicProvider', () => {
       ])) as unknown as FetchLike,
     });
 
+    const output: string[] = [];
+    const onTruncated = vi.fn();
+    for await (const delta of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }], onTruncated })) output.push(delta);
+    expect(output.join('')).toBe('partial');
+    expect(onTruncated).toHaveBeenCalledWith('max-tokens');
+  });
+
+  it('keeps partial text on a refusal stop and flags it, but rejects a refusal with no text', async () => {
+    const refusalFrames = (text: string) => [
+      ...(text ? [`event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"${text}"}}\n\n`] : []),
+      'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"refusal"}}\n\n',
+      'event: message_stop\ndata: {"type":"message_stop"}\n\n',
+    ];
+    const onTruncated = vi.fn();
+    const withText = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl: vi.fn(async () => sseResponse(refusalFrames('so far'))) as unknown as FetchLike });
+    const out: string[] = [];
+    for await (const delta of withText.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }], onTruncated })) out.push(delta);
+    expect(out.join('')).toBe('so far');
+    expect(onTruncated).toHaveBeenCalledWith('refusal');
+
+    const empty = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl: vi.fn(async () => sseResponse(refusalFrames(''))) as unknown as FetchLike });
     await expect((async () => {
-      for await (const _ of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) {
-        void _;
-      }
-    })()).rejects.toMatchObject({ kind: 'bad-response' });
+      for await (const _ of empty.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) void _;
+    })()).rejects.toMatchObject({ kind: 'bad-response', message: expect.stringMatching(/declined/) });
   });
 
   it('rejects a stream that ends without message_stop', async () => {
@@ -249,7 +332,7 @@ describe('AnthropicProvider', () => {
     })()).rejects.toMatchObject({ kind: 'bad-response' });
   });
 
-  it('rejects a max_tokens HTTP response instead of returning partial text', async () => {
+  it('returns the partial text of a max_tokens HTTP response and reports truncation', async () => {
     const provider = new AnthropicProvider({
       secrets: fakeSecrets(CANARY),
       fetchImpl: vi.fn(async () => jsonResponse({
@@ -259,9 +342,111 @@ describe('AnthropicProvider', () => {
       })) as unknown as FetchLike,
     });
 
+    const onTruncated = vi.fn();
     await expect(
-      provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] }),
-    ).rejects.toMatchObject({ kind: 'bad-response' });
+      provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], onTruncated }),
+    ).resolves.toBe('partial');
+    expect(onTruncated).toHaveBeenCalledWith('max-tokens');
+  });
+
+  it('does not report truncation for a normal end_turn', async () => {
+    const provider = new AnthropicProvider({
+      secrets: fakeSecrets(CANARY),
+      fetchImpl: vi.fn(async () => jsonResponse({ type: 'message', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn' })) as unknown as FetchLike,
+    });
+    const onTruncated = vi.fn();
+    await expect(provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }], onTruncated })).resolves.toBe('done');
+    expect(onTruncated).not.toHaveBeenCalled();
+  });
+
+  it('reports a connect timeout as a timeout with its own message, not a cancellation', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn((_url: unknown, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      })) as unknown as FetchLike;
+      const provider = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
+      const settled = provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] }).catch((e) => e);
+      await vi.advanceTimersByTimeAsync(60_000);
+      const error = await settled;
+      expect(error.kind).toBe('timeout');
+      expect(error.message).toBe('Anthropic took too long to respond. The request may have been processed and charged. Retry?');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reports a stream that goes silent as a timeout after the text already received', async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const fetchImpl = vi.fn(async () => new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"a"}}\n\n'));
+        },
+      }), { status: 200 })) as unknown as FetchLike;
+      const provider = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl });
+      const output: string[] = [];
+      const settled = (async () => {
+        for await (const delta of provider.stream({ system: 's', messages: [{ role: 'user', content: 'hi' }] })) output.push(delta);
+      })().catch((e) => e);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(await settled).toMatchObject({ kind: 'timeout' });
+      expect(output).toEqual(['a']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  describe('HTTP failures', () => {
+    const run = (response: () => Response, method: 'generate' | 'listModels' = 'generate') => {
+      const provider = new AnthropicProvider({ secrets: fakeSecrets(CANARY), fetchImpl: vi.fn(async () => response()) as unknown as FetchLike });
+      return method === 'generate'
+        ? provider.generate({ system: 's', messages: [{ role: 'user', content: 'hi' }] })
+        : provider.listModels();
+    };
+
+    it.each([400, 413, 422])('reports a %i as a rejected request with the provider detail, not a connection problem', async (status) => {
+      const error = await run(() => jsonResponse({ type: 'error', error: { type: 'invalid_request_error', message: `max_tokens too large ${CANARY}` } }, status)).catch((e) => e);
+      expect(error).toMatchObject({ kind: 'bad-request', message: expect.stringContaining('max_tokens too large') });
+      expect(error.message).not.toContain(CANARY);
+      expect(error.message).not.toMatch(/connection/i);
+    });
+
+    it('reports a 403 as missing model permission rather than an invalid key', async () => {
+      const error = await run(() => jsonResponse({ type: 'error', error: { type: 'permission_error', message: 'no access' } }, 403)).catch((e) => e);
+      expect(error.kind).toBe('forbidden');
+      expect(error.message).toMatch(/doesn’t have permission to use this model/);
+      expect(error.message).not.toMatch(/no longer valid/);
+    });
+
+    it('keeps 401 as an invalid key', async () => {
+      await expect(run(() => jsonResponse({ type: 'error', error: { type: 'authentication_error', message: 'x' } }, 401))).rejects.toMatchObject({ kind: 'invalid-key' });
+    });
+
+    it('treats 529 as a retryable overload with a default retry hint', async () => {
+      const error = await run(() => jsonResponse({ type: 'error', error: { type: 'overloaded_error', message: 'Overloaded' } }, 529)).catch((e) => e);
+      expect(error).toMatchObject({ kind: 'rate-limited', retryAfterMs: 30_000 });
+      expect(error.message).toMatch(/overloaded/i);
+    });
+
+    it('honours a retry-after in HTTP-date form', async () => {
+      // Beyond the inline-wait cap, so the 429 is returned rather than slept on.
+      const when = new Date(Date.now() + 120_000).toUTCString();
+      const error = await run(() => new Response('{}', {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': when },
+      })).catch((e) => e);
+      expect(error.kind).toBe('rate-limited');
+      expect(error.retryAfterMs).toBeGreaterThan(100_000);
+      expect(error.retryAfterMs).toBeLessThanOrEqual(120_000);
+    });
+
+    it('explains a GET 5xx as a provider problem, not a connection problem', async () => {
+      const error = await run(() => jsonResponse({}, 500), 'listModels').catch((e) => e);
+      expect(error.kind).toBe('server-error');
+      expect(error.message).not.toMatch(/connection/i);
+    });
   });
 
   it('rejects an HTTP response without text content', async () => {

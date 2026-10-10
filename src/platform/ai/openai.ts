@@ -7,19 +7,26 @@
  */
 
 import { redactSecrets } from '@/core/ai/redact';
-import { explainProviderError } from '@/core/ai/explain';
-import { ProviderError, type AIProvider, type GenerateRequest, type ProviderAvailability, type ProviderCapabilities } from '@/core/ai/types';
+import { explainProviderError, timeoutMessage } from '@/core/ai/explain';
+import {
+  ProviderError,
+  providerStatusForErrorKind,
+  type AIProvider,
+  type GenerateRequest,
+  type ProviderAvailability,
+  type ProviderCapabilities,
+  type TruncationReason,
+} from '@/core/ai/types';
 import { resolveOpenAIRecommended } from '@/core/ai/models';
 import { z } from 'zod';
 import type { SecretStore } from './secrets';
 import {
-  classifyHttpError,
   DEFAULT_GENERATE_TIMEOUT_MS,
   DEFAULT_HEALTH_TIMEOUT_MS,
   E2E_PROVIDER_BASE_URL,
   HttpProviderError,
-  isOutcomeUnknownStatus,
   parseSSEStream,
+  providerErrorFromResponse,
   requestWithRetry,
   type FetchLike,
 } from './http';
@@ -45,8 +52,11 @@ const openAIModelsSchema = z.object({
   data: z.array(z.object({ id: z.string() })),
 });
 
+const incompleteDetailsSchema = z.object({ reason: z.string().optional() }).nullable().optional();
+
 const openAIResponseSchema = z.object({
-  status: z.literal('completed'),
+  status: z.enum(['completed', 'incomplete']),
+  incomplete_details: incompleteDetailsSchema,
   output_text: z.string().optional(),
   output: z.array(z.object({
     content: z.array(z.object({
@@ -72,7 +82,7 @@ const openAIFailedSchema = z.object({
 });
 const openAIIncompleteSchema = z.object({
   type: z.literal('response.incomplete'),
-  response: z.object({ status: z.literal('incomplete') }),
+  response: z.object({ status: z.literal('incomplete'), incomplete_details: incompleteDetailsSchema }),
 });
 const openAIErrorSchema = z.object({ type: z.literal('error') });
 
@@ -178,31 +188,13 @@ export class OpenAIProvider implements AIProvider {
 
   private availabilityFromError(err: unknown): ProviderAvailability {
     if (err instanceof ProviderError) {
-      return { status: err.kind === 'cancelled' || err.kind === 'bad-response' || err.kind === 'outcome-unknown' ? 'network-error' : err.kind, message: err.message, retryAfterMs: err.retryAfterMs };
+      return { status: providerStatusForErrorKind(err.kind), message: err.message, retryAfterMs: err.retryAfterMs };
     }
     return { status: 'network-error', message: 'Motion couldn’t reach OpenAI. Check your connection and try again.' };
   }
 
   private async toProviderError(response: Response, key: string, method: 'GET' | 'POST'): Promise<ProviderError> {
-    const body = await readErrorBody(response);
-    const kind = classifyHttpError('openai', response.status, body);
-    const errorKind = method === 'POST' && isOutcomeUnknownStatus(response.status) ? 'outcome-unknown' as const : kind;
-    const message = redactSecrets(
-      errorKind === 'outcome-unknown'
-        ? explainProviderError('openai', errorKind)
-        : errorKind === 'invalid-key'
-        ? 'Your OpenAI API key is no longer valid. Reconnect.'
-        : errorKind === 'insufficient-quota'
-          ? 'Your OpenAI account is out of quota. Check your billing with OpenAI.'
-          : errorKind === 'rate-limited'
-            ? 'OpenAI is rate limited.'
-            : errorKind === 'model-unavailable'
-              ? 'The selected OpenAI model is no longer available.'
-              : 'Motion couldn’t reach OpenAI. Check your connection and try again.',
-      [key],
-    );
-    const retryAfterMs = errorKind === 'rate-limited' ? parseRetryAfterHeader(response) : undefined;
-    return new ProviderError(errorKind, message, retryAfterMs);
+    return providerErrorFromResponse('openai', response, await readErrorBody(response), key, method);
   }
 
   private async resolvedModel(req: GenerateRequest): Promise<string> {
@@ -250,6 +242,8 @@ export class OpenAIProvider implements AIProvider {
       .map((content) => content.text ?? '')
       .join('');
     if (!text) throw badResponseError('OpenAI');
+    // An `incomplete` response still carries the text produced so far.
+    if (body.data.status === 'incomplete') req.onTruncated?.(truncationFor(body.data.incomplete_details?.reason));
     return text;
   }
 
@@ -275,10 +269,15 @@ export class OpenAIProvider implements AIProvider {
 
     try {
       let completed = false;
+      let emitted = false;
+      let truncation: TruncationReason | undefined;
       for await (const event of parseSSEStream(response.body, req.signal)) {
         if (event.event === 'response.output_text.delta') {
           const parsed = parseStreamEvent(event.data, openAITextDeltaSchema, 'OpenAI');
-          if (parsed.delta) yield parsed.delta;
+          if (parsed.delta) {
+            emitted = true;
+            yield parsed.delta;
+          }
         } else if (event.event === 'response.completed') {
           parseStreamEvent(event.data, openAICompletedSchema, 'OpenAI');
           completed = true;
@@ -286,14 +285,19 @@ export class OpenAIProvider implements AIProvider {
           parseStreamEvent(event.data, openAIFailedSchema, 'OpenAI');
           throw badResponseError('OpenAI');
         } else if (event.event === 'response.incomplete') {
-          parseStreamEvent(event.data, openAIIncompleteSchema, 'OpenAI');
-          throw badResponseError('OpenAI');
+          // Keep the text already streamed; only the stop reason is reported.
+          truncation = truncationFor(parseStreamEvent(event.data, openAIIncompleteSchema, 'OpenAI').response.incomplete_details?.reason);
+          completed = true;
         } else if (event.event === 'error') {
           parseStreamEvent(event.data, openAIErrorSchema, 'OpenAI');
           throw badResponseError('OpenAI');
         }
       }
       if (!completed) throw badResponseError('OpenAI');
+      if (truncation) {
+        if (!emitted) throw badResponseError('OpenAI');
+        req.onTruncated?.(truncation);
+      }
     } catch (error) {
       if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
       if (error instanceof ProviderError) throw error;
@@ -302,15 +306,11 @@ export class OpenAIProvider implements AIProvider {
   }
 }
 
-function parseRetryAfterHeader(response: Response): number | undefined {
-  const header = response.headers.get('retry-after');
-  if (!header) return undefined;
-  const seconds = Number(header);
-  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
-}
-
 function toRequestError(err: unknown, key: string): ProviderError {
   if (err instanceof HttpProviderError) {
+    // A timed-out chargeable POST may already have been billed: keep the
+    // timeout kind, but say so.
+    if (err.timedOut) return new ProviderError('timeout', timeoutMessage('openai', err.outcomeUnknown));
     if (err.cancelled) return new ProviderError('cancelled', 'Request cancelled.');
     if (err.outcomeUnknown) return new ProviderError('outcome-unknown', explainProviderError('openai', 'outcome-unknown'));
     return new ProviderError('network-error', redactSecrets('Motion couldn’t reach OpenAI. Check your connection and try again.', [key]));
@@ -332,4 +332,10 @@ function parseStreamEvent<T>(data: string, schema: z.ZodType<T>, provider: 'Open
 
 function badResponseError(provider: 'OpenAI'): ProviderError {
   return new ProviderError('bad-response', `${provider} did not return a complete response. Try again.`);
+}
+
+function truncationFor(reason: string | undefined): TruncationReason {
+  if (reason === 'max_output_tokens') return 'max-tokens';
+  if (reason === 'content_filter') return 'refusal';
+  return 'incomplete';
 }

@@ -26,6 +26,11 @@ import {
 export const motionCommandSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('open-settings') }),
   z.object({ type: z.literal('request-permission') }),
+  // Re-reads the worker's state after a failed read (panel-only; never sent on).
+  z.object({ type: z.literal('refresh') }).strict(),
+  // Reloads the active supported tab so its content script loads. The bridge
+  // resolves the tab; a view never names one.
+  z.object({ type: z.literal('reload-tab') }).strict(),
   z.object({ type: z.literal('read-page'), url: z.string().url().nullable() }),
   z.object({ type: z.literal('get-document-sources') }).strict(),
   z.object({ type: z.literal('index-document-source'), handle: z.string().uuid() }).strict(),

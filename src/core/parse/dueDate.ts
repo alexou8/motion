@@ -71,7 +71,9 @@ function parseMonth(value: string): number | null {
 }
 
 function parseDateParts(text: string): { parts: DateParts | null; confidence: Confidence; found: boolean } {
-  const isoMatch = text.match(/\b(\d{4})-(\d{1,2})-(\d{1,2})\b/);
+  // Digit lookarounds rather than `\b`: in `2025-10-14T23:59:00Z` the day is
+  // followed by `T`, a word character, so a word boundary never matches there.
+  const isoMatch = text.match(/(?<!\d)(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)/);
   if (isoMatch) {
     const [, yearText, monthText, dayText] = isoMatch;
     if (!yearText || !monthText || !dayText) return { parts: null, confidence: 'low', found: true };
@@ -130,6 +132,9 @@ function parseDateParts(text: string): { parts: DateParts | null; confidence: Co
 }
 
 function parseClock(text: string): ClockParts {
+  const isoTime = text.match(/(?<=\d)T([01]\d|2[0-3]):([0-5]\d)/);
+  if (isoTime) return { hour: Number(isoTime[1] ?? 0), minute: Number(isoTime[2] ?? 0), timeAssumed: false };
+
   const meridiem = text.match(/\b(\d{1,2})(?::(\d{2}))?\s*(AM|PM)\b/i);
   if (meridiem) {
     const [, hourText, minuteText, periodText] = meridiem;
@@ -164,7 +169,28 @@ function parseOffset(value: string): number | null {
   return sign * (hours * 60 + minutes);
 }
 
+/**
+ * Whether `timeZone` is an IANA zone this runtime knows. Ordinary prose such as
+ * "Pass/Fail" or "and/or" has the same shape as `America/Toronto`, and an
+ * unknown zone makes `Intl.DateTimeFormat` throw a RangeError.
+ */
+function isKnownTimeZone(timeZone: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseZone(text: string, assumedTimeZone: string): ZoneParts {
+  const isoZone = text.match(/(?<=\d)T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)(?![\w:])/i);
+  if (isoZone?.[1]) {
+    if (isoZone[1].toUpperCase() === 'Z') return { evidence: 'explicit', offsetMinutes: 0, timeZone: 'UTC' };
+    const minutes = parseOffset(isoZone[1]);
+    if (minutes !== null) return { evidence: 'explicit', offsetMinutes: minutes, timeZone: `UTC${isoZone[1]}` };
+  }
+
   const offset = text.match(/\b(?:UTC|GMT)\s*([+-]\d{1,2}(?::?\d{2})?)\b/i);
   if (offset?.[1]) {
     const minutes = parseOffset(offset[1]);
@@ -173,8 +199,10 @@ function parseZone(text: string, assumedTimeZone: string): ZoneParts {
 
   if (/\b(?:Z|UTC|GMT)\b/i.test(text)) return { evidence: 'explicit', offsetMinutes: 0, timeZone: 'UTC' };
 
-  const namedZone = text.match(/\b([A-Za-z]+(?:\/[A-Za-z_]+)+)\b/);
-  if (namedZone?.[1]) return { evidence: 'explicit', offsetMinutes: null, timeZone: namedZone[1] };
+  const namedZone = Array.from(text.matchAll(/\b([A-Za-z]+(?:\/[A-Za-z_]+)+)\b/g))
+    .map((match) => match[1])
+    .find((candidate): candidate is string => candidate !== undefined && isKnownTimeZone(candidate));
+  if (namedZone) return { evidence: 'explicit', offsetMinutes: null, timeZone: namedZone };
 
   const abbreviation = text.match(/\b([A-Z]{2,5})\b/g)?.find((candidate) => candidate in ZONE_OFFSETS);
   if (abbreviation) return { evidence: 'explicit', offsetMinutes: ZONE_OFFSETS[abbreviation] ?? 0, timeZone: abbreviation };
@@ -232,15 +260,34 @@ function localDateToInstant(parts: DateParts, clock: ClockParts, zone: ZoneParts
   }
 }
 
+/**
+ * The year that puts a year-less date closest to `now`, compared as wall-clock
+ * times in the date's zone, so "Jan 5" read on Dec 20 is next January and
+ * "Dec 15" read on Jan 5 is last December.
+ */
 function nearestYear(parts: DateParts, clock: ClockParts, now: Date, timeZone: string): number {
-  const current = formatParts(now, timeZone);
+  let current: Record<string, number>;
+  try {
+    current = formatParts(now, timeZone);
+  } catch {
+    current = {};
+  }
   const currentYear = current.year ?? now.getUTCFullYear();
-  const target = Date.UTC(current.year ?? 1970, parts.month, parts.day, clock.hour, clock.minute);
+  const nowWallClock = Date.UTC(
+    currentYear,
+    (current.month ?? now.getUTCMonth() + 1) - 1,
+    current.day ?? now.getUTCDate(),
+    current.hour ?? now.getUTCHours(),
+    current.minute ?? now.getUTCMinutes(),
+  );
   let bestYear = currentYear;
   let bestDistance = Number.POSITIVE_INFINITY;
   for (const year of [currentYear - 1, currentYear, currentYear + 1]) {
-    const candidate = Date.UTC(year, parts.month, parts.day, clock.hour, clock.minute);
-    const distance = Math.abs(candidate - target);
+    // A Feb 29 candidate only exists in a leap year; skip the others rather
+    // than letting Date.UTC roll it into March.
+    if (!isValidDateParts({ ...parts, year })) continue;
+    const candidate = Date.UTC(year, parts.month - 1, parts.day, clock.hour, clock.minute);
+    const distance = Math.abs(candidate - nowWallClock);
     if (distance < bestDistance) {
       bestYear = year;
       bestDistance = distance;

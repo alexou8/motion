@@ -9,7 +9,8 @@
  * another provider.
  */
 
-import type { AIProvider, ProviderAvailability, ProviderId, ProviderStatus } from '@/core/ai/types';
+import type { BlockerAction } from '@/core/session/types';
+import type { AIProvider, ProviderAvailability, ProviderErrorKind, ProviderId, ProviderStatus } from '@/core/ai/types';
 import { ProviderError } from '@/core/ai/types';
 import { explainProviderError, explainProviderStatus } from '@/core/ai/explain';
 import { isSupportedTextModel, resolveModel } from '@/core/ai/models';
@@ -44,6 +45,8 @@ export interface Blocker {
   kind: 'provider' | 'document-context' | 'rate-limit' | 'permission';
   message: string;
   retryAt?: number;
+  /** Which control the panel offers; set by the producer, never inferred from `kind`. */
+  action?: BlockerAction;
 }
 
 export interface ProviderReady {
@@ -104,6 +107,7 @@ export function providerBlockerFromError(error: unknown, providerDisplayName: st
     const message = explainByKind(error.kind, providerDisplayName, error.retryAfterMs, error.message);
     const kind = blockerKindForStatus(error.kind);
     const blocker: Blocker = { kind, message };
+    if (kind === 'permission') blocker.action = 'open-ai-settings';
     if (error.retryAfterMs !== undefined) blocker.retryAt = Date.now() + error.retryAfterMs;
     return blocker;
   }
@@ -114,24 +118,31 @@ export function providerBlockerFromError(error: unknown, providerDisplayName: st
 }
 
 function explainByKind(
-  kind: ProviderStatus | 'cancelled' | 'bad-response' | 'outcome-unknown',
+  kind: ProviderErrorKind,
   providerDisplayName: string,
   retryAfterMs: number | undefined,
   fallbackMessage: string,
 ): string {
   const providerId = (Object.entries(DISPLAY_NAMES).find(([, name]) => name === providerDisplayName)?.[0] ?? null) as ProviderId | null;
-  if (providerId && kind === 'outcome-unknown') {
-    return explainProviderError(providerId, kind, fallbackMessage);
-  }
-  if (providerId && kind !== 'cancelled' && kind !== 'bad-response' && kind !== 'outcome-unknown') {
-    return explainProviderStatus(providerId, {
-      status: kind,
-      message: fallbackMessage,
-      ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
-    });
+  if (providerId) {
+    if (kind === 'outcome-unknown' || kind === 'timeout' || kind === 'forbidden' || kind === 'server-error' || kind === 'bad-request') {
+      return explainProviderError(providerId, kind, fallbackMessage);
+    }
+    if (kind !== 'cancelled' && kind !== 'bad-response') {
+      return explainProviderStatus(providerId, {
+        status: kind,
+        message: fallbackMessage,
+        ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
+      });
+    }
   }
   return fallbackMessage || `Motion couldn’t reach ${providerDisplayName}. Try again shortly.`;
 }
+
+/** Listing failures that mean the account cannot be used, as opposed to a passing outage. */
+// `forbidden` is deliberately absent: a restricted key may lack model-listing
+// scope yet still answer requests, so the curated list is used instead.
+const LISTING_BLOCKING_KINDS: ReadonlySet<ProviderErrorKind> = new Set<ProviderErrorKind>(['invalid-key', 'insufficient-quota']);
 
 function cloudOriginFor(providerId: ProviderId): string | undefined {
   return PROVIDER_ORIGINS[providerId];
@@ -200,6 +211,7 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
         blocker: {
           kind: 'permission',
           message: `${displayName} processes the content you send using its cloud service. Accept the disclosure in Motion’s settings to use it.`,
+          action: 'open-ai-settings',
         },
       };
     }
@@ -214,6 +226,7 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
           blocker: {
             kind: 'permission',
             message: `Motion needs permission to reach ${displayName}. Grant it in Motion’s settings.`,
+            action: 'open-ai-settings',
           },
         };
       }
@@ -238,6 +251,7 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
   if (availability.status !== 'available') {
     const message = availability.message || explainProviderStatus(providerId, availability);
     const blocker: Blocker = { kind: blockerKindForStatus(availability.status), message };
+    if (blocker.kind === 'permission') blocker.action = 'open-ai-settings';
     if (availability.retryAfterMs !== undefined) blocker.retryAt = now() + availability.retryAfterMs;
     return { kind: 'blocked', blocker };
   }
@@ -264,8 +278,18 @@ export async function resolveSessionProvider(deps: ResolveSessionProviderDeps = 
   if (cloud && provider.listModels) {
     const requestKey = `models:${crypto.randomUUID()}`;
     const controller = registerCloudRequest(requestKey, providerId);
-    try { listedIds = await provider.listModels({ signal: controller.signal }).catch(() => undefined); }
+    let listingError: ProviderError | undefined;
+    try {
+      listedIds = await provider.listModels({ signal: controller.signal }).catch((error: unknown) => {
+        // A rejected key or exhausted account will fail the turn anyway; report it
+        // now instead of quietly sending against the curated list. Transient
+        // failures (network, rate limits) still fall back to the curated ids.
+        if (error instanceof ProviderError && LISTING_BLOCKING_KINDS.has(error.kind)) listingError = error;
+        return undefined;
+      });
+    }
     finally { releaseCloudRequest(requestKey, controller); }
+    if (listingError && !controller.signal.aborted) return { kind: 'blocked', blocker: providerBlockerFromError(listingError, displayName) };
     if (controller.signal.aborted)
       return { kind: 'blocked', blocker: { kind: 'permission', message: 'The provider connection was revoked. Connect again to continue.' } };
     try { await assertCurrentProviderConsent(providerId, { preferencesStore, ...(deps.permissions ? { permissions: deps.permissions } : {}) }); }

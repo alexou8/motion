@@ -1,12 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { deleteDatabase, openDatabase } from '@/core/storage/db';
 import { sessionRepository } from '@/core/storage/repositories';
-import { buildPanelState } from './panelState';
+import { buildPanelState, discoveryBusy, PANEL_RECOVERY_INTERVAL_MS } from './panelState';
+
+const { recoverWorkflows } = vi.hoisted(() => ({ recoverWorkflows: vi.fn(async () => undefined) }));
+vi.mock('./recovery', () => ({ recoverWorkflows }));
 
 const NOW = '2026-09-16T12:00:00.000Z';
 
 beforeEach(async () => {
   await deleteDatabase('motion');
+  recoverWorkflows.mockClear();
   const session: Record<string, unknown> = {
     'motion.activeSessionId': 's1',
     'motion.streaming': { sessionId: 's1', requestKey: 'request-1', text: 'Planning…' },
@@ -128,5 +132,58 @@ describe('panel agent state', () => {
     const state = await buildPanelState();
     expect(state.ai).toMatchObject({ providerId: 'openai', status: 'available' });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not report a scan as running once its lease has expired', async () => {
+    const origin = 'https://mylearningspace.wlu.ca';
+    const values: Record<string, unknown> = {
+      'observation:4': { url: `${origin}/d2l/home/363`, pageType: 'course-home', title: 'Synthetic course', restrictionReason: null, warnings: [], observedAt: NOW },
+    };
+    let discovery: Record<string, unknown> = { optedIn: true, busy: true, busyRunId: 'dead-worker', busyUntil: '2020-01-01T00:00:00.000Z' };
+    Object.assign(chrome.storage.session, {
+      get: vi.fn(async (key: string | string[]) => typeof key === 'string' ? { [key]: values[key] } : Object.fromEntries(key.map((item) => [item, values[item]]))),
+    });
+    Object.assign(chrome.storage.local, { get: vi.fn(async (key: string) => key === `motion.discovery:${origin}` ? { [key]: discovery } : {}) });
+    Object.assign(chrome.tabs, { query: vi.fn(async () => [{ id: 4 }]) });
+
+    expect((await buildPanelState()).discovery).toMatchObject({ host: origin, busy: false });
+
+    discovery = { ...discovery, busyUntil: new Date(Date.now() + 60_000).toISOString() };
+    expect((await buildPanelState()).discovery.busy).toBe(true);
+    expect(discoveryBusy({ busy: true }, new Date())).toBe(false);
+  });
+
+  it('runs workflow recovery at most once per interval across rapid refreshes', async () => {
+    const values: Record<string, unknown> = {};
+    Object.assign(chrome.storage.session, {
+      get: vi.fn(async (key: string | string[]) => typeof key === 'string' ? { [key]: values[key] } : Object.fromEntries(key.map((item) => [item, values[item]]))),
+      set: vi.fn(async (next: Record<string, unknown>) => { Object.assign(values, next); }),
+    });
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(NOW));
+    try {
+      await buildPanelState();
+      await buildPanelState();
+      await buildPanelState();
+      expect(recoverWorkflows).toHaveBeenCalledTimes(1);
+
+      now.mockReturnValue(Date.parse(NOW) + PANEL_RECOVERY_INTERVAL_MS);
+      await buildPanelState();
+      expect(recoverWorkflows).toHaveBeenCalledTimes(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it('closes the database connection it opens for each refresh', async () => {
+    const probe = await openDatabase();
+    const prototype = Object.getPrototypeOf(probe) as IDBDatabase;
+    probe.close();
+    const close = vi.spyOn(prototype, 'close');
+    try {
+      await buildPanelState();
+      expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      close.mockRestore();
+    }
   });
 });

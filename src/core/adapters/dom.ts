@@ -122,10 +122,21 @@ export function absoluteUrl(href: string, baseUrl: string): string | null {
   }
 }
 
+/**
+ * The longest warning the page-observed and extraction-result contracts accept
+ * (`src/core/messaging/contracts.ts`). One over-long warning makes the worker
+ * reject the whole message, so warnings are bounded where they are produced.
+ */
+export const MAX_WARNING_LENGTH = 500;
+
+export function boundedWarning(text: string): string {
+  return text.length > MAX_WARNING_LENGTH ? `${text.slice(0, MAX_WARNING_LENGTH - 1)}…` : text;
+}
+
 export function courseIdFromUrl(url: string): string | null {
   try {
     const path = new URL(url).pathname;
-    const match = path.match(/\/d2l\/(?:home|le\/content|le\/calendar|le)\/(\d+)(?:\/|$)/i);
+    const match = path.match(/\/d2l\/(?:home|le\/content|le\/lessons|le\/calendar|le)\/(\d+)(?:\/|$)/i);
     return match?.[1] ?? null;
   } catch {
     return null;

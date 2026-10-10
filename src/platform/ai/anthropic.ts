@@ -3,8 +3,16 @@
  */
 
 import { redactSecrets } from '@/core/ai/redact';
-import { explainProviderError } from '@/core/ai/explain';
-import { ProviderError, type AIProvider, type GenerateRequest, type ProviderAvailability, type ProviderCapabilities } from '@/core/ai/types';
+import { explainProviderError, timeoutMessage } from '@/core/ai/explain';
+import {
+  ProviderError,
+  providerStatusForErrorKind,
+  type AIProvider,
+  type GenerateRequest,
+  type ProviderAvailability,
+  type ProviderCapabilities,
+  type TruncationReason,
+} from '@/core/ai/types';
 import { ANTHROPIC_RECOMMENDED } from '@/core/ai/models';
 import { z } from 'zod';
 import type { SecretStore } from './secrets';
@@ -13,8 +21,9 @@ import {
   DEFAULT_GENERATE_TIMEOUT_MS,
   DEFAULT_HEALTH_TIMEOUT_MS,
   HttpProviderError,
-  isOutcomeUnknownStatus,
   parseSSEStream,
+  providerErrorForKind,
+  providerErrorFromResponse,
   requestWithRetry,
   type FetchLike,
 } from './http';
@@ -37,46 +46,27 @@ const anthropicModelsSchema = z.object({
   last_id: z.string().nullable(),
 });
 
+// `stop_reason` is deliberately a plain string: a stop reason this adapter
+// does not know about must not discard text the model already produced.
 const anthropicMessageSchema = z.object({
   type: z.literal('message'),
   content: z.array(z.object({
     type: z.string(),
     text: z.string().optional(),
   })),
-  stop_reason: z.enum([
-    'end_turn',
-    'max_tokens',
-    'stop_sequence',
-    'tool_use',
-    'pause_turn',
-    'refusal',
-    'model_context_window_exceeded',
-  ]),
+  stop_reason: z.string(),
 });
 
+// Delta types other than `text_delta` (thinking, signature, input_json and any
+// future type) are ignored rather than failing the stream.
 const anthropicContentDeltaSchema = z.object({
   type: z.literal('content_block_delta'),
-  delta: z.discriminatedUnion('type', [
-    z.object({ type: z.literal('text_delta'), text: z.string() }),
-    z.object({ type: z.literal('thinking_delta'), thinking: z.string() }),
-    z.object({ type: z.literal('signature_delta'), signature: z.string() }),
-    z.object({ type: z.literal('input_json_delta'), partial_json: z.string() }),
-  ]),
+  delta: z.object({ type: z.string(), text: z.string().optional() }),
 });
 
 const anthropicMessageDeltaSchema = z.object({
   type: z.literal('message_delta'),
-  delta: z.object({
-    stop_reason: z.enum([
-      'end_turn',
-      'max_tokens',
-      'stop_sequence',
-      'tool_use',
-      'pause_turn',
-      'refusal',
-      'model_context_window_exceeded',
-    ]),
-  }),
+  delta: z.object({ stop_reason: z.string() }),
 });
 
 const anthropicMessageStopSchema = z.object({
@@ -85,7 +75,7 @@ const anthropicMessageStopSchema = z.object({
 
 const anthropicErrorSchema = z.object({
   type: z.literal('error'),
-  error: z.object({ type: z.string() }),
+  error: z.object({ type: z.string(), message: z.string().optional() }),
 });
 
 function headers(key: string): Record<string, string> {
@@ -97,6 +87,16 @@ function headers(key: string): Record<string, string> {
   };
 }
 
+/**
+ * Claude 4.6+ models reason before answering by default, and those reasoning
+ * tokens count against `max_tokens`. Motion's requests are short and bounded,
+ * so ask for the lowest effort there; older models (Haiku 4.5 and earlier)
+ * reject `output_config.effort` outright.
+ */
+export function supportsEffort(model: string): boolean {
+  return /^claude-(fable|mythos)-|^claude-(opus|sonnet|haiku)-(5|4-[6-9])(-|$)/.test(model);
+}
+
 function buildBody(req: GenerateRequest, model: string, stream: boolean) {
   return {
     model,
@@ -104,6 +104,7 @@ function buildBody(req: GenerateRequest, model: string, stream: boolean) {
     messages: req.messages.map((m) => ({ role: m.role, content: m.content })),
     max_tokens: req.maxOutputTokens ?? 4096,
     stream,
+    ...(supportsEffort(model) ? { output_config: { effort: 'low' } } : {}),
   };
 }
 
@@ -209,31 +210,13 @@ export class AnthropicProvider implements AIProvider {
 
   private availabilityFromError(err: unknown): ProviderAvailability {
     if (err instanceof ProviderError) {
-      return { status: err.kind === 'cancelled' || err.kind === 'bad-response' || err.kind === 'outcome-unknown' ? 'network-error' : err.kind, message: err.message, retryAfterMs: err.retryAfterMs };
+      return { status: providerStatusForErrorKind(err.kind), message: err.message, retryAfterMs: err.retryAfterMs };
     }
     return { status: 'network-error', message: 'Motion couldn’t reach Anthropic. Check your connection and try again.' };
   }
 
   private async toProviderError(response: Response, key: string, method: 'GET' | 'POST'): Promise<ProviderError> {
-    const body = await readErrorBody(response);
-    const kind = classifyHttpError('anthropic', response.status, body);
-    const errorKind = method === 'POST' && isOutcomeUnknownStatus(response.status) ? 'outcome-unknown' as const : kind;
-    const message = redactSecrets(
-      errorKind === 'outcome-unknown'
-        ? explainProviderError('anthropic', errorKind)
-        : errorKind === 'invalid-key'
-        ? 'Your Anthropic API key is no longer valid. Reconnect.'
-        : errorKind === 'insufficient-quota'
-          ? 'Your Anthropic account is out of quota. Check your billing with Anthropic.'
-          : errorKind === 'rate-limited'
-            ? 'Anthropic is rate limited.'
-            : errorKind === 'model-unavailable'
-              ? 'The selected Anthropic model is no longer available.'
-              : 'Motion couldn’t reach Anthropic. Check your connection and try again.',
-      [key],
-    );
-    const retryAfterMs = errorKind === 'rate-limited' ? parseRetryAfterHeader(response) : undefined;
-    return new ProviderError(errorKind, message, retryAfterMs);
+    return providerErrorFromResponse('anthropic', response, await readErrorBody(response), key, method);
   }
 
   async generate(req: GenerateRequest): Promise<string> {
@@ -259,9 +242,10 @@ export class AnthropicProvider implements AIProvider {
     }
     const body = anthropicMessageSchema.safeParse(rawBody);
     if (!body.success) throw badResponseError('Anthropic');
-    if (!isCompleteStopReason(body.data.stop_reason)) throw badResponseError('Anthropic');
     const text = body.data.content.filter((content) => content.type === 'text').map((content) => content.text ?? '').join('');
-    if (!text) throw badResponseError('Anthropic');
+    if (!text) throw emptyResponseError(body.data.stop_reason);
+    const truncation = truncationFor(body.data.stop_reason);
+    if (truncation) req.onTruncated?.(truncation);
     return text;
   }
 
@@ -283,25 +267,29 @@ export class AnthropicProvider implements AIProvider {
 
     try {
       let completed = false;
-      let completeStop = false;
+      let stopReason: string | undefined;
+      let emitted = false;
       for await (const event of parseSSEStream(response.body, req.signal)) {
         if (event.event === 'content_block_delta') {
           const parsed = parseStreamEvent(event.data, anthropicContentDeltaSchema, 'Anthropic');
-          if (parsed.delta.type === 'text_delta' && parsed.delta.text) yield parsed.delta.text;
+          if (parsed.delta.type === 'text_delta' && parsed.delta.text) {
+            emitted = true;
+            yield parsed.delta.text;
+          }
         } else if (event.event === 'message_delta') {
-          const parsed = parseStreamEvent(event.data, anthropicMessageDeltaSchema, 'Anthropic');
-          if (!isCompleteStopReason(parsed.delta.stop_reason)) throw badResponseError('Anthropic');
-          completeStop = true;
+          stopReason = parseStreamEvent(event.data, anthropicMessageDeltaSchema, 'Anthropic').delta.stop_reason;
         } else if (event.event === 'message_stop') {
           parseStreamEvent(event.data, anthropicMessageStopSchema, 'Anthropic');
-          if (!completeStop) throw badResponseError('Anthropic');
+          if (stopReason === undefined) throw badResponseError('Anthropic');
           completed = true;
         } else if (event.event === 'error') {
-          parseStreamEvent(event.data, anthropicErrorSchema, 'Anthropic');
-          throw badResponseError('Anthropic');
+          throw streamErrorFor(parseStreamEvent(event.data, anthropicErrorSchema, 'Anthropic'), key);
         }
       }
-      if (!completed) throw badResponseError('Anthropic');
+      if (!completed || stopReason === undefined) throw badResponseError('Anthropic');
+      if (!emitted && !isCompleteStopReason(stopReason)) throw emptyResponseError(stopReason);
+      const truncation = truncationFor(stopReason);
+      if (truncation) req.onTruncated?.(truncation);
     } catch (error) {
       if (req.signal?.aborted) throw new ProviderError('cancelled', 'Request cancelled.');
       if (error instanceof ProviderError) throw error;
@@ -310,15 +298,20 @@ export class AnthropicProvider implements AIProvider {
   }
 }
 
-function parseRetryAfterHeader(response: Response): number | undefined {
-  const header = response.headers.get('retry-after');
-  if (!header) return undefined;
-  const seconds = Number(header);
-  return Number.isFinite(seconds) ? seconds * 1000 : undefined;
+/** Maps a mid-stream `error` event to the same typed errors the HTTP path produces. */
+function streamErrorFor(event: z.infer<typeof anthropicErrorSchema>, key: string): ProviderError {
+  const type = event.error.type;
+  // An internal failure after the request was accepted may still have been billed.
+  const kind = type === 'api_error' ? 'outcome-unknown' as const : classifyHttpError('anthropic', 0, event);
+  if (kind === 'network-error') return badResponseError('Anthropic');
+  return providerErrorForKind('anthropic', kind, { key, body: event, overloaded: type === 'overloaded_error' });
 }
 
 function toRequestError(err: unknown, key: string): ProviderError {
   if (err instanceof HttpProviderError) {
+    // A timed-out chargeable POST may already have been billed: keep the
+    // timeout kind, but say so.
+    if (err.timedOut) return new ProviderError('timeout', timeoutMessage('anthropic', err.outcomeUnknown));
     if (err.cancelled) return new ProviderError('cancelled', 'Request cancelled.');
     if (err.outcomeUnknown) return new ProviderError('outcome-unknown', explainProviderError('anthropic', 'outcome-unknown'));
     return new ProviderError('network-error', redactSecrets('Motion couldn’t reach Anthropic. Check your connection and try again.', [key]));
@@ -344,4 +337,17 @@ function badResponseError(provider: 'Anthropic'): ProviderError {
 
 function isCompleteStopReason(stopReason: string): boolean {
   return stopReason === 'end_turn' || stopReason === 'stop_sequence';
+}
+
+/** Why the model stopped early, or `undefined` when it finished on its own. */
+function truncationFor(stopReason: string): TruncationReason | undefined {
+  if (isCompleteStopReason(stopReason)) return undefined;
+  if (stopReason === 'max_tokens' || stopReason === 'model_context_window_exceeded') return 'max-tokens';
+  if (stopReason === 'refusal') return 'refusal';
+  return 'incomplete';
+}
+
+function emptyResponseError(stopReason: string): ProviderError {
+  if (stopReason === 'refusal') return new ProviderError('bad-response', 'Anthropic declined to respond to this request.');
+  return badResponseError('Anthropic');
 }

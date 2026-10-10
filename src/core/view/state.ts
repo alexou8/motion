@@ -108,6 +108,15 @@ export const panelStateSchema = z.object({
   /** Text being generated right now for the active session, if streaming. */
   streaming: z.object({ sessionId: z.string(), text: z.string().max(40_000) }).nullable().default(null),
   discovery: discoveryStateSchema.default({ host: null, optedIn: null, busy: false, result: null, blocker: null }),
+  /**
+   * Panel-only facts, set by the panel's runtime bridge after the worker's
+   * state is parsed; the worker never sends them. `tabNeedsReload` means the
+   * active tab is on a supported site but has no content script (it was open
+   * before Motion was installed). `workerError` means the last state read
+   * failed, so what is shown may be out of date.
+   */
+  tabNeedsReload: z.boolean().optional(),
+  workerError: z.string().max(1_000).optional(),
 });
 export type PanelState = z.infer<typeof panelStateSchema>;
 

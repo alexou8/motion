@@ -26,6 +26,12 @@ export const MAX_SCHEDULED_REMINDERS = 50;
 /** How long a suppressed reminder (restricted tab or quiet hours) waits before retrying. */
 const SUPPRESSED_RETRY_DELAY_MS = 15 * 60 * 1_000;
 const OBSERVATION_KEY_PREFIX = 'observation:';
+/**
+ * Chrome may shift a near-term alarm to its minimum delay, so only a real
+ * change in fire time re-arms an alarm; otherwise every reconcile would keep
+ * pushing an imminent reminder back.
+ */
+const RESCHEDULE_TOLERANCE_MS = 60_000;
 
 type ReminderAlarm = Pick<chrome.alarms.Alarm, 'name'>;
 export interface ReminderAlarms {
@@ -124,6 +130,13 @@ function alarmName(id: string): string {
   return `${REMINDER_ALARM_PREFIX}${id}`;
 }
 
+function needsReschedule(alarm: chrome.alarms.Alarm | undefined, fireAt: number, now: number): boolean {
+  if (!alarm) return true;
+  const dueSoon = (at: number): boolean => at <= now + RESCHEDULE_TOLERANCE_MS;
+  if (dueSoon(alarm.scheduledTime) && dueSoon(fireAt)) return false;
+  return Math.abs(alarm.scheduledTime - fireAt) > RESCHEDULE_TOLERANCE_MS;
+}
+
 function plansFor(
   tasks: CourseTask[],
   prefs: ReminderPreferences,
@@ -172,7 +185,9 @@ export async function reconcileReminders(
   }
   for (const plan of plans) {
     const name = alarmName(plan.id);
-    if (!existing.some((alarm) => alarm.name === name)) {
+    // A quiet-hours or time-zone change moves a plan's fire time without
+    // changing its id; creating an alarm with the same name replaces it.
+    if (needsReschedule(existing.find((alarm) => alarm.name === name), plan.fireAt.getTime(), now.getTime())) {
       await deps.alarms.create(name, { when: plan.fireAt.getTime() });
     }
   }
@@ -255,17 +270,27 @@ export async function handleReminderAlarm(
   }
 }
 
-async function openTaskInMotion(taskId: string): Promise<void> {
-  const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  const windowId = tabs[0]?.windowId;
-  if (windowId !== undefined && chrome.sidePanel?.open) {
-    await chrome.sidePanel.open({ windowId });
-    return;
-  }
+async function openOptionsFallback(): Promise<void> {
   if (chrome.runtime.openOptionsPage) await chrome.runtime.openOptionsPage();
+}
+
+/**
+ * `sidePanel.open` needs the notification click's user gesture, and any
+ * awaited call before it spends that gesture. It is therefore the first call,
+ * made synchronously against the current window; a rejection falls back to
+ * the options page instead of leaving the click with no effect.
+ */
+export function openTaskInMotion(taskId: string): Promise<void> {
   // The options hash is intentionally stable; task-specific focus is only
   // attempted through the side panel API when Chrome exposes it.
   void taskId;
+  if (!chrome.sidePanel?.open) return openOptionsFallback();
+  try {
+    const windowId = chrome.windows?.WINDOW_ID_CURRENT ?? -2;
+    return chrome.sidePanel.open({ windowId }).catch(() => openOptionsFallback());
+  } catch {
+    return openOptionsFallback();
+  }
 }
 
 /** Registers MV3 listeners synchronously; each event rehydrates state. */

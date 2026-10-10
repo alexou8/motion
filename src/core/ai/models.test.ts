@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isSupportedTextModel, resolveModel, resolveOpenAIRecommended, ANTHROPIC_RECOMMENDED, OPENAI_RECOMMENDED_FALLBACK } from './models';
+import { ANTHROPIC_MODELS, ANTHROPIC_RECOMMENDED, OPENAI_RECOMMENDED_FALLBACK, isSupportedTextModel, resolveAnthropicRecommended, resolveModel, resolveOpenAIRecommended } from './models';
 
 describe('resolveOpenAIRecommended', () => {
   it('picks the first preferred family present in the listed ids', () => {
@@ -36,7 +36,44 @@ describe('resolveOpenAIRecommended', () => {
   });
 });
 
+describe('resolveAnthropicRecommended', () => {
+  it('curates the current model ids with the recommended default first', () => {
+    expect(ANTHROPIC_MODELS.map((model) => model.id)).toEqual(['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1']);
+    expect(ANTHROPIC_RECOMMENDED).toBe('claude-haiku-5-5');
+  });
+
+  it('picks the preferred family even when pricier models are listed first', () => {
+    expect(resolveAnthropicRecommended(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5'])).toBe('claude-haiku-5-5');
+  });
+
+  it('steps up to Sonnet 5.5 when Haiku 5.5 is not on the account', () => {
+    expect(resolveAnthropicRecommended(['claude-fable-5-1', 'claude-sonnet-5-5'])).toBe('claude-sonnet-5-5');
+  });
+
+  it('accepts a dated snapshot of a preferred family exactly as listed', () => {
+    expect(resolveAnthropicRecommended(['claude-opus-5-5', 'claude-haiku-4-5-20251001'])).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('prefers a cheaper line over the first-listed model when no preferred id is listed', () => {
+    expect(resolveAnthropicRecommended(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-4-6'])).toBe('claude-sonnet-4-6');
+    expect(resolveAnthropicRecommended(['claude-fable-5-1', 'claude-opus-5-5'])).toBe('claude-fable-5-1');
+  });
+
+  it('falls back to the curated default without a listing', () => {
+    expect(resolveAnthropicRecommended()).toBe(ANTHROPIC_RECOMMENDED);
+  });
+});
+
 describe('resolveModel', () => {
+  it('never resolves anthropic "recommended" to the newest listed model when a preferred one exists', () => {
+    expect(resolveModel('anthropic', 'recommended', ['claude-fable-5-1', 'claude-sonnet-5-5']).id).toBe('claude-sonnet-5-5');
+  });
+
+  it('keeps a previously saved legacy Anthropic id usable when no listing is available', () => {
+    expect(resolveModel('anthropic', 'claude-haiku-4-5-20251001').id).toBe('claude-haiku-4-5-20251001');
+    expect(resolveModel('anthropic', 'claude-sonnet-5').id).toBe('claude-sonnet-5');
+  });
+
   it('resolves "recommended" for anthropic to the curated recommended id', () => {
     expect(resolveModel('anthropic', 'recommended').id).toBe(ANTHROPIC_RECOMMENDED);
   });

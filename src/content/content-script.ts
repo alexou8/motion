@@ -13,7 +13,27 @@ import { discoverAllCourses } from './d2lDiscovery';
 import { resolveAdapter } from '@/core/adapters';
 import { boundedVisibleText } from '@/core/adapters/dom';
 
+/**
+ * Recently consumed actor nonces, oldest first. Bounded so a long-lived tab
+ * does not grow it without limit. The worker mints a fresh random nonce for
+ * each request and sends it over a fresh, sender-verified port, so this window
+ * is a local replay check layered on that, not the only defense.
+ */
+export const MAX_CONSUMED_ACTOR_NONCES = 256;
 const consumedActorNonces = new Set<string>();
+
+/** Records `nonce` as used. False when it was already used within the window. */
+export function consumeActorNonce(nonce: string): boolean {
+  if (consumedActorNonces.has(nonce)) return false;
+  consumedActorNonces.add(nonce);
+  // A Set iterates in insertion order, so the first entry is the oldest.
+  while (consumedActorNonces.size > MAX_CONSUMED_ACTOR_NONCES) {
+    const oldest = consumedActorNonces.values().next().value;
+    if (oldest === undefined) break;
+    consumedActorNonces.delete(oldest);
+  }
+  return true;
+}
 
 /**
  * Handles a request sent to the page-adjacent content script.
@@ -117,8 +137,7 @@ if (typeof chrome.runtime.onConnect?.addListener === 'function') {
     });
     port.onMessage.addListener((raw: unknown) => {
       const parsed = actorPortRequestSchema.safeParse(raw);
-      if (!parsed.success || consumedActorNonces.has(parsed.data.request.authorization.nonce)) return;
-      consumedActorNonces.add(parsed.data.request.authorization.nonce);
+      if (!parsed.success || !consumeActorNonce(parsed.data.request.authorization.nonce)) return;
       const { requestId, request } = parsed.data;
       const { authorization, showOnPagePointer, ...action } = request;
       const controller = new AbortController();

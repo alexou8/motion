@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { CourseTask } from '@/core/domain';
 import { DEFAULT_REMINDER_PREFERENCES, REMINDER_PREFERENCES_KEY, type ReminderStorageArea } from '@/core/reminders';
-import { DEFERRED_REMINDERS_KEY, handleReminderAlarm, REMINDER_ALARM_PREFIX, reconcileReminders, type ReminderAlarms, type ReminderNotifications, type ReminderSchedulerDeps } from './reminders';
+import { DEFERRED_REMINDERS_KEY, handleReminderAlarm, openTaskInMotion, REMINDER_ALARM_PREFIX, reconcileReminders, type ReminderAlarms, type ReminderNotifications, type ReminderSchedulerDeps } from './reminders';
 
 const dueIso = '2026-09-20T16:00:00.000Z';
 const now = new Date('2026-09-18T12:00:00.000Z');
@@ -175,5 +175,54 @@ describe('reminder scheduler', () => {
 
     await handleReminderAlarm(alarm, deps);
     expect(alarms.getAll).toHaveBeenCalled();
+  });
+
+  it('re-arms an existing alarm whose planned fire time moved, and leaves an unchanged one alone', async () => {
+    const { deps, alarms } = setup([task()]);
+    const name = `${REMINDER_ALARM_PREFIX}task-1:2d:${dueIso}`;
+    const planned = new Date('2026-09-18T16:00:00.000Z').getTime();
+    // Scheduled before a quiet-hours or time-zone change moved the plan.
+    alarms.getAll.mockResolvedValue([{ name, scheduledTime: planned + 3 * 60 * 60 * 1_000 }]);
+
+    await reconcileReminders(deps);
+    expect(alarms.create).toHaveBeenCalledWith(name, { when: planned });
+
+    alarms.create.mockClear();
+    alarms.getAll.mockResolvedValue([{ name, scheduledTime: planned }]);
+    await reconcileReminders(deps);
+    expect(alarms.create).not.toHaveBeenCalledWith(name, expect.anything());
+  });
+});
+
+describe('opening Motion from a reminder notification', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('opens the side panel before any other await so the click gesture is kept', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('chrome', {
+      windows: { WINDOW_ID_CURRENT: -2 },
+      tabs: { query: vi.fn(async () => { calls.push('query'); return []; }) },
+      sidePanel: { open: vi.fn(async () => { calls.push('open'); }) },
+      runtime: { openOptionsPage: vi.fn(async () => undefined) },
+    });
+
+    const opening = openTaskInMotion('task-1');
+    expect(chrome.sidePanel.open).toHaveBeenCalledWith({ windowId: -2 });
+    await opening;
+    expect(calls).toEqual(['open']);
+    expect(chrome.runtime.openOptionsPage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the options page when the side panel refuses to open', async () => {
+    vi.stubGlobal('chrome', {
+      windows: { WINDOW_ID_CURRENT: -2 },
+      sidePanel: { open: vi.fn(async () => { throw new Error('No user gesture'); }) },
+      runtime: { openOptionsPage: vi.fn(async () => undefined) },
+    });
+
+    await openTaskInMotion('task-1');
+    expect(chrome.runtime.openOptionsPage).toHaveBeenCalledOnce();
   });
 });

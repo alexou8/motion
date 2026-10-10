@@ -26,6 +26,13 @@ import { abortCloudRequests } from './cloudRequests';
 import { recoverStaleModelRequests } from './sessions';
 import { reconcileReminders, registerReminderListeners } from './reminders';
 
+/** Routes a fire-and-forget failure to the redacted log, never an unhandled rejection. */
+function logFailure(context: string): (error: unknown) => void {
+  return (error) => {
+    void warn(context, error);
+  };
+}
+
 // --- Registered synchronously. Do not move these into an async function. ---
 
 registerInferencePort();
@@ -35,10 +42,16 @@ registerInferencePort();
 chrome.permissions.onRemoved.addListener(() => abortCloudRequests());
 
 chrome.runtime.onInstalled.addListener((details) => {
+  if (details.reason === 'install') {
+    // First run: the options page explains setup. Opened once, here only.
+    void chrome.runtime.openOptionsPage().catch(logFailure('Motion: could not open first-run settings'));
+  }
   if (details.reason === 'update') {
     // An update can change workflow definitions; recovery decides per version
     // whether an in-flight workflow is upgraded or cancelled.
-    void recoverWorkflows();
+    void recoverWorkflows().catch(logFailure('Motion: workflow recovery after update failed'));
+    // The update killed any in-flight model stream with the old worker.
+    void recoverStaleModelRequests().catch(logFailure('Motion: model request recovery after update failed'));
   }
   void reconcileReminders().catch((error) => {
     void warn('Motion: reminder reconciliation failed', error);
@@ -46,8 +59,8 @@ chrome.runtime.onInstalled.addListener((details) => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  void recoverWorkflows();
-  void recoverStaleModelRequests();
+  void recoverWorkflows().catch(logFailure('Motion: workflow recovery on startup failed'));
+  void recoverStaleModelRequests().catch(logFailure('Motion: model request recovery on startup failed'));
   void reconcileReminders().catch((error) => {
     void warn('Motion: reminder reconciliation failed', error);
   });
@@ -114,21 +127,21 @@ export function handleAlarm(
 ): void {
   if (alarm.name.startsWith(LEASE_ALARM_PREFIX)) {
     const workflowId = alarm.name.slice(LEASE_ALARM_PREFIX.length);
-    void recover(workflowId);
+    void recover(workflowId).catch(logFailure('Motion: lease recovery failed'));
   }
   if (alarm.name.startsWith(RETRY_ALARM_PREFIX)) {
     const workflowId = alarm.name.slice(RETRY_ALARM_PREFIX.length);
-    void recover(workflowId);
+    void recover(workflowId).catch(logFailure('Motion: retry recovery failed'));
   }
   if (alarm.name.startsWith(MODEL_RETRY_ALARM_PREFIX)) {
     // A rate-limit alarm only makes the session retryable. It must not make a
     // new chargeable provider request without a fresh student retry gesture.
-    void recoverStaleModelRequests();
+    void recoverStaleModelRequests().catch(logFailure('Motion: model retry recovery failed'));
   }
   if (alarm.name.startsWith(MODEL_RECOVERY_ALARM_PREFIX)) {
     // SOL-19 (interim): wakes a suspended worker so a claimed request that
     // died mid-stream or mid-backoff is not stuck as "working" forever.
-    void recoverStaleModelRequests();
+    void recoverStaleModelRequests().catch(logFailure('Motion: model request recovery failed'));
   }
 }
 
@@ -140,7 +153,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   void onTabRemoved(tabId).catch((error) => {
     void warn('Motion: workspace tab removal handling failed', error);
   });
-  void forgetTab(tabId);
+  void forgetTab(tabId).catch(logFailure('Motion: forgetting a closed tab failed'));
 });
 
 /**
@@ -156,11 +169,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   // reported. Drop it now rather than describing the old page — including its
   // URL, which a note would otherwise be filed against — until the new page
   // reports itself.
-  if (changeInfo.url !== undefined) void forgetTab(tabId);
+  if (changeInfo.url !== undefined) void forgetTab(tabId).catch(logFailure('Motion: forgetting a navigated tab failed'));
 
   if (changeInfo.status !== 'complete' || !tab.url) return;
   if (!resolveAdapter(tab.url)) return;
-  void recoverWorkflows();
+  void recoverWorkflows().catch(logFailure('Motion: workflow recovery after navigation failed'));
 });
 
 // --- Helpers used by the handlers above. Stateless by construction. ---

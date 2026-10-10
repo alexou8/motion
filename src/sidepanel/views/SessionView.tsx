@@ -17,7 +17,12 @@ import {
   TrackItem,
 } from '../../ui/components';
 import { cn } from '../../ui/components/cn';
+import { useNow } from '../../ui/useNow';
 import type { MotionCommand } from '../bridge';
+
+/** Mirrors `sessionMessageSchema`'s cap so a long paste is stopped in the field. */
+export const MESSAGE_MAX_LENGTH = 4_000;
+const MESSAGE_COUNT_THRESHOLD = 3_600;
 
 /**
  * The session view: one coherent command centre for a single AgentSession
@@ -174,9 +179,11 @@ function ConversationLog({
 }) {
   const isStreaming = streaming?.sessionId === session.id;
   const liveReply = isStreaming ? partialReply(streaming.text) : null;
+  // While a reply streams the log is busy, so assistive technology waits and
+  // reads the finished turn once instead of re-announcing each partial chunk.
   return (
     <section aria-label="Conversation" className="grid gap-3">
-      <ol role="log" aria-live="polite" className="grid gap-3">
+      <ol role="log" aria-live="polite" aria-busy={isStreaming} className="grid gap-3">
         {session.conversation.map((entry) =>
           entry.role === 'student' ? (
             <li
@@ -194,10 +201,7 @@ function ConversationLog({
           ),
         )}
         {isStreaming ? (
-          <li
-            className="text-sm text-ink whitespace-pre-wrap break-words"
-            aria-label="Motion is responding"
-          >
+          <li className="text-sm text-ink whitespace-pre-wrap break-words">
             <span className="sr-only">Motion: </span>
             {liveReply || 'Motion is responding…'}
           </li>
@@ -354,9 +358,10 @@ function WorkspaceSection({
   session: AgentSession;
   send: (command: MotionCommand) => void | Promise<boolean>;
 }) {
-  const { ownedTabIds, adoptedTabIds } = session.workspace;
-  const total = ownedTabIds.length + adoptedTabIds.length;
+  // Count the live rows the worker resolved, not the session's stored ids:
+  // those still include tabs the student closed or released.
   const tabs = state.workspaceTabs;
+  const total = tabs.length;
   return (
     <section className="grid gap-2" aria-labelledby="workspace-title">
       <h2 className="text-md font-medium" id="workspace-title">
@@ -376,7 +381,9 @@ function WorkspaceSection({
             <WorkspaceTabRow key={tab.tabId} session={session} tab={tab} send={send} />
           ))
         ) : (
-          <p className="text-xs text-ink-muted">Workspace details are loading.</p>
+          <p className="text-xs text-ink-muted">
+            No workspace tabs open yet. Add this tab to keep it with the session.
+          </p>
         )}
       </div>
       <div>
@@ -457,15 +464,31 @@ function ArtifactsSection({ session }: { session: AgentSession }) {
   );
 }
 
+/**
+ * The control a blocker offers. The producer says which via `blocker.action`;
+ * the kind alone is ambiguous (a `permission` blocker can be a provider
+ * setting, not a page grant), so it only picks a safe fallback: settings,
+ * never a page-origin permission request.
+ */
 function blockerAction(
   blocker: SessionBlocker,
+  sessionId: string,
   send: (command: MotionCommand) => void,
   now: Date,
 ): { label: string; onClick: () => void } | null {
-  if (blocker.kind === 'permission')
-    return { label: 'Allow access', onClick: () => send({ type: 'request-permission' }) };
-  if (blocker.kind === 'provider' || blocker.kind === 'error')
-    return { label: 'Reconnect', onClick: () => send({ type: 'open-settings' }) };
+  switch (blocker.action) {
+    case 'open-ai-settings':
+      return { label: 'Open AI settings', onClick: () => send({ type: 'open-settings' }) };
+    case 'retry-model':
+      return {
+        label: 'Retry',
+        onClick: () => send({ type: 'session-command', sessionId, command: 'retry-model' }),
+      };
+    case 'page-permission':
+      return { label: 'Allow access', onClick: () => send({ type: 'request-permission' }) };
+  }
+  if (blocker.kind === 'permission' || blocker.kind === 'provider' || blocker.kind === 'error')
+    return { label: 'Open settings', onClick: () => send({ type: 'open-settings' }) };
   if (blocker.kind === 'rate-limit' && blocker.retryAt) {
     const seconds = Math.max(
       0,
@@ -478,23 +501,29 @@ function blockerAction(
 
 function BlockerItem({
   blocker,
+  sessionId,
   send,
   now,
 }: {
   blocker: SessionBlocker;
+  sessionId: string;
   send: (command: MotionCommand) => void | Promise<boolean>;
   now: Date;
 }) {
-  const action = blockerAction(blocker, send, now);
+  const countingDown =
+    blocker.kind === 'rate-limit' &&
+    !!blocker.retryAt &&
+    new Date(blocker.retryAt).getTime() > now.getTime();
+  // A one-second clock only while a countdown is visible.
+  const tick = useNow(1_000, countingDown);
+  const current = tick.getTime() > now.getTime() ? tick : now;
+  const action = blockerAction(blocker, sessionId, send, current);
+  const countdown = blocker.kind === 'rate-limit' && !blocker.action;
   return (
     <li className="flex flex-wrap items-center justify-between gap-2 rounded border border-attention bg-surface px-3 py-2 text-sm">
       <span className="text-ink text-pretty">{blocker.message}</span>
       {action ? (
-        <Button
-          variant="secondary"
-          onClick={action.onClick}
-          disabled={blocker.kind === 'rate-limit'}
-        >
+        <Button variant="secondary" onClick={action.onClick} disabled={countdown}>
           {action.label}
         </Button>
       ) : null}
@@ -561,6 +590,7 @@ function ApprovalItem({
           expiry={approval.expiresAt}
           onOpenChange={setDialogOpen}
           onConfirm={() => decide(true)}
+          onDecline={() => decide(false)}
         >
           <p>Target: {approval.target}</p>
           <p className="mt-2">Effect: {approval.effect}</p>
@@ -617,7 +647,13 @@ function NeedsYouSection({
       </p>
       <ul className="grid gap-2">
         {session.blockers.map((blocker) => (
-          <BlockerItem key={blocker.id} blocker={blocker} send={send} now={now} />
+          <BlockerItem
+            key={blocker.id}
+            blocker={blocker}
+            sessionId={session.id}
+            send={send}
+            now={now}
+          />
         ))}
         {approvals.map((approval) => (
           <ApprovalItem key={approval.id} approval={approval} send={send} now={now} />
@@ -642,6 +678,7 @@ function SessionComposer({
 }) {
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const remaining = MESSAGE_MAX_LENGTH - draft.length;
   const isStreaming = state.streaming?.sessionId === session.id;
   const hasPendingModelRequest = session.pendingModelRequest !== null;
   const isPaused = session.status === 'paused';
@@ -703,6 +740,10 @@ function SessionComposer({
             id="session-composer"
             rows={2}
             value={draft}
+            maxLength={MESSAGE_MAX_LENGTH}
+            aria-describedby={
+              draft.length >= MESSAGE_COUNT_THRESHOLD ? 'session-composer-count' : undefined
+            }
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
             placeholder="Message Motion"
@@ -712,6 +753,16 @@ function SessionComposer({
             {sending ? 'Sending…' : 'Send'}
           </Button>
         </div>
+        {draft.length >= MESSAGE_COUNT_THRESHOLD ? (
+          <p
+            id="session-composer-count"
+            className={cn('text-xs', remaining === 0 ? 'text-attention' : 'text-ink-muted')}
+          >
+            {remaining === 0
+              ? `Message limit reached (${MESSAGE_MAX_LENGTH.toLocaleString()} characters).`
+              : `${remaining.toLocaleString()} characters left`}
+          </p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           {isStreaming || hasPendingModelRequest ? (
             <Button variant="danger" onClick={() => send({ type: 'session-command', sessionId: session.id, command: 'stop-generation' })}>

@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { curatedModelsFor, isSupportedTextModel } from '@/core/ai/models';
 import { PROVIDER_IDS, aiPreferencesSchema, type AIPreferences } from '@/core/ai/preferences';
-import type { ProviderAvailability, ProviderCapabilities, ProviderId, ProviderStatus } from '@/core/ai/types';
+import { ProviderError, type ProviderAvailability, type ProviderCapabilities, type ProviderId, type ProviderStatus } from '@/core/ai/types';
 import {
   acceptCloudDisclosureSchema,
   aiStatusResultSchema,
@@ -71,6 +71,10 @@ export interface AiHandlerDeps {
   permissions?: PermissionsCheck;
   fetchImpl?: FetchLike;
   deleteDatabase?: () => Promise<void>;
+  /** Clears every scheduled alarm; defaults to `chrome.alarms.clearAll`. */
+  clearAlarms?: () => Promise<void>;
+  /** Clears every open Motion notification; defaults to `chrome.notifications`. */
+  clearNotifications?: () => Promise<void>;
 }
 
 interface HandlerContext {
@@ -81,6 +85,8 @@ interface HandlerContext {
   permissions: PermissionsCheck;
   fetchImpl?: FetchLike;
   deleteDatabase: () => Promise<void>;
+  clearAlarms: () => Promise<void>;
+  clearNotifications: () => Promise<void>;
   keychain: KeychainVault;
 }
 
@@ -97,7 +103,21 @@ function contextFor(deps: AiHandlerDeps): HandlerContext {
     keychain,
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     deleteDatabase: deps.deleteDatabase ?? (() => deleteMotionDatabase()),
+    clearAlarms: deps.clearAlarms ?? defaultClearAlarms,
+    clearNotifications: deps.clearNotifications ?? defaultClearNotifications,
   };
+}
+
+async function defaultClearAlarms(): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.alarms?.clearAll) return;
+  await chrome.alarms.clearAll();
+}
+
+/** Every notification this extension has open belongs to Motion. */
+async function defaultClearNotifications(): Promise<void> {
+  if (typeof chrome === 'undefined' || !chrome.notifications?.getAll || !chrome.notifications.clear) return;
+  const open = await new Promise<object>((resolve) => chrome.notifications.getAll((notifications) => resolve(notifications)));
+  await Promise.all(Object.keys(open).map((id) => new Promise<void>((resolve) => chrome.notifications.clear(id, () => resolve()))));
 }
 
 function defaultPermissions(): PermissionsCheck {
@@ -139,10 +159,17 @@ function isProviderStatus(value: string): value is ProviderStatus {
   ].includes(value);
 }
 
-async function bounded<T>(run: () => Promise<T>): Promise<T> {
+/**
+ * Bounds a provider call. `onTimeout` aborts the underlying request so a
+ * timed-out call does not keep running (and spending) in the background.
+ */
+async function bounded<T>(run: () => Promise<T>, onTimeout?: () => void): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error('Provider availability timed out.')), PROVIDER_AVAILABILITY_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      onTimeout?.();
+      reject(new ProviderError('timeout', 'The provider did not respond in time.'));
+    }, PROVIDER_AVAILABILITY_TIMEOUT_MS);
   });
   try {
     return await Promise.race([run(), timeout]);
@@ -256,15 +283,41 @@ async function handleListProviderModels(
   const controller = registerCloudRequest(requestKey, providerId);
   try {
     const provider = providerFor(providerId, ctx);
-    const listed = provider.listModels ? await bounded(() => provider.listModels!({ signal: controller.signal })) : [];
+    const listed = provider.listModels
+      ? await bounded(() => provider.listModels!({ signal: controller.signal }), () => controller.abort())
+      : [];
     const models = [...new Set(listed.filter((id) => isSupportedTextModel(providerId, id)))];
     return providerModelListResultSchema.parse({ providerId, models, source: 'account' });
-  } catch {
-    return providerModelListResultSchema.parse({
-      providerId,
-      models: curatedModelsFor(providerId).map((model) => model.id),
-      source: 'fallback',
-    });
+  } catch (error) {
+    // A malformed or oversized listing leaves the provider itself fine, so the
+    // named curated choices stay available (labelled `fallback`). Anything
+    // else (rejected key, quota, timeout, outage) is surfaced with its own
+    // plain-language message rather than hidden behind the curated list.
+    if (!(error instanceof ProviderError) || error.kind === 'bad-response' || error.kind === 'cancelled') {
+      return providerModelListResultSchema.parse({
+        providerId,
+        models: curatedModelsFor(providerId).map((model) => model.id),
+        source: 'fallback',
+      });
+    }
+    throw new Error(providerBlockerFromError(error, displayName).message);
+  } finally {
+    releaseCloudRequest(requestKey, controller);
+  }
+}
+
+/** Makes a real, bounded request for the provider; the timeout aborts it. */
+async function providerHealth(providerId: ProviderId, ctx: HandlerContext): Promise<ProviderAvailability> {
+  const requestKey = `health:${crypto.randomUUID()}`;
+  const controller = registerCloudRequest(requestKey, providerId);
+  const provider = providerFor(providerId, ctx);
+  try {
+    return await bounded(
+      () => provider.healthCheck ? provider.healthCheck({ signal: controller.signal }) : provider.availability(),
+      () => controller.abort(),
+    );
+  } catch (error) {
+    return availabilityFromError(error, providerId);
   } finally {
     releaseCloudRequest(requestKey, controller);
   }
@@ -272,8 +325,21 @@ async function handleListProviderModels(
 
 async function handleSetProviderKey(message: Extract<AiMessage, { type: 'set-provider-key' }>, ctx: HandlerContext) {
   await ctx.secrets.set(message.providerId, message.key, message.storage);
-  const availability = await providerAvailability(message.providerId, ctx);
-  return { configured: true, availability };
+  // The key stays saved either way. Verify it with a real request so a typo is
+  // reported now, but only once the disclosure and host permission that allow
+  // contacting the provider are in place; until then say it is saved, not verified.
+  try {
+    await assertCurrentProviderConsent(message.providerId, { preferencesStore: ctx.preferences, permissions: ctx.permissions }, false);
+  } catch {
+    const saved = await providerAvailability(message.providerId, ctx);
+    return {
+      configured: true,
+      availability: saved.status === 'available'
+        ? { status: 'available' as const, message: `${providerDisplayNames[message.providerId]} key saved. Motion checks it once you accept the disclosure and grant access.` }
+        : saved,
+    };
+  }
+  return { configured: true, availability: await providerHealth(message.providerId, ctx) };
 }
 
 async function handleForgetProviderKey(message: Extract<AiMessage, { type: 'forget-provider-key' }>, ctx: HandlerContext) {
@@ -288,17 +354,7 @@ async function handleKeychainStatus(message: Extract<AiMessage, { type: 'keychai
 
 async function handleTestProvider(message: Extract<AiMessage, { type: 'test-provider' }>, ctx: HandlerContext) {
   await assertCurrentProviderConsent(message.providerId, { preferencesStore: ctx.preferences, permissions: ctx.permissions }, false);
-  const requestKey = `health:${crypto.randomUUID()}`;
-  const controller = registerCloudRequest(requestKey, message.providerId);
-  const provider = providerFor(message.providerId, ctx);
-  try {
-    const availability = await bounded(() => provider.healthCheck ? provider.healthCheck({ signal: controller.signal }) : provider.availability());
-    return { availability };
-  } catch (error) {
-    return { availability: availabilityFromError(error, message.providerId) };
-  } finally {
-    releaseCloudRequest(requestKey, controller);
-  }
+  return { availability: await providerHealth(message.providerId, ctx) };
 }
 
 async function handleSetAiPreferences(message: Extract<AiMessage, { type: 'set-ai-preferences' }>, ctx: HandlerContext) {
@@ -334,7 +390,11 @@ async function deleteLocalDataUnderLock(ctx: HandlerContext) {
   await ctx.session.set({ [DOCUMENT_LIFECYCLE_KEY]: lifecycle });
   const localValues = await ctx.local.get(null);
   const motionKeys = Object.keys(localValues).filter((key) => key.startsWith('motion.'));
+  // Alarms first: one firing mid-delete would otherwise post a reminder
+  // notification for data that is already gone.
+  const scheduled = await Promise.allSettled([ctx.clearAlarms(), ctx.clearNotifications()]);
   const results = await Promise.allSettled([
+    ...scheduled.map((outcome) => (outcome.status === 'rejected' ? Promise.reject(outcome.reason) : Promise.resolve())),
     ctx.deleteDatabase(),
     motionKeys.length > 0 ? ctx.local.remove(motionKeys) : Promise.resolve(),
     (async () => {

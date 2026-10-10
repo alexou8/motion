@@ -387,8 +387,8 @@ try {
   // recomputed the connection from whether a URL was present. A student on an
   // expired session was never told to sign in again.
   for (const [path, connection, rendered] of [
-    ['/d2l/lp/whatever/unknown', 'unsupported', /Unsupported page/i],
-    ['/d2l/home/424242?ou=424242', 'signed-out', /Your D2L session has ended/i],
+    ['/d2l/lp/whatever/unknown', 'unsupported', /Not a Brightspace page/i],
+    ['/d2l/home/424242?ou=424242', 'signed-out', /Your Brightspace session has ended/i],
     ['/d2l/home/999999?ou=999999', 'supported', /Coursework workspace/i],
   ]) {
     await page.goto(`${ORIGIN}${path}`, { waitUntil: 'load' });

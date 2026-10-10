@@ -53,11 +53,24 @@ export function toUiCommandResult<T = undefined>(
       session?: unknown;
       refusal?: unknown;
       reason?: unknown;
+      message?: unknown;
     };
     const refusal =
       typeof domain.refusal === 'object' && domain.refusal !== null
         ? (domain.refusal as { message?: unknown }).message
         : undefined;
+    // A tab that predates the install has no content script; the worker
+    // names that with a reason code and a readable message.
+    if (domain.requested === false && domain.reason === 'content-script-missing')
+      return {
+        ok: false,
+        code: 'content-script-missing',
+        message:
+          typeof domain.message === 'string' && domain.message
+            ? domain.message
+            : 'Reload this tab so Motion can read it.',
+        recoverable: true,
+      };
     const message =
       typeof refusal === 'string'
         ? refusal

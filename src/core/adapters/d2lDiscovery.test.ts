@@ -52,6 +52,28 @@ describe('D2L all-course discovery parsers', () => {
     expect(tasks[0]).toMatchObject({ id: 'd2l:101:quiz:77', due: { iso: '2026-09-17T12:00:00.000Z' } });
   });
 
+  it.each([
+    ['AvailabilityEnds', 3],
+    ['UnlockEnds', 5],
+  ] as const)('records a lone %s (%i) event as a low-confidence availability end, not a due date', (_name, eventType) => {
+    const course = coursesFromEnrollments(json('discovery-enrollments'), 'https://school.brightspace.com', now)[0]!;
+    const tasks = tasksFromCalendarEvents({ Items: [
+      { Title: 'Synthetic quiz closes', EventType: eventType, EndDateTime: '2026-09-20T12:00:00Z', AssociatedEntity: { AssociatedEntityType: 'D2L.LE.Quizzing.Quiz', AssociatedEntityId: 78 } },
+    ] }, course, 'https://school.brightspace.com/api', now);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.due).toMatchObject({ iso: '2026-09-20T12:00:00.000Z', raw: 'Available until 2026-09-20T12:00:00Z', confidence: 'low', zoneEvidence: 'explicit' });
+  });
+
+  it('keeps a due-date event at high confidence when it wins over an availability end', () => {
+    const course = coursesFromEnrollments(json('discovery-enrollments'), 'https://school.brightspace.com', now)[0]!;
+    const tasks = tasksFromCalendarEvents({ Items: [
+      { Title: 'Synthetic quiz closes', EventType: 3, EndDateTime: '2026-09-20T12:00:00Z', AssociatedEntity: { AssociatedEntityType: 'D2L.LE.Quizzing.Quiz', AssociatedEntityId: 78 } },
+      { Title: 'Synthetic quiz due', EventType: 6, EndDateTime: '2026-09-18T12:00:00Z', AssociatedEntity: { AssociatedEntityType: 'D2L.LE.Quizzing.Quiz', AssociatedEntityId: 78 } },
+    ] }, course, 'https://school.brightspace.com/api', now);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.due).toMatchObject({ iso: '2026-09-18T12:00:00.000Z', raw: '2026-09-18T12:00:00Z', confidence: 'high' });
+  });
+
   it('reads real MyOrgUnitInfo Access fields and rejects inaccessible enrollments', () => {
     const courses = coursesFromEnrollments({ Items: [
       { OrgUnit: { Id: 101, Name: 'Open course', Code: 'OPEN' }, Access: { IsActive: true, CanAccess: true } },

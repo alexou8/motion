@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { InferenceClientProvider } from './inferenceClient';
 import type { PortLike } from './inferenceHost';
 
-function fakePort(): PortLike & { emit(msg: unknown): void; sent: unknown[] } {
+function fakePort(): PortLike & { emit(msg: unknown): void; disconnect(): void; sent: unknown[] } {
   const listeners: ((message: unknown) => void)[] = [];
+  const disconnectListeners: (() => void)[] = [];
   const sent: unknown[] = [];
   return {
     name: 'motion-inference',
@@ -12,9 +13,15 @@ function fakePort(): PortLike & { emit(msg: unknown): void; sent: unknown[] } {
       addListener: (fn) => listeners.push(fn),
       removeListener: (fn) => listeners.splice(listeners.indexOf(fn), 1),
     },
-    onDisconnect: { addListener: () => {} },
+    onDisconnect: {
+      addListener: (fn) => disconnectListeners.push(fn),
+      removeListener: (fn) => disconnectListeners.splice(disconnectListeners.indexOf(fn), 1),
+    },
     emit(msg) {
       for (const l of listeners) l(msg);
+    },
+    disconnect() {
+      for (const l of [...disconnectListeners]) l();
     },
     sent,
   };
@@ -24,7 +31,64 @@ async function flush() {
   for (let i = 0; i < 4; i += 1) await Promise.resolve();
 }
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('InferenceClientProvider', () => {
+  it('asks the panel whether its model is available instead of assuming a port means ready', async () => {
+    const port = fakePort();
+    const provider = new InferenceClientProvider(() => port);
+    const pending = provider.availability();
+    await flush();
+    const frame = port.sent[0] as { type: string; requestId: string };
+    expect(frame.type).toBe('availability');
+    port.emit({ type: 'availability', requestId: frame.requestId, status: 'downloadable', message: 'needs download' });
+    await expect(pending).resolves.toEqual({ status: 'downloadable', message: 'needs download' });
+  });
+
+  it('reports unavailable when the panel never answers an availability request', async () => {
+    vi.useFakeTimers();
+    const provider = new InferenceClientProvider(() => fakePort(), 1_000);
+    const pending = provider.availability();
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(pending).resolves.toMatchObject({ status: 'unavailable' });
+  });
+
+  it('reports needs-document-context when the panel disconnects during an availability request', async () => {
+    const port = fakePort();
+    const provider = new InferenceClientProvider(() => port);
+    const pending = provider.availability();
+    await flush();
+    port.disconnect();
+    await expect(pending).resolves.toMatchObject({ status: 'needs-document-context' });
+  });
+
+  it('fails a stream with needs-document-context instead of hanging when the panel disconnects mid-stream', async () => {
+    const port = fakePort();
+    const provider = new InferenceClientProvider(() => port);
+    const chunks: string[] = [];
+    const consume = (async () => {
+      for await (const delta of provider.stream({ system: 's', messages: [] })) chunks.push(delta);
+    })();
+    const settled = consume.then(() => null, (error) => error);
+    await flush();
+    const requestId = (port.sent[0] as { requestId: string }).requestId;
+    port.emit({ type: 'delta', requestId, text: 'partial' });
+    await flush();
+    port.disconnect();
+    await expect(settled).resolves.toMatchObject({ kind: 'needs-document-context' });
+    expect(chunks).toEqual(['partial']);
+  });
+
+  it('fails a stream cleanly when the port is already closed at send time', async () => {
+    const port = fakePort();
+    port.postMessage = () => { throw new Error('Attempting to use a disconnected port object'); };
+    const provider = new InferenceClientProvider(() => port);
+    const iterator = provider.stream({ system: 's', messages: [] })[Symbol.asyncIterator]();
+    await expect(iterator.next()).rejects.toMatchObject({ kind: 'needs-document-context' });
+  });
+
   it('reports needs-document-context with no port connected', async () => {
     const provider = new InferenceClientProvider(() => null);
     const availability = await provider.availability();

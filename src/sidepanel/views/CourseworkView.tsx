@@ -248,7 +248,7 @@ export function CourseworkView({
                   </p>
                   {task.dueConflict ? (
                     <p className="mt-1 text-xs text-attention">
-                      The LMS date differs from your correction. Check the source before planning.
+                      The Brightspace date differs from your correction. Check the source before planning.
                     </p>
                   ) : null}
                   {taskNeedsReview(task) && task.due.raw ? (

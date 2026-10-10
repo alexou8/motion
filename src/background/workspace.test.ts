@@ -3,7 +3,7 @@ import { openDatabase, deleteDatabase } from '@/core/storage/db';
 import { IndexedDbWorkflowStore } from '@/core/storage/workflowStore';
 import { FakeTabs } from '@/test/fakeTabs';
 import { handleActionClick, handleCloseWorkspace, handleMessage, handlePrepareWorkspace } from './router';
-import { createOrReuseWorkspaceSession } from './sessions';
+import { adoptWorkspaceTab, createOrReuseWorkspaceSession } from './sessions';
 import { sessionRepository } from '@/core/storage/repositories';
 
 /**
@@ -119,6 +119,29 @@ describe('preparing a workspace', () => {
     db.close();
     expect(projected?.workflowIds).toContain(result.workflowId);
     expect(projected?.workspace.ownedTabIds).not.toEqual([]);
+  });
+
+  it('starts a session workspace from the student’s tab without opening copies of that page', async () => {
+    const tabs = new FakeTabs();
+    const studentTab = tabs.addStudentTab(ASSIGNMENT);
+    await observe(studentTab);
+    const session = await createOrReuseWorkspaceSession({
+      title: 'Synthetic Assignment 2', goal: 'Work on Synthetic Assignment 2.', courseId: null,
+      pageUrl: ASSIGNMENT, browserSessionKey: tabs.currentSession,
+    });
+
+    const result = await handlePrepareWorkspace(studentTab, tabs, session.id);
+    await expect(adoptWorkspaceTab(session.id, studentTab, tabs)).resolves.toEqual({ updated: true });
+
+    expect(result.workflowId).not.toBeNull();
+    expect([...tabs.tabs.values()].map((tab) => tab.url)).toEqual([ASSIGNMENT, READING]);
+    expect(tabs.opened).toBe(1);
+    const db = await openDatabase();
+    const projected = await sessionRepository(db).get(session.id);
+    db.close();
+    expect(projected?.workspace.ownedTabIds).toEqual([tabWithUrl(tabs, READING)]);
+    expect(projected?.workspace.adoptedTabIds).toEqual([studentTab]);
+    expect(tabs.tabs.get(studentTab)?.groupId).toBe(tabs.tabs.get(tabWithUrl(tabs, READING))?.groupId);
   });
 
   it('returns the open workspace instead of opening a second one', async () => {

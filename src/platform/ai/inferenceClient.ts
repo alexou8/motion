@@ -16,6 +16,8 @@ import type { PortLike } from './inferenceHost';
 export type PortGetter = () => PortLike | null;
 
 const NEEDS_CONTEXT_MESSAGE = 'Open Motion to continue with Chrome’s on-device AI.';
+/** Kept below the 5.5 s bound the provider resolver applies to availability. */
+const AVAILABILITY_TIMEOUT_MS = 4_000;
 
 function randomRequestId(): string {
   return Math.random().toString(36).slice(2) + Date.now().toString(36);
@@ -25,9 +27,11 @@ export class InferenceClientProvider implements AIProvider {
   readonly id = 'chrome-local' as const;
   readonly displayName = 'Chrome built-in';
   private readonly getPort: PortGetter;
+  private readonly availabilityTimeoutMs: number;
 
-  constructor(getPort: PortGetter) {
+  constructor(getPort: PortGetter, availabilityTimeoutMs = AVAILABILITY_TIMEOUT_MS) {
     this.getPort = getPort;
+    this.availabilityTimeoutMs = availabilityTimeoutMs;
   }
 
   async capabilities(): Promise<ProviderCapabilities> {
@@ -44,7 +48,53 @@ export class InferenceClientProvider implements AIProvider {
   async availability(): Promise<ProviderAvailability> {
     const port = this.getPort();
     if (!port) return { status: 'needs-document-context', message: NEEDS_CONTEXT_MESSAGE };
-    return { status: 'available', message: 'Chrome’s on-device model is ready.' };
+    return this.panelAvailability(port);
+  }
+
+  /**
+   * A connected port only proves a panel is open, not that its
+   * `LanguageModel` can run, so ask the panel. A panel that disconnects or
+   * stays silent resolves to a typed status instead of a hang.
+   */
+  private panelAvailability(port: PortLike): Promise<ProviderAvailability> {
+    return new Promise((resolve) => {
+      const requestId = randomRequestId();
+      let settled = false;
+      const timer = setTimeout(
+        () => finish({ status: 'unavailable', message: 'Chrome’s on-device model didn’t respond. Reopen Motion and try again.' }),
+        this.availabilityTimeoutMs,
+      );
+      const finish = (result: ProviderAvailability) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        port.onMessage.removeListener(onMessage);
+        port.onDisconnect.removeListener?.(onDisconnect);
+        resolve(result);
+      };
+      const onMessage = (raw: unknown) => {
+        const parsed = hostFrameSchema.safeParse(raw);
+        if (!parsed.success || parsed.data.requestId !== requestId) return;
+        const frame = parsed.data;
+        if (frame.type === 'availability') {
+          finish({
+            status: frame.status,
+            message: frame.message,
+            ...(frame.retryAfterMs !== undefined ? { retryAfterMs: frame.retryAfterMs } : {}),
+          });
+        } else if (frame.type === 'error') {
+          finish({ status: 'unavailable', message: frame.message });
+        }
+      };
+      const onDisconnect = () => finish({ status: 'needs-document-context', message: NEEDS_CONTEXT_MESSAGE });
+      port.onMessage.addListener(onMessage);
+      port.onDisconnect.addListener(onDisconnect);
+      try {
+        port.postMessage(clientFrameSchema.parse({ type: 'availability', requestId } satisfies ClientFrame));
+      } catch {
+        onDisconnect();
+      }
+    });
   }
 
   async generate(req: GenerateRequest): Promise<string> {
@@ -74,14 +124,28 @@ export class InferenceClientProvider implements AIProvider {
       if (frame.requestId !== requestId) return;
       if (frame.type === 'delta') events.push({ kind: 'delta', text: frame.text });
       else if (frame.type === 'done') events.push({ kind: 'done' });
-      else events.push({ kind: 'error', errorKind: frame.kind, message: frame.message });
+      else if (frame.type === 'error') events.push({ kind: 'error', errorKind: frame.kind, message: frame.message });
+      else return;
       wake();
     };
     port.onMessage.addListener(onMessage);
 
+    // A panel that closes mid-stream never sends `done`/`error`; without this
+    // the generator would wait forever. Surface it as the same typed blocker as
+    // "no panel connected" so the workflow can pause and resume.
+    const onDisconnect = () => {
+      events.push({ kind: 'error', errorKind: 'needs-document-context', message: NEEDS_CONTEXT_MESSAGE });
+      wake();
+    };
+    port.onDisconnect.addListener(onDisconnect);
+
     const onAbort = () => {
       const cancel: ClientFrame = { type: 'cancel', requestId };
-      port.postMessage(clientFrameSchema.parse(cancel));
+      try {
+        port.postMessage(clientFrameSchema.parse(cancel));
+      } catch {
+        // The port is already gone; there is no host left to cancel.
+      }
       // Wake a generator parked waiting for the next frame — abort itself is
       // the next event, and nothing from the host is guaranteed to arrive.
       wake();
@@ -100,7 +164,11 @@ export class InferenceClientProvider implements AIProvider {
           ...(req.json !== undefined ? { json: req.json } : {}),
         },
       };
-      port.postMessage(clientFrameSchema.parse(generateFrame));
+      try {
+        port.postMessage(clientFrameSchema.parse(generateFrame));
+      } catch {
+        throw new ProviderError('needs-document-context', NEEDS_CONTEXT_MESSAGE);
+      }
 
       for (;;) {
         if (events.length === 0) {
@@ -124,6 +192,7 @@ export class InferenceClientProvider implements AIProvider {
       }
     } finally {
       port.onMessage.removeListener(onMessage);
+      port.onDisconnect.removeListener?.(onDisconnect);
       req.signal?.removeEventListener('abort', onAbort);
     }
   }
