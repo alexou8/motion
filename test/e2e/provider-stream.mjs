@@ -146,9 +146,11 @@ try {
   const claudeSelect = settings.getByRole('combobox', { name: 'Model', exact: true });
   await claudeSelect.waitFor();
   const claudeOptions = await claudeSelect.locator('option').allTextContents();
-  check('settings offers current Claude Opus and the lower-cost Haiku option',
-    claudeOptions.some((label) => label.includes('Opus 5.5')) &&
-    claudeOptions.some((label) => label.includes('Haiku 4.5')));
+  // Tiers, not versions: the curated catalogue is refreshed as models ship,
+  // and that refresh must not read as a streaming regression here.
+  check('settings offers a Claude Opus tier and the lower-cost Haiku tier',
+    claudeOptions.some((label) => /Opus/.test(label)) &&
+    claudeOptions.some((label) => /Haiku/.test(label)));
   await claudeSelect.selectOption('claude-opus-5-5');
   await waitFor(async () => (await send({ type: 'ai-status' }))?.result?.model === 'claude-opus-5-5');
   await settings.reload({ waitUntil: 'domcontentloaded' });

@@ -358,7 +358,7 @@ describe('model turn single flight', () => {
     await turn;
   });
 
-  it('tells the student when a reply was cut short by the length limit instead of "try again"', async () => {
+  it('never commits a reply the provider flagged as cut short, and offers a retry instead', async () => {
     const db = await openDatabase();
     await sessionRepository(db).put(session({ status: 'active', pendingModelRequest: null }));
     db.close();
@@ -369,7 +369,9 @@ describe('model turn single flight', () => {
       availability: async () => ({ status: 'available' as const, message: '' }),
       generate: async () => '',
       stream: async function* (request: { onTruncated?: (reason: 'max-tokens') => void }) {
-        yield '{"reply":"This answer never clo';
+        // Valid JSON that the provider still reports as incomplete: a plan
+        // may be missing steps, so it must not run.
+        yield '{"reply":"UNCONFIRMED_PROVIDER_REPLY","plan":[]}';
         request.onTruncated?.('max-tokens');
       },
     };
@@ -381,8 +383,11 @@ describe('model turn single flight', () => {
 
     const stored = await sessionRepository(await openDatabase()).get('session-1');
     const texts = stored?.conversation.map((entry) => entry.text) ?? [];
+    expect(texts.some((text) => text.includes('UNCONFIRMED_PROVIDER_REPLY'))).toBe(false);
     expect(texts.some((text) => text.includes('cut short'))).toBe(true);
-    expect(texts.some((text) => text.includes('unusable response'))).toBe(false);
+    expect(stored?.blockers).toEqual([
+      expect.objectContaining({ kind: 'provider', action: 'retry-model', message: expect.stringContaining('cut short') }),
+    ]);
     expect(stored?.pendingModelRequest).toBeNull();
   });
 

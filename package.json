@@ -35,7 +35,8 @@
     "test:keychain-browser": "node test/e2e/keychain-companion.mjs",
     "test:release": "node --test scripts/package.test.mjs scripts/release.test.mjs scripts/worker-source.test.mjs",
     "test:coursework": "node test/e2e/coursework.mjs",
-    "test:documents": "node test/e2e/documents.mjs"
+    "test:documents": "node test/e2e/documents.mjs",
+    "ci": "npm run typecheck && npm test && npm run test:release && npm run test:keychain && npm run lint && npm run build && npm run test:package && npm run test:extension && npm run test:agent && npm run test:popup-presence && npm run test:coursework && npm run test:documents && npm run build:e2e-provider-hosts && npm run test:provider-stream"
   },
   "dependencies": {
     "clsx": "^2.1.1",

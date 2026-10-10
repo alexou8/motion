@@ -574,9 +574,11 @@ export async function runModelTurn(
       role: entry.role === 'student' ? 'user' as const : 'assistant' as const,
       content: entry.text.slice(0, 4_000),
     }));
-    // A reply cut short by the length limit is unparseable JSON; remember why
-    // so the student is told to shorten the request rather than "try again".
-    let truncated: TruncationReason | null = null;
+    // A session turn is a structured plan, so a reply the provider flagged as
+    // cut short, declined or incomplete is never committed even when the text
+    // happens to parse: a plan missing its last steps would run as if whole.
+    // The reason is kept so the blocker can say what to change.
+    const stop: { truncated: TruncationReason | null } = { truncated: null };
     for await (const delta of resolution.provider.stream({
       system: prompt,
       messages,
@@ -584,7 +586,7 @@ export async function runModelTurn(
       json: true,
       signal: controller.signal,
       maxOutputTokens: 2_000,
-      onTruncated: (reason) => { truncated = reason; },
+      onTruncated: (reason) => { stop.truncated = reason; },
     })) {
       output = `${output}${delta}`.slice(-STREAM_MAX_LENGTH);
       const nowMs = Date.now();
@@ -604,11 +606,18 @@ export async function runModelTurn(
     if (!await storeStreaming(sessionId, requestKey, output)) return await loadSession(sessionId);
     session = await loadSession(sessionId);
     if (!session || session.pendingModelRequest?.key !== requestKey || session.pendingModelRequest.generation !== session.modelTurnGeneration) return session;
+    if (stop.truncated) {
+      const message = unusableResponseMessage(stop.truncated);
+      return (await finishClaimedTurn(
+        sessionId, requestKey, session.modelTurnGeneration, message, timestamp(deps),
+        { id: blockerId('provider'), kind: 'provider', message, action: 'retry-model' },
+      )) ?? (await loadSession(sessionId));
+    }
     const parsed = parseAgentResponse(output);
     if (!parsed.ok) {
       return (await finishClaimedTurn(
         sessionId, requestKey, session.modelTurnGeneration,
-        unusableResponseMessage(truncated), timestamp(deps),
+        unusableResponseMessage(null), timestamp(deps),
       )) ?? (await loadSession(sessionId));
     }
     // `session` (not a pre-cleared copy) is passed on so `persistPlan` can
